@@ -1,0 +1,97 @@
+{
+  "nodes": {
+    "flake-utils": {
+      "inputs": {
+        "systems": "systems"
+      },
+      "locked": {
+        "lastModified": 1731533236,
+        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1740751956,
+        "narHash": "sha256-wotHrZkh7xIBDIA0jpx2Mty4da/S/AoelzpEKgRqa0Q=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "6bf084c4ea625dc3d6b94138df0cab9a9c7b9298",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "6bf084c4ea625dc3d6b94138df0cab9a9c7b9298",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
+        "lastModified": 1740301968,
+        "narHash": "sha256-eDAiNagpMExcLoSIgjdef2ZYyvjuy1VTF8r9OZXCMGc=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "b7fe81518095c48a8ba94fc7cfe5c0fc8370851b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "b7fe81518095c48a8ba94fc7cfe5c0fc8370851b",
+        "type": "github"
+      }
+    },
+    "ocaml-overlays": {
+      "inputs": {
+        "nixpkgs": "nixpkgs_2"
+      },
+      "locked": {
+        "lastModified": 1740353796,
+        "narHash": "sha256-395SvQm4U8wlwe5ToE4jhPXEBF6Rb4J4dVDG3iKIWcI=",
+        "owner": "nix-ocaml",
+        "repo": "nix-overlays",
+        "rev": "d4ac32c12590b5ce8a756374a20476af8769f839",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-ocaml",
+        "repo": "nix-overlays",
+        "rev": "d4ac32c12590b5ce8a756374a20476af8769f839",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "flake-utils": "flake-utils",
+        "nixpkgs": "nixpkgs",
+        "ocaml-overlays": "ocaml-overlays"
+      }
+    },
+    "systems": {
+      "locked": {
+        "lastModified": 1681028828,
+        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
+        "owner": "nix-systems",
+        "repo": "default",
+        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "repo": "default",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
