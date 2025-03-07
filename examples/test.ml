@@ -26,4 +26,4 @@ let () =
       loop ());
 
   Printf.printf "Listening on port 8080\n%!";
-  Haha.listen ~env ~sw recv_stream server_socket
+  Haha.Server.listen ~env ~sw recv_stream server_socket

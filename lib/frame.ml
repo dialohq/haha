@@ -236,4 +236,11 @@ let validate_frame_headers
         Error.connection_error FrameSizeError
           "RST_STREAM payload must be 4 octets in length"
       else Ok ()
+  | Priority ->
+      if Stream_identifier.is_connection stream_id then
+        Error.connection_error ProtocolError
+          "PRIORITY must be associated with a stream"
+      else if payload_length <> 5 then
+        Error.stream_error stream_id FrameSizeError
+      else Ok ()
   | _ -> failwith "validation not implemented"

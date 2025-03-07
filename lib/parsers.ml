@@ -147,20 +147,10 @@ let parse_headers_frame frame_header =
       in
       parse_padded_payload frame_header parse_headers
 
-let parse_priority_frame { Frame.payload_length; stream_id; _ } =
-  if Stream_identifier.is_connection stream_id then
-    (* From RFC7540§6.3:
-     *   The PRIORITY frame always identifies a stream. If a PRIORITY frame is
-     *   received with a stream identifier of 0x0, the recipient MUST respond
-     *   with a connection error (Section 5.4.1) of type PROTOCOL_ERROR. *)
-    advance payload_length >>| fun () ->
-    connection_error ProtocolError "PRIORITY must be associated with a stream"
-  else if payload_length <> 5 then
-    (* From RFC7540§6.3:
-     *   A PRIORITY frame with a length other than 5 octets MUST be treated as
-     *   a stream error (Section 5.4.2) of type FRAME_SIZE_ERROR. *)
-    advance payload_length >>| fun () -> stream_error FrameSizeError stream_id
-  else lift (fun priority -> Ok (Frame.Priority priority)) parse_priority
+let parse_priority_frame ({ Frame.payload_length; _ } as headers) =
+  match Frame.validate_frame_headers headers with
+  | Error _ as err -> advance payload_length >>| fun () -> err
+  | Ok _ -> lift (fun priority -> Ok (Frame.Priority priority)) parse_priority
 
 let parse_error_code = lift Error_code.parse BE.any_int32
 
