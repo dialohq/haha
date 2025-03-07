@@ -218,4 +218,22 @@ let validate_frame_headers
         Error.connection_error ProtocolError
           "DATA frames must be associated with a stream"
       else Ok ()
+  | PushPromise ->
+      if Stream_identifier.is_connection stream_id then
+        Error.connection_error ProtocolError
+          "PUSH_PROMISE must be associated with a stream"
+      else Ok ()
+  | GoAway ->
+      if not (Stream_identifier.is_connection stream_id) then
+        Error.connection_error ProtocolError
+          "GOAWAY must be associated with stream id 0x0"
+      else Ok ()
+  | RSTStream ->
+      if Stream_identifier.is_connection stream_id then
+        Error.connection_error ProtocolError
+          "RST_STREAM must be associated with a stream"
+      else if payload_length <> 4 then
+        Error.connection_error FrameSizeError
+          "RST_STREAM payload must be 4 octets in length"
+      else Ok ()
   | _ -> failwith "validation not implemented"
