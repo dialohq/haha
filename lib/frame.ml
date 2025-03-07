@@ -213,4 +213,9 @@ let validate_frame_headers
         Error.connection_error ProtocolError
           "HEADERS must have a odd-numbered stream identifier"
       else Ok ()
+  | Data ->
+      if Stream_identifier.is_connection stream_id then
+        Error.connection_error ProtocolError
+          "DATA frames must be associated with a stream"
+      else Ok ()
   | _ -> failwith "validation not implemented"

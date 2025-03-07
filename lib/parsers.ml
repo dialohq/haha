@@ -101,21 +101,14 @@ let parse_padded_payload { Frame.payload_length; flags; _ } parser =
       parser relevant_length <* advance pad_length
   else parser payload_length
 
-let parse_data_frame ({ Frame.stream_id; payload_length; _ } as frame_header) =
-  if Stream_identifier.is_connection stream_id then
-    (* From RFC7540§6.1:
-     *   DATA frames MUST be associated with a stream. If a DATA frame is
-     *   received whose stream identifier field is 0x0, the recipient MUST
-     *   respond with a connection error (Section 5.4.1) of type
-     *   PROTOCOL_ERROR. *)
-    advance payload_length >>| fun () ->
-    connection_error ProtocolError
-      "Data frames must be associated with a stream"
-  else
-    let parse_data length =
-      lift (fun bs -> Ok (Frame.Data bs)) (take_bigstring length)
-    in
-    parse_padded_payload frame_header parse_data
+let parse_data_frame ({ Frame.payload_length; _ } as frame_header) =
+  match Frame.validate_frame_headers frame_header with
+  | Error _ as err -> advance payload_length >>| fun () -> err
+  | Ok _ ->
+      let parse_data length =
+        lift (fun bs -> Ok (Frame.Data bs)) (take_bigstring length)
+      in
+      parse_padded_payload frame_header parse_data
 
 let parse_priority =
   lift2
@@ -134,9 +127,9 @@ let parse_priority =
     BE.any_int32 any_uint8
 
 let parse_headers_frame frame_header =
-  let ({ Frame.flags; _ } as headers) = frame_header in
+  let ({ Frame.flags; payload_length; _ } as headers) = frame_header in
   match Frame.validate_frame_headers headers with
-  | Error _ as err -> return err
+  | Error _ as err -> advance payload_length >>| fun () -> err
   | Ok _ ->
       let parse_headers length =
         if Flags.test_priority flags then
@@ -221,7 +214,7 @@ let parse_settings_payload num_settings =
 
 let parse_settings_frame ({ Frame.payload_length; _ } as headers) =
   match Frame.validate_frame_headers headers with
-  | Error _ as err -> return err
+  | Error _ as err -> advance payload_length >>| fun () -> err
   | Ok _ ->
       let num_settings = payload_length / Settings.octets_per_setting in
       parse_settings_payload num_settings >>| fun xs -> Ok (Frame.Settings xs)
@@ -271,7 +264,7 @@ let parse_push_promise_frame frame_header =
 
 let parse_ping_frame ({ Frame.payload_length; _ } as headers) =
   match Frame.validate_frame_headers headers with
-  | Error _ as err -> return err
+  | Error _ as err -> advance payload_length >>| fun () -> err
   | Ok _ -> lift (fun bs -> Ok (Frame.Ping bs)) (take_bigstring payload_length)
 
 let parse_go_away_frame { Frame.payload_length; stream_id; _ } =
