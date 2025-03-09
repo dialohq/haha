@@ -1,13 +1,15 @@
 module StreamMap = Map.Make (Int32)
 
 module Stream = struct
-  type source = Remote | Local
+  type payload = [ `Data of Bigstringaf.t | `EOF ]
+  type half_closed = Remote | Local of payload Eio.Stream.t
+  type reserved = Remote | Local
 
   type state =
     | Idle
-    | Reserved of source
-    | Open
-    | Half_closed of source
+    | Reserved of reserved
+    | Open of payload Eio.Stream.t
+    | Half_closed of half_closed
     | Closed
 
   type t = { id : Stream_identifier.t; state : state }
@@ -26,19 +28,18 @@ let initial =
     last_server_stream = Stream_identifier.connection;
   }
 
-let stream_transition t stream_id state =
-  if Stream_identifier.is_client stream_id then
-    {
-      t with
-      last_client_stream = Int32.max stream_id t.last_client_stream;
-      map = StreamMap.add stream_id { Stream.id = stream_id; state } t.map;
-    }
-  else
-    {
-      t with
-      last_server_stream = Int32.max stream_id t.last_server_stream;
-      map = StreamMap.add stream_id { Stream.id = stream_id; state } t.map;
-    }
+let stream_transition t id state =
+  let map =
+    StreamMap.update id
+      (function
+        | None -> Some { Stream.id; state }
+        | Some old -> Some { old with state })
+      t.map
+  in
+
+  if Stream_identifier.is_client id then
+    { t with last_client_stream = Int32.max id t.last_client_stream; map }
+  else { t with last_server_stream = Int32.max id t.last_server_stream; map }
 
 let update_last_stream ?(strict = false) t stream_id =
   if Stream_identifier.is_client stream_id then
