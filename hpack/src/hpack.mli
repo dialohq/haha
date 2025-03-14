@@ -30,15 +30,15 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  *---------------------------------------------------------------------------*)
 
-type header =
-  { name : string
-  ; value : string
-        (* From RFC7541§7.1.3:
-         *   Implementations can also choose to protect sensitive header fields
-         *   by not compressing them and instead encoding their value as
-         *   literals. *)
-  ; sensitive : bool
-  }
+type header = {
+  name : string;
+  value : string;
+      (* From RFC7541§7.1.3:
+       *   Implementations can also choose to protect sensitive header fields
+       *   by not compressing them and instead encoding their value as
+       *   literals. *)
+  sensitive : bool;
+}
 
 type error = Decoding_error
 
@@ -56,6 +56,8 @@ module Encoder : sig
   val encode_header : t -> Faraday.t -> header -> unit
   (** [encode_header encoder f header] writes an encoded header to the Faraday
       buffer [f]. *)
+
+  val calculate_length : t -> header -> int
 
   val set_capacity : t -> int -> unit
   (** [set_capacity encoder capacity] sets [encoder]'s dynamic table size to

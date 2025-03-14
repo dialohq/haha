@@ -1,3 +1,11 @@
+type t = { name : string; value : string }
+
+let of_hpack_list =
+  List.map (fun hpack_header ->
+      { name = hpack_header.Hpack.name; value = hpack_header.value })
+
+let of_list = List.map (fun header -> { name = fst header; value = snd header })
+
 module Pseudo = struct
   let request_required = [ ":method"; ":scheme"; ":path" ]
   let request_available = ":authority" :: request_required
@@ -15,11 +23,9 @@ module Pseudo = struct
     | Valid of 'message_type
     | No_pseudo
 
-  let validate_request recvd_headers =
+  let validate_request (recvd_headers : t list) =
     let headers =
-      List.filter
-        (fun header -> String.get header.Hpack.name 0 = ':')
-        recvd_headers
+      List.filter (fun header -> String.get header.name 0 = ':') recvd_headers
     in
     let rec check_all_present acc remaining required =
       match remaining with
@@ -30,12 +36,12 @@ module Pseudo = struct
           else false
     in
     let get_value header =
-      match List.find_opt (fun h -> h.Hpack.name = header) headers with
+      match List.find_opt (fun h -> h.name = header) headers with
       | Some str -> str.value
       | None -> ""
     in
     let len = List.length headers in
-    let names = List.map (fun header -> header.Hpack.name) headers in
+    let names = List.map (fun header -> header.name) headers in
     if len = 0 then No_pseudo
     else if len = 3 && check_all_present true names request_required then
       Valid
@@ -56,4 +62,5 @@ module Pseudo = struct
     else if len = 4 then Invalid
     else Invalid
 end
+
 (* TODO: should do more validation on normal headers here *)

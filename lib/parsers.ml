@@ -1,4 +1,5 @@
 open Angstrom
+module AU = Angstrom.Unbuffered
 
 let default_frame_header =
   {
@@ -30,6 +31,9 @@ let stream_error error_code stream_id =
   Error Error.(StreamError (stream_id, error_code))
 
 let parse_uint24 o1 o2 o3 = (o1 lsl 16) lor (o2 lsl 8) lor o3
+
+let take_bigstring_unsafe n =
+  Unsafe.take n (fun bs ~off ~len -> Bigstringaf.sub bs ~off ~len)
 
 let frame_length =
   (* From RFC7540§4.1:
@@ -106,7 +110,7 @@ let parse_data_frame ({ Frame.payload_length; _ } as frame_header) =
   | Error _ as err -> advance payload_length >>| fun () -> err
   | Ok _ ->
       let parse_data length =
-        lift (fun bs -> Ok (Frame.Data bs)) (take_bigstring length)
+        lift (fun bs -> Ok (Frame.Data bs)) (take_bigstring_unsafe length)
       in
       parse_padded_payload frame_header parse_data
 
@@ -126,24 +130,27 @@ let parse_priority =
       })
     BE.any_int32 any_uint8
 
-let parse_headers_frame frame_header =
-  let ({ Frame.flags; payload_length; _ } as headers) = frame_header in
+let parse_headers_frame frame_header hpack_decoder =
+  let ({ Frame.payload_length; _ } as headers) = frame_header in
   match Frame.validate_frame_headers headers with
   | Error _ as err -> advance payload_length >>| fun () -> err
   | Ok _ ->
       let parse_headers length =
-        if Flags.test_priority flags then
-          lift2
-            (fun priority headers -> Ok (Frame.Headers (priority, headers)))
-            parse_priority
-            (* See RFC7540§6.3:
-             *   Stream Dependency (4 octets) + Weight (1 octet). *)
-            (take_bigstring (length - 5))
-        else
-          lift
-            (fun headers_block ->
-              Ok (Frame.Headers (Priority.default_priority, headers_block)))
-            (take_bigstring length)
+        lift
+          (fun headers_block -> Ok (Frame.Headers headers_block))
+          ( take_bigstring_unsafe length >>| fun bs ->
+            let hpack_parser = Hpack.Decoder.decode_headers hpack_decoder in
+            let error' = Error "Decompression error" in
+            match AU.parse hpack_parser with
+            | Fail _ -> error'
+            | Done _ -> error'
+            | Partial { continue; _ } -> (
+                match continue bs ~off:0 ~len:length Complete with
+                | Partial _ -> error'
+                | Fail _ -> error'
+                | Done (_, result') ->
+                    Result.map_error (fun _ -> "Decompression error") result'
+                    |> Result.map Headers.of_hpack_list) )
       in
       parse_padded_payload frame_header parse_headers
 
@@ -231,14 +238,15 @@ let parse_push_promise_frame frame_header =
            *   The PUSH_PROMISE frame includes the unsigned 31-bit identifier of
            *   the stream the endpoint plans to create along with a set of
            *   headers that provide additional context for the stream. *)
-          (take_bigstring (length - 4))
+          (take_bigstring_unsafe (length - 4))
       in
       parse_padded_payload frame_header parse_push_promise
 
 let parse_ping_frame ({ Frame.payload_length; _ } as headers) =
   match Frame.validate_frame_headers headers with
   | Error _ as err -> advance payload_length >>| fun () -> err
-  | Ok _ -> lift (fun bs -> Ok (Frame.Ping bs)) (take_bigstring payload_length)
+  | Ok _ ->
+      lift (fun bs -> Ok (Frame.Ping bs)) (take_bigstring_unsafe payload_length)
 
 let parse_go_away_frame ({ Frame.payload_length; _ } as headers) =
   match Frame.validate_frame_headers headers with
@@ -248,63 +256,53 @@ let parse_go_away_frame ({ Frame.payload_length; _ } as headers) =
         (fun last_stream_id err debug_data ->
           Ok (Frame.GoAway (last_stream_id, err, debug_data)))
         stream_identifier parse_error_code
-        (take_bigstring (payload_length - 8))
+        (take_bigstring_unsafe (payload_length - 8))
 
-let parse_window_update_frame { Frame.stream_id; payload_length; _ } =
-  (* From RFC7540§6.9:
-   *   A WINDOW_UPDATE frame with a length other than 4 octets MUST be treated
-   *   as a connection error (Section 5.4.1) of type FRAME_SIZE_ERROR. *)
-  if payload_length <> 4 then
-    advance payload_length >>| fun () ->
-    connection_error FrameSizeError
-      "WINDOW_UPDATE payload must be 4 octets in length"
-  else
-    lift
-      (fun uint ->
-        (* From RFC7540§6.9:
-         *   The frame payload of a WINDOW_UPDATE frame is one reserved bit
-         *   plus an unsigned 31-bit integer indicating the number of octets
-         *   that the sender can transmit in addition to the existing
-         *   flow-control window. *)
-        let window_size_increment = Util.clear_bit_int32 uint 31 in
-        if Int32.equal window_size_increment 0l then
-          if
-            (* From RFC7540§6.9:
-             * A receiver MUST treat the receipt of a WINDOW_UPDATE frame
-             * with an flow-control window increment of 0 as a stream error
-             * (Section 5.4.2) of type PROTOCOL_ERROR; errors on the
-             * connection flow-control window MUST be treated as a connection
-             * error (Section 5.4.1). *)
-            Stream_identifier.is_connection stream_id
-          then connection_error ProtocolError "Window update must not be 0"
-          else stream_error ProtocolError stream_id
-        else Ok (Frame.WindowUpdate window_size_increment))
-      BE.any_int32
+let parse_window_update_frame
+    ({ Frame.stream_id; payload_length; _ } as headers) =
+  match Frame.validate_frame_headers headers with
+  | Error _ as err -> advance payload_length >>| fun () -> err
+  | Ok _ ->
+      lift
+        (fun uint ->
+          (* From RFC7540§6.9:
+           *   The frame payload of a WINDOW_UPDATE frame is one reserved bit
+           *   plus an unsigned 31-bit integer indicating the number of octets
+           *   that the sender can transmit in addition to the existing
+           *   flow-control window. *)
+          let window_size_increment = Util.clear_bit_int32 uint 31 in
+          if Int32.equal window_size_increment 0l then
+            if
+              (* From RFC7540§6.9:
+               * A receiver MUST treat the receipt of a WINDOW_UPDATE frame
+               * with an flow-control window increment of 0 as a stream error
+               * (Section 5.4.2) of type PROTOCOL_ERROR; errors on the
+               * connection flow-control window MUST be treated as a connection
+               * error (Section 5.4.1). *)
+              Stream_identifier.is_connection stream_id
+            then connection_error ProtocolError "Window update must not be 0"
+            else stream_error ProtocolError stream_id
+          else Ok (Frame.WindowUpdate window_size_increment))
+        BE.any_int32
 
-let parse_continuation_frame { Frame.payload_length; stream_id; _ } =
-  if Stream_identifier.is_connection stream_id then
-    (* From RFC7540§6.10:
-     *   CONTINUATION frames MUST be associated with a stream. If a
-     *   CONTINUATION frame is received whose stream identifier field is 0x0,
-     *   the recipient MUST respond with a connection error (Section 5.4.1) of
-     *   type PROTOCOL_ERROR. *)
-    advance payload_length >>| fun () ->
-    connection_error ProtocolError
-      "CONTINUATION must be associated with a stream"
-  else
-    lift
-      (fun block_fragment -> Ok (Frame.Continuation block_fragment))
-      (take_bigstring payload_length)
+let parse_continuation_frame ({ Frame.payload_length; _ } as headers) =
+  match Frame.validate_frame_headers headers with
+  | Error _ as err -> advance payload_length >>| fun () -> err
+  | Ok _ ->
+      lift
+        (fun block_fragment -> Ok (Frame.Continuation block_fragment))
+        (take_bigstring_unsafe payload_length)
 
 let parse_unknown_frame typ { Frame.payload_length; _ } =
   lift
     (fun bigstring -> Ok (Frame.Unknown (typ, bigstring)))
-    (take_bigstring payload_length)
+    (take_bigstring_unsafe payload_length)
 
-let parse_frame_payload ({ Frame.frame_type; _ } as frame_header) =
+let parse_frame_payload ({ Frame.frame_type; _ } as frame_header) hpack_decoder
+    =
   (match frame_type with
   | Frame.FrameType.Data -> parse_data_frame frame_header
-  | Headers -> parse_headers_frame frame_header
+  | Headers -> parse_headers_frame frame_header hpack_decoder
   | Priority -> parse_priority_frame frame_header
   | RSTStream -> parse_rst_stream_frame frame_header
   | Settings -> parse_settings_frame frame_header
@@ -316,27 +314,13 @@ let parse_frame_payload ({ Frame.frame_type; _ } as frame_header) =
   | Unknown typ -> parse_unknown_frame typ frame_header)
   <?> "frame_payload"
 
-let parse_frame =
+let parse_frame hpack_decoder =
   parse_frame_header >>= fun frame_header ->
   lift
     (function
       | Ok frame_payload -> Ok { Frame.frame_header; frame_payload }
       | Error e -> Error e)
-    (parse_frame_payload frame_header)
+    (parse_frame_payload frame_header hpack_decoder)
 
 let connection_preface =
   string Frame.connection_preface <?> "connection preface"
-
-let settings_preface =
-  parse_frame >>| function
-  | Ok ({ frame_payload = Frame.Settings settings_list; _ } as frame) ->
-      Ok (frame, settings_list)
-  | Ok _ ->
-      Error
-        (`Error
-           Error.(
-             ConnectionError
-               ( ProtocolError,
-                 "Invalid connection preface. Magic sequence should be \
-                  followed by the settings frame." )))
-  | Error e -> Error (`Error e)

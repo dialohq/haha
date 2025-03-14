@@ -35,8 +35,7 @@ open Types
 let encoded_length s =
   let len = String.length s in
   let rec loop bits i =
-    if i < len
-    then
+    if i < len then
       let input = Char.code s.[i] in
       let _, len_in_bits = Huffman_table.encode_table.(input) in
       loop (bits + len_in_bits) (i + 1)
@@ -48,7 +47,12 @@ let encoded_length s =
   in
   loop 0 0
 
-let encode t s =
+let encode ?len_ref t s =
+  let operation byte =
+    match len_ref with
+    | Some len_ref -> incr len_ref
+    | None -> Faraday.write_uint8 t byte
+  in
   let bits = ref 0 in
   let bits_left = ref 40 in
   for i = 0 to String.length s - 1 do
@@ -56,16 +60,15 @@ let encode t s =
     bits_left := !bits_left - code_len;
     bits := !bits lor (code lsl !bits_left);
     while !bits_left <= 32 do
-      Faraday.write_uint8 t (!bits lsr 32);
+      operation (!bits lsr 32);
       bits := !bits lsl 8;
       bits_left := !bits_left + 8
     done
   done;
-  if !bits_left < 40
-  then (
+  if !bits_left < 40 then (
     bits := !bits lor ((1 lsl !bits_left) - 1);
     (* add EOS and padding *)
-    Faraday.write_uint8 t (!bits lsr 32))
+    operation (!bits lsr 32))
 
 let decode =
   let[@inline] add_output buffer c =
@@ -76,23 +79,19 @@ let decode =
     let len = String.length s in
     let buffer = Buffer.create len in
     let rec loop id accept i =
-      if i < len
-      then (
+      if i < len then (
         let input = Char.code s.[i] in
         let index = (id lsl 4) + (input lsr 4) in
         let id, _, output = Huffman_table.decode_table.(index) in
         add_output buffer output;
-        if exists_in_huffman_table id
-        then (
+        if exists_in_huffman_table id then (
           let index = (id lsl 4) + (input land 0x0f) in
           let id, accept, output = Huffman_table.decode_table.(index) in
           add_output buffer output;
-          if exists_in_huffman_table id
-          then loop id accept (i + 1)
+          if exists_in_huffman_table id then loop id accept (i + 1)
           else Error Decoding_error)
         else Error Decoding_error)
-      else if not accept
-      then Error Decoding_error
+      else if not accept then Error Decoding_error
       else Ok ()
     in
     match loop 0 true 0 with

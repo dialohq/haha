@@ -122,7 +122,7 @@ type frame_payload =
    *            present if the PRIORITY flag is set.
    *
    *    Header Block Fragment: A header block fragment (Section 4.3). *)
-  | Headers of Priority.t * Bigstringaf.t
+  | Headers of (Headers.t list, string) result
   (* From RFC7540§6.3:
    *   The payload of a PRIORITY frame contains the following fields:
    *
@@ -170,7 +170,7 @@ type frame_payload =
    *   unsigned 31-bit integer indicating the number of octets that the
    *   sender can transmit in addition to the existing flow-control
    *   window. *)
-  | WindowUpdate of Settings.WindowSize.t
+  | WindowUpdate of Flow_control.WindowSize.t
   (* From RFC7540§6.10:
    *   The CONTINUATION frame payload contains a header block fragment
    *   (Section 4.3). *)
@@ -243,4 +243,16 @@ let validate_frame_headers
       else if payload_length <> 5 then
         Error.stream_error stream_id FrameSizeError
       else Ok ()
-  | _ -> failwith "validation not implemented"
+  | WindowUpdate ->
+      if payload_length <> 4 then
+        Error.connection_error FrameSizeError
+          "WINDOW_UPDATE payload must be 4 octets in length"
+      else Ok ()
+  | Continuation ->
+      if Stream_identifier.is_connection stream_id then
+        Error.connection_error ProtocolError
+          "CONTINUATION must be associated with a stream"
+      else Ok ()
+  | Unknown _ ->
+      (* unreachable *)
+      Ok ()

@@ -33,60 +33,60 @@
 open Types
 
 module HeaderFieldsTbl = Hashtbl.Make (struct
-    type t = string
+  type t = string
 
-    let equal = String.equal
-    let hash s = Hashtbl.hash s
-  end)
+  let equal = String.equal
+  let hash s = Hashtbl.hash s
+end)
 
 module ValueMap = Map.Make (String)
 
-type t =
-  { table : Dynamic_table.t
-        (* We maintain a lookup table of header fields to their indexes in the
-         * dynamic table. The format is name -> (value -> index) *)
-  ; lookup_table : int ValueMap.t HeaderFieldsTbl.t
-  ; mutable next_seq : int
-  }
+type t = {
+  table : Dynamic_table.t;
+      (* We maintain a lookup table of header fields to their indexes in the
+       * dynamic table. The format is name -> (value -> index) *)
+  lookup_table : int ValueMap.t HeaderFieldsTbl.t;
+  mutable next_seq : int;
+}
 
 module BinaryFormat = struct
   (* From RFC7541§6.2.3. Literal Header Field Never Indexed
    *   A literal header field never-indexed representation starts with the
    *   '0001' 4-bit pattern. *)
-  let never_indexed = 0b0001_0000, 4
+  let never_indexed = (0b0001_0000, 4)
 
   (* From RFC7541§6.2.2: Literal Header Field without Indexing
    *   A literal header field without indexing representation starts with the
    *   '0000' 4-bit pattern. *)
-  let without_indexing = 0b0000_0000, 4
+  let without_indexing = (0b0000_0000, 4)
 
   (* From RFC7541§6.2.1: Literal Header Field with Incremental Indexing
    *   A literal header field with incremental indexing representation starts
    *   with the '01' 2-bit pattern. *)
-  let incremental_indexing = 0b0100_0000, 6
+  let incremental_indexing = (0b0100_0000, 6)
 
   (* From RFC7541§6.1: Indexed Header Field Representation
    *   An indexed header field starts with the '1' 1-bit pattern, followed by
    *   the index of the matching header field, represented as an integer with
    *   a 7-bit prefix (see Section 5.1). *)
-  let indexed = 0b1000_0000, 7
+  let indexed = (0b1000_0000, 7)
   let[@inline] is_indexed = function 128 -> true | _ -> false
 end
 
 let create =
   let on_evict lookup_table (name, value) =
     let map = HeaderFieldsTbl.find lookup_table name in
-    if ValueMap.cardinal map = 1
-    then HeaderFieldsTbl.remove lookup_table name
+    if ValueMap.cardinal map = 1 then HeaderFieldsTbl.remove lookup_table name
     else
       let map = ValueMap.remove value map in
       HeaderFieldsTbl.replace lookup_table name map
   in
   fun capacity ->
     let lookup_table = HeaderFieldsTbl.create capacity in
-    { table = Dynamic_table.create ~on_evict:(on_evict lookup_table) capacity
-    ; lookup_table
-    ; next_seq = 0
+    {
+      table = Dynamic_table.create ~on_evict:(on_evict lookup_table) capacity;
+      lookup_table;
+      next_seq = 0;
     }
 
 let add ({ table; lookup_table; next_seq } as encoder) entry =
@@ -100,7 +100,8 @@ let add ({ table; lookup_table; next_seq } as encoder) entry =
   encoder.next_seq <- next_seq + 1;
   HeaderFieldsTbl.replace lookup_table name map
 
-let encode =
+let encode ?(no_state_change = false) =
+  let add encoder entry = if not no_state_change then add encoder entry in
   let find_token =
     let encode_missing_value encoder without_indexing token name value =
       (* This is a header field whose value we didn't find in the static
@@ -108,35 +109,32 @@ let encode =
        * looped to check whether the value was indexed in the static table.
        * We can still use the token index to encode the header name. *)
       let index = token + 1 in
-      if without_indexing
-      then
+      if without_indexing then
         (* From RFC7541§6.2.2: Literal Header Field without Indexing
          *   If the header field name matches the header field name of an entry
          *   stored in the static table or the dynamic table, the header field
          *   name can be represented using the index of that entry. *)
-        BinaryFormat.without_indexing, index
+        (BinaryFormat.without_indexing, index)
       else (
         (* From RFC7541§6.2.1: Literal Header Field with Incremental Indexing
          *   A literal header field with incremental indexing representation
          *   results in appending a header field to the decoded header list and
          *   inserting it as a new entry into the dynamic table. *)
         add encoder (name, value);
-        BinaryFormat.incremental_indexing, index)
+        (BinaryFormat.incremental_indexing, index))
     in
     fun encoder without_indexing token name value ->
       let rec loop i =
-        if i >= Static_table.table_size
-        then encode_missing_value encoder without_indexing token name value
+        if i >= Static_table.table_size then
+          encode_missing_value encoder without_indexing token name value
         else
           let name', value' = Static_table.table.(i) in
-          if name = name'
-          then
-            if value' = value
-            then
+          if name = name' then
+            if value' = value then
               (* From RFC7541§6.1: Indexed Header Field Representation
                *   An indexed header field starts with the '1' 1-bit pattern,
                *   followed by the index of the matching header field. *)
-              BinaryFormat.indexed, i + 1
+              (BinaryFormat.indexed, i + 1)
             else
               (* Advance one token in the static table, as the next entry might have
                * a value that can fall into the above branch. We're guaranteed to
@@ -162,14 +160,15 @@ let encode =
        * dynamic table. *)
       IntSet.of_list
         Static_table.TokenIndices.
-          [ path
-          ; age
-          ; content_length
-          ; etag
-          ; if_modified_since
-          ; if_none_match
-          ; location
-          ; set_cookie
+          [
+            path;
+            age;
+            content_length;
+            etag;
+            if_modified_since;
+            if_none_match;
+            location;
+            set_cookie;
           ]
     in
     fun [@inline] token ->
@@ -177,22 +176,21 @@ let encode =
   in
   let[@inline] is_sensitive token value =
     token <> -1
-    && (* From RFC7541§7.1.3: Never-Indexed Literals
-        *   An encoder might also choose not to index values for header fields
-        *   that are considered to be highly valuable or sensitive to recovery,
-        *   such as the Cookie or Authorization header fields. *)
+    &&
+    (* From RFC7541§7.1.3: Never-Indexed Literals
+     *   An encoder might also choose not to index values for header fields
+     *   that are considered to be highly valuable or sensitive to recovery,
+     *   such as the Cookie or Authorization header fields. *)
     Static_table.TokenIndices.(
       token == authorization || (token == cookie && String.length value < 20))
   in
   fun ({ lookup_table; next_seq; _ } as encoder) { name; value; sensitive } ->
     let token = Static_table.lookup_token_index name in
     let token_found_in_static_table = token <> -1 in
-    if sensitive || is_sensitive token value
-    then
+    if sensitive || is_sensitive token value then
       (* never indexed literal header field, find the index *)
       let index =
-        if token_found_in_static_table
-        then
+        if token_found_in_static_table then
           (* From RFC7541§6.2.2: Literal Header Field without Indexing
            *   If the header field name matches the header field name of an entry
            *   stored in the static table or the dynamic table, the header field
@@ -201,73 +199,75 @@ let encode =
         else
           match HeaderFieldsTbl.find_opt lookup_table name with
           | Some map ->
-            let _, any_entry = ValueMap.choose map in
-            seq_to_index next_seq any_entry
+              let _, any_entry = ValueMap.choose map in
+              seq_to_index next_seq any_entry
           | None ->
-            (* From RFC7541§6.2.2: Literal Header Field without Indexing
-             *   Otherwise, the header field name is represented as a string
-             *   literal (see Section 5.2). A value 0 is used in place of the
-             *   4-bit index, followed by the header field name. *)
-            0
+              (* From RFC7541§6.2.2: Literal Header Field without Indexing
+               *   Otherwise, the header field name is represented as a string
+               *   literal (see Section 5.2). A value 0 is used in place of the
+               *   4-bit index, followed by the header field name. *)
+              0
       in
-      BinaryFormat.never_indexed, index
-    else if token_found_in_static_table
-    then
+      (BinaryFormat.never_indexed, index)
+    else if token_found_in_static_table then
       (* Header name is represented in the static table. *)
       match HeaderFieldsTbl.find_opt lookup_table name with
-      | Some map ->
-        (* Header value is indexed in the dynamic table. *)
-        (match ValueMap.find_opt value map with
-        | Some seq ->
-          (* From RFC7541§6.1: Indexed Header Field Representation
-           *   An indexed header field representation identifies an entry in
-           *   either the static table or the dynamic table (see Section 2.3). *)
-          BinaryFormat.indexed, seq_to_index next_seq seq
-        | None ->
-          (* Header value is not indexed in the dynamic table. Check if it's an
-           * entry in the static table or if we need to encode its value, (and
-           * potentially name if the field is requested to be encoded without
-           * indexing). *)
-          let without_indexing = is_without_indexing token in
-          find_token encoder without_indexing token name value)
+      | Some map -> (
+          (* Header value is indexed in the dynamic table. *)
+          match ValueMap.find_opt value map with
+          | Some seq ->
+              (* From RFC7541§6.1: Indexed Header Field Representation
+               *   An indexed header field representation identifies an entry in
+               *   either the static table or the dynamic table (see Section 2.3). *)
+              (BinaryFormat.indexed, seq_to_index next_seq seq)
+          | None ->
+              (* Header value is not indexed in the dynamic table. Check if it's an
+               * entry in the static table or if we need to encode its value, (and
+               * potentially name if the field is requested to be encoded without
+               * indexing). *)
+              let without_indexing = is_without_indexing token in
+              find_token encoder without_indexing token name value)
       | None ->
-        let without_indexing = is_without_indexing token in
-        find_token encoder without_indexing token name value
+          let without_indexing = is_without_indexing token in
+          find_token encoder without_indexing token name value
     else
       match HeaderFieldsTbl.find_opt lookup_table name with
-      | Some map ->
-        (match ValueMap.find_opt value map with
-        | Some seq -> BinaryFormat.indexed, seq_to_index next_seq seq
-        | None ->
-          let index = seq_to_index next_seq (snd (ValueMap.choose map)) in
-          if is_without_indexing token
-          then BinaryFormat.without_indexing, index
+      | Some map -> (
+          match ValueMap.find_opt value map with
+          | Some seq -> (BinaryFormat.indexed, seq_to_index next_seq seq)
+          | None ->
+              let index = seq_to_index next_seq (snd (ValueMap.choose map)) in
+              if is_without_indexing token then
+                (BinaryFormat.without_indexing, index)
+              else (
+                (* From RFC7541§6.2.1
+                 *   A literal header field with incremental indexing representation
+                 *   results in appending a header field to the decoded header list
+                 *   and inserting it as a new entry into the dynamic table. *)
+                add encoder (name, value);
+                (BinaryFormat.incremental_indexing, index)))
+      | None ->
+          if is_without_indexing token then (BinaryFormat.without_indexing, 0)
           else (
             (* From RFC7541§6.2.1
              *   A literal header field with incremental indexing representation
-             *   results in appending a header field to the decoded header list
-             *   and inserting it as a new entry into the dynamic table. *)
+             *   results in appending a header field to the decoded header list and
+             *   inserting it as a new entry into the dynamic table. *)
             add encoder (name, value);
-            BinaryFormat.incremental_indexing, index))
-      | None ->
-        if is_without_indexing token
-        then BinaryFormat.without_indexing, 0
-        else (
-          (* From RFC7541§6.2.1
-           *   A literal header field with incremental indexing representation
-           *   results in appending a header field to the decoded header list and
-           *   inserting it as a new entry into the dynamic table. *)
-          add encoder (name, value);
-          BinaryFormat.incremental_indexing, 0)
+            (BinaryFormat.incremental_indexing, 0))
 
-let encode_int t prefix n i =
+let encode_int ?len_ref t prefix n i =
+  let operation byte =
+    match len_ref with
+    | Some len_ref -> incr len_ref
+    | None -> Faraday.write_uint8 t byte
+  in
   let max_prefix = (1 lsl n) - 1 in
-  if i < max_prefix
-  then
+  if i < max_prefix then
     (* From RFC7541§5.1:
      *   If the integer value is small enough, i.e., strictly less than 2^N-1,
      *   it is encoded within the N-bit prefix. *)
-    Faraday.write_uint8 t (prefix lor i)
+    operation (prefix lor i)
   else
     (* From RFC7541§5.1:
      *   Otherwise, all the bits of the prefix are set to 1, and the value,
@@ -276,13 +276,12 @@ let encode_int t prefix n i =
      *   value is set to 1 except for the last octet in the list. The remaining
      *   bits of the octets are used to encode the decreased value. *)
     let i = i - max_prefix in
-    Faraday.write_uint8 t (prefix lor max_prefix);
+    operation (prefix lor max_prefix);
     let rec loop i =
-      if i >= 128
-      then (
-        Faraday.write_uint8 t (i land 127 lor 128);
+      if i >= 128 then (
+        operation (i land 127 lor 128);
         loop (i lsr 7))
-      else Faraday.write_uint8 t i
+      else operation i
     in
     loop i
 
@@ -290,8 +289,7 @@ let encode_header =
   let encode_string t s =
     let string_length = String.length s in
     let huffman_length = Huffman.encoded_length s in
-    if huffman_length > string_length
-    then (
+    if huffman_length > string_length then (
       (* From RFC7541§5.2:
        *   The number of octets used to encode the string literal, encoded as an
        *   integer with a 7-bit prefix (see Section 5.1). *)
@@ -318,9 +316,8 @@ let encode_header =
     match BinaryFormat.is_indexed prefix with
     | true -> ()
     | false ->
-      if index == 0
-      then
-        (* From RFC7541§6.2.2: Literal Header Field without Indexing * If the
+        if index == 0 then
+          (* From RFC7541§6.2.2: Literal Header Field without Indexing * If the
            header field name matches the header field name of an entry * stored
            in the static table or the dynamic table, the header field * name can
            be represented using the index of that entry. In this case, * the
@@ -329,12 +326,51 @@ let encode_header =
            header field name is represented as a string literal * (see Section
            5.2). A value 0 is used in place of the 4-bit index, * followed by
            the header field name. *)
-        encode_string t name;
-      (* From RFC7541§6.2.2: Literal Header Field without Indexing
-       *   Either form of header field name representation is followed by the
-       *   header field value represented as a string literal (see
-       *   Section 5.2). *)
-      encode_string t value
+          encode_string t name;
+        (* From RFC7541§6.2.2: Literal Header Field without Indexing
+         *   Either form of header field name representation is followed by the
+         *   header field value represented as a string literal (see
+         *   Section 5.2). *)
+        encode_string t value
+
+let calculate_length =
+  let encode_string ~len_ref t s =
+    let string_length = String.length s in
+    let huffman_length = Huffman.encoded_length s in
+    if huffman_length > string_length then (
+      (* From RFC7541§5.2:
+       *   The number of octets used to encode the string literal, encoded as an
+       *   integer with a 7-bit prefix (see Section 5.1). *)
+      encode_int ~len_ref t 0 7 string_length;
+      (* From RFC7541§5.2:
+       *   The encoded data of the string literal. If H is '0', then the encoded
+       *   data is the raw octets of the string literal. If H is '1', then the
+       *   encoded data is the Huffman encoding of the string literal. *)
+      len_ref := !len_ref + string_length)
+    else (
+      (* From RFC7541§5.2:
+       *   The number of octets used to encode the string literal, encoded as an
+       *   integer with a 7-bit prefix (see Section 5.1). *)
+      encode_int ~len_ref t 128 7 huffman_length;
+      (* From RFC7541§5.2:
+       *   The encoded data of the string literal. If H is '0', then the encoded
+       *   data is the raw octets of the string literal. If H is '1', then the
+       *   encoded data is the Huffman encoding of the string literal. *)
+      Huffman.encode ~len_ref t s)
+  in
+  fun encoder ({ name; value; _ } as header) ->
+    let t = Faraday.create 0 in
+    let len_ref = ref 0 in
+    let (prefix, prefix_length), index =
+      encode ~no_state_change:true encoder header
+    in
+    encode_int ~len_ref t prefix prefix_length index;
+    match BinaryFormat.is_indexed prefix with
+    | true -> !len_ref
+    | false ->
+        if index == 0 then encode_string ~len_ref t name;
+        encode_string ~len_ref t value;
+        !len_ref
 
 let set_capacity { table; _ } new_capacity =
   Dynamic_table.set_capacity table new_capacity
