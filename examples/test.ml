@@ -9,57 +9,45 @@ let () =
   in
   let _ = print_bs_hex in
 
-  (* let faraday = Faraday.create 1000 in *)
-  (* let hpack_encoder = Hpack.Encoder.create 1000 in *)
-  (* let headers : Hpack.header list = *)
-  (*   [ *)
-  (*     { Hpack.name = ":authority"; value = "localhost:8080"; sensitive = false }; *)
-  (*     { name = ":method"; value = "POST"; sensitive = false }; *)
-  (*     { name = ":path"; value = "/stream"; sensitive = false }; *)
-  (*     { name = ":scheme"; value = "http"; sensitive = false }; *)
-  (*     { *)
-  (*       name = "content-type"; *)
-  (*       value = "application/octet-stream"; *)
-  (*       sensitive = false; *)
-  (*     }; *)
-  (*     { name = "accept-encoding"; value = "gzip"; sensitive = false }; *)
-  (*     { name = "user-agent"; value = "Go-http-client/2.0"; sensitive = false }; *)
-  (*   ] *)
-  (* in *)
-  (* let length = *)
-  (*   List.fold_left *)
-  (*     (fun acc header -> *)
-  (*       acc + Hpack.Encoder.calculate_length hpack_encoder header) *)
-  (*     0 headers *)
-  (* in *)
-  (* List.iter *)
-  (*   (fun header -> Hpack.Encoder.encode_header hpack_encoder faraday header) *)
-  (*   headers; *)
-  (* let encoded = Faraday.serialize_to_bigstring faraday in *)
-  (* print_bs_hex encoded; *)
-  (* Printf.printf "length: %i | by len_ref: %i\n%!" *)
-  (*   (Bigstringaf.length encoded) *)
-  (*   length; *)
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let addr = `Tcp (Eio.Net.Ipaddr.V4.any, 8080) in
   let server_socket =
     Eio.Net.listen env#net ~sw ~reuse_addr:true ~backlog:10 addr
   in
+  let goaway_condition = Eio.Condition.create () in
+
+  let error_handler (_error : Error.t) =
+    Printf.printf "Got error in the erro handler\n%!";
+    ()
+  in
+
+  let _goaway_writer () = Eio.Condition.await_no_mutex goaway_condition in
+
+  Eio.Fiber.fork_daemon ~sw (fun () ->
+      Eio.Time.sleep env#clock 5.;
+      Eio.Condition.broadcast goaway_condition;
+      `Stop_daemon);
 
   let request_handler request =
     let path, meth = (Request.path request, Request.meth request) in
     match (meth, path) with
-    | POST, "/stream" ->
-        let mailbox = Eio.Stream.create 0 in
+    | POST, "/" | GET, "/" | POST, "/stream" ->
+        (* let mailbox = Eio.Stream.create 0 in *)
         let responded = ref false in
+        let data_writter = ref false in
+        let data = Cstruct.of_string "d" in
 
-        let body_writer () =
-          let recvd = Eio.Stream.take mailbox in
-
-          Cstruct.LE.set_uint64 recvd 8
-            (Eio.Time.now env#clock |> Int64.bits_of_float);
-          `Data recvd
+        let body_writer (window_size : int32) () =
+          let window_size = Int32.to_int window_size in
+          if !data_writter then `EOF
+          else if Cstruct.length data > window_size then `Yield
+          else (
+            data_writter := true;
+            `Data data)
+          (* let recvd = Eio.Stream.take mailbox in *)
+          (* Cstruct.LE.set_uint64 recvd 8 *)
+          (*   (Eio.Time.now env#clock |> Int64.bits_of_float); *)
         in
 
         let response =
@@ -71,9 +59,15 @@ let () =
             if !responded then Eio.Fiber.await_cancel ();
             responded := true;
             response)
-          ~on_data:(fun data -> Eio.Stream.add mailbox data)
-    | _ -> failwith "chuj"
+          ~on_data:(fun data ->
+            print_bs_hex data;
+            () (* Eio.Stream.add mailbox data *))
+    | _ -> failwith "not implemented endpoint"
   in
-  let connection_handler = Server.connection_handler request_handler in
+  let connection_handler =
+    Server.connection_handler ~error_handler Settings.default request_handler
+  in
 
-  Eio.Net.run_server ~on_error:ignore server_socket connection_handler
+  Eio.Net.run_server
+    ~on_error:(fun _ -> Printexc.print_backtrace stdout)
+    server_socket connection_handler

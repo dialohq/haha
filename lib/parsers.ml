@@ -33,7 +33,11 @@ let stream_error error_code stream_id =
 let parse_uint24 o1 o2 o3 = (o1 lsl 16) lor (o2 lsl 8) lor o3
 
 let take_bigstring_unsafe n =
-  Unsafe.take n (fun bs ~off ~len -> Bigstringaf.sub bs ~off ~len)
+  Unsafe.take n (fun bs ~off ~len ->
+      Printf.printf "Whole buffer len: %i\n%!" @@ Bigstringaf.length bs;
+      Printf.printf "Len: %i | Off: %i\n%!" len off;
+
+      Bigstringaf.sub bs ~off ~len)
 
 let frame_length =
   (* From RFC7540§4.1:
@@ -79,7 +83,7 @@ let parse_frame_header =
   <* commit
 
 let parse_padded_payload { Frame.payload_length; flags; _ } parser =
-  if Flags.test_padded flags then
+  if Flags.test_padded flags then (
     any_uint8 >>= fun pad_length ->
     (* From RFC7540§6.1:
      *   Pad Length: An 8-bit field containing the length of the frame
@@ -102,7 +106,9 @@ let parse_padded_payload { Frame.payload_length; flags; _ } parser =
       (* Subtract the octet that contains the length of padding, and the
        * padding octets. *)
       let relevant_length = payload_length - 1 - pad_length in
-      parser relevant_length <* advance pad_length
+      Printf.printf "Relevant length: %i\n%!" relevant_length;
+
+      parser relevant_length <* advance pad_length)
   else parser payload_length
 
 let parse_data_frame ({ Frame.payload_length; _ } as frame_header) =
@@ -130,27 +136,13 @@ let parse_priority =
       })
     BE.any_int32 any_uint8
 
-let parse_headers_frame frame_header hpack_decoder =
+let parse_headers_frame frame_header =
   let ({ Frame.payload_length; _ } as headers) = frame_header in
   match Frame.validate_frame_headers headers with
   | Error _ as err -> advance payload_length >>| fun () -> err
   | Ok _ ->
       let parse_headers length =
-        lift
-          (fun headers_block -> Ok (Frame.Headers headers_block))
-          ( take_bigstring_unsafe length >>| fun bs ->
-            let hpack_parser = Hpack.Decoder.decode_headers hpack_decoder in
-            let error' = Error "Decompression error" in
-            match AU.parse hpack_parser with
-            | Fail _ -> error'
-            | Done _ -> error'
-            | Partial { continue; _ } -> (
-                match continue bs ~off:0 ~len:length Complete with
-                | Partial _ -> error'
-                | Fail _ -> error'
-                | Done (_, result') ->
-                    Result.map_error (fun _ -> "Decompression error") result'
-                    |> Result.map Headers.of_hpack_list) )
+        lift (fun bs -> Ok (Frame.Headers bs)) (take_bigstring_unsafe length)
       in
       parse_padded_payload frame_header parse_headers
 
@@ -298,11 +290,10 @@ let parse_unknown_frame typ { Frame.payload_length; _ } =
     (fun bigstring -> Ok (Frame.Unknown (typ, bigstring)))
     (take_bigstring_unsafe payload_length)
 
-let parse_frame_payload ({ Frame.frame_type; _ } as frame_header) hpack_decoder
-    =
+let parse_frame_payload ({ Frame.frame_type; _ } as frame_header) =
   (match frame_type with
   | Frame.FrameType.Data -> parse_data_frame frame_header
-  | Headers -> parse_headers_frame frame_header hpack_decoder
+  | Headers -> parse_headers_frame frame_header
   | Priority -> parse_priority_frame frame_header
   | RSTStream -> parse_rst_stream_frame frame_header
   | Settings -> parse_settings_frame frame_header
@@ -314,13 +305,13 @@ let parse_frame_payload ({ Frame.frame_type; _ } as frame_header) hpack_decoder
   | Unknown typ -> parse_unknown_frame typ frame_header)
   <?> "frame_payload"
 
-let parse_frame hpack_decoder =
+let parse_frame =
   parse_frame_header >>= fun frame_header ->
   lift
     (function
       | Ok frame_payload -> Ok { Frame.frame_header; frame_payload }
       | Error e -> Error e)
-    (parse_frame_payload frame_header hpack_decoder)
+    (parse_frame_payload frame_header)
 
 let connection_preface =
   string Frame.connection_preface <?> "connection preface"

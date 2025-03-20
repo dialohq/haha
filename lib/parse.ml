@@ -13,6 +13,7 @@ type parse_state =
       option
 
 let magic_parser = connection_preface
+let frame_parser = parse_frame
 
 let frame_parse state =
   match state with
@@ -41,10 +42,8 @@ let magic_parse bs ~off ~len =
       | Fail _ -> `Partial
       | Done (consumed, _) -> `Complete consumed)
 
-let read (cs : Cstruct.t) (parse_state : parse_state)
-    (hpack_decoder : Hpack.Decoder.t) =
+let read (cs : Cstruct.t) (parse_state : parse_state) =
   let { Cstruct.buffer = bs; off; len = packet_len } = cs in
-  let frame_parser = parse_frame hpack_decoder in
   let rec loop_frames bs ~off ~len (results : Message.t list) total_consumed
       parse_state =
     match parse_state with

@@ -29,6 +29,8 @@ end
 
 type t = { out_flow : WindowSize.t; sent : WindowSize.t }
 
+let initial = { out_flow = 0l; sent = 0l }
+
 let is_overflow t ~initial_window_size =
   Int32.(compare t.sent (add t.out_flow initial_window_size)) > 0
 

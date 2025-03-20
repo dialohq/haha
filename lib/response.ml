@@ -1,5 +1,5 @@
-type body_fragment = [ `Data of Cstruct.t | `EOF ]
-type body_writer = unit -> body_fragment
+type body_fragment = [ `Data of Cstruct.t | `EOF | `Yield ]
+type body_writer = int32 -> unit -> body_fragment
 type response_type = Unary | Streaming of body_writer
 
 type t = {

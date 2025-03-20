@@ -25,12 +25,21 @@
         pname = "haha";
         version = "0.0.1";
 
+        src = ./.;
+
         buildInputs = with pkgs.ocamlPackages; [
           eio_main
+          alcotest
           angstrom
           faraday
+          hex
+          yojson
           base64
         ];
+
+        buildPhase = ''
+          dune build .
+        '';
       };
       devShells = {
         default = pkgs.mkShell {
@@ -40,9 +49,6 @@
             ocamlformat
             ocaml-lsp
             h2spec
-            alcotest
-            hex
-            yojson
 
             alejandra
           ];
