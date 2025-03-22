@@ -63,4 +63,5 @@ module Pseudo = struct
     else Invalid
 end
 
+let filter_pseudo = List.filter (fun header -> String.get header.name 0 <> ':')
 (* TODO: should do more validation on normal headers here *)

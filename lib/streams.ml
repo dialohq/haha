@@ -2,14 +2,10 @@ module StreamMap = Map.Make (Int32)
 
 module Stream = struct
   type stream_reader = Cstruct.t -> unit
-  type response_writer = unit -> Response.t
 
   type stream_writers =
-    | Responded of {
-        response_writer : response_writer;
-        body_writer : Response.body_writer;
-      }
-    | AwaitingResponse of response_writer
+    | Responded of Response.body_writer
+    | Responding of Response.response_writer
 
   type half_closed = Remote of stream_writers | Local of stream_reader
   type reserved = Remote | Local
@@ -50,29 +46,24 @@ let stream_transition t id state =
     { t with last_client_stream = Int32.max id t.last_client_stream; map }
   else { t with last_server_stream = Int32.max id t.last_server_stream; map }
 
-let insert_body_writer t id body_writer =
+let change_writer t id body_writer =
   let map =
     StreamMap.update id
       (function
         | None -> None
         | Some old -> (
             match old.Stream.state with
-            | Open (stream_handler, AwaitingResponse response_writer) ->
+            | Open (stream_handler, Responding _) ->
                 Some
                   {
                     old with
-                    state =
-                      Open
-                        ( stream_handler,
-                          Responded { response_writer; body_writer } );
+                    state = Open (stream_handler, Responded body_writer);
                   }
-            | Half_closed (Remote (AwaitingResponse response_writer)) ->
+            | Half_closed (Remote (Responding _)) ->
                 Some
                   {
                     old with
-                    state =
-                      Half_closed
-                        (Remote (Responded { response_writer; body_writer }));
+                    state = Half_closed (Remote (Responded body_writer));
                   }
             | _ -> Some old))
       t.map
@@ -135,13 +126,13 @@ let combine_after_response t1 t2 =
         in
 
         match (stream_state1, stream_state2) with
-        | Open (_, AwaitingResponse _), Open (_, Responded _)
-        | ( Half_closed (Remote (AwaitingResponse _)),
+        | Open (_, Responding _), Open (_, Responded _)
+        | ( Half_closed (Remote (Responding _)),
             Half_closed (Remote (Responded _)) ) ->
             Some stream2
-        | Open (_, Responded _), Open (_, AwaitingResponse _)
+        | Open (_, Responded _), Open (_, Responding _)
         | ( Half_closed (Remote (Responded _)),
-            Half_closed (Remote (AwaitingResponse _)) ) ->
+            Half_closed (Remote (Responding _)) ) ->
             Some stream1
         | _ -> Some stream1)
       t1.map t2.map
@@ -167,13 +158,12 @@ let get_user_writes t =
   StreamMap.fold
     (fun id (v : Stream.t) (acc : 'a list) ->
       match v.state with
-      | Open (_, AwaitingResponse response_writer)
-      | Half_closed (Remote (AwaitingResponse response_writer)) ->
-          `ResponseWriter (response_writer, id) :: acc
-      | Open (_, Responded writers) | Half_closed (Remote (Responded writers))
-        ->
-          `BodyWriter (writers.body_writer, id)
-          :: `ResponseWriter (writers.response_writer, id)
-          :: acc
+      | Open (reader, Responding response_writer) ->
+          `ResponseWriter (response_writer, Some reader, id) :: acc
+      | Half_closed (Remote (Responding response_writer)) ->
+          `ResponseWriter (response_writer, None, id) :: acc
+      | Open (_, Responded body_writer)
+      | Half_closed (Remote (Responded body_writer)) ->
+          `BodyWriter (body_writer, id) :: acc
       | _ -> acc)
     t.map []

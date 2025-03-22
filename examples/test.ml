@@ -31,43 +31,62 @@ let () =
 
   let request_handler request =
     let path, meth = (Request.path request, Request.meth request) in
+    let headers = Request.headers request in
+    print_endline "Headers:";
+    List.iter
+      (fun (header : Headers.t) ->
+        Printf.printf "%s: %s\n%!" header.name header.value)
+      headers;
+    print_endline "Pseudo-headers:";
+    Printf.printf ":method: %s\n%!" @@ Method.to_string meth;
+    Printf.printf ":path: %s\n%!" @@ path;
+    Printf.printf ":scheme: %s\n%!" @@ Request.scheme request;
+    Printf.printf ":authority: %s\n%!"
+    @@ Option.value ~default:"None" (Request.authority request);
     match (meth, path) with
     | POST, "/" | GET, "/" | POST, "/stream" ->
-        (* let mailbox = Eio.Stream.create 0 in *)
-        let responded = ref false in
-        let data_writter = ref false in
-        let data = Cstruct.of_string "d" in
-
-        let body_writer (window_size : int32) () =
-          let window_size = Int32.to_int window_size in
-          if !data_writter then `EOF
-          else if Cstruct.length data > window_size then `Yield
-          else (
-            data_writter := true;
-            `Data data)
-          (* let recvd = Eio.Stream.take mailbox in *)
-          (* Cstruct.LE.set_uint64 recvd 8 *)
-          (*   (Eio.Time.now env#clock |> Int64.bits_of_float); *)
+        let cs = Cstruct.create 16 in
+        let interim_responses =
+          Dynarray.make 2 (Response.create_interim `Continue [])
         in
-
-        let response =
-          Response.create_final_with_streaming ~body_writer `OK []
+        let data_p, data_r = Eio.Promise.create () in
+        let body_writer ~(window_size : int32) =
+          Printf.printf "body_writer called\n%!";
+          let _ = window_size in
+          if not (Eio.Promise.is_resolved data_p) then (
+            let recv_data = Eio.Promise.await data_p in
+            Cstruct.blit recv_data 0 cs 0 16;
+            Cstruct.LE.set_uint64 recv_data 8
+              (Eio.Time.now env#clock |> Int64.bits_of_float);
+            `Data recv_data)
+          else (
+            Printf.printf "Writin `End None in API\n%!";
+            `End (None, []))
         in
 
         Request.handle
           ~response_writer:(fun () ->
-            if !responded then Eio.Fiber.await_cancel ();
-            responded := true;
-            response)
+            Printf.printf "response_writer called\n%!";
+            match Dynarray.pop_last_opt interim_responses with
+            | Some response -> `Interim response
+            | None ->
+                let response =
+                  Response.create_with_streaming ~body_writer `OK []
+                in
+                `Final response)
           ~on_data:(fun data ->
             print_bs_hex data;
-            () (* Eio.Stream.add mailbox data *))
-    | _ -> failwith "not implemented endpoint"
+            Eio.Promise.try_resolve data_r data |> ignore)
+    | _ ->
+        Request.handle
+          ~response_writer:(fun () -> `Final (Response.create `Not_found []))
+          ~on_data:ignore
   in
   let connection_handler =
     Server.connection_handler ~error_handler Settings.default request_handler
   in
 
   Eio.Net.run_server
-    ~on_error:(fun _ -> Printexc.print_backtrace stdout)
+    ~on_error:(fun exn ->
+      Printf.printf "Connection exn: %s\n%!" @@ Printexc.to_string exn)
     server_socket connection_handler

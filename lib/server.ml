@@ -3,7 +3,7 @@ open State
 type state = State.t
 
 type request_handler =
-  Request.t -> Streams.Stream.(stream_reader * response_writer)
+  Request.t -> Streams.Stream.(stream_reader * Response.response_writer)
 
 (* TODO: config argument could have some more user-friendly type so there is no need to look into RFC *)
 let connection_handler ~(error_handler : Error.t -> unit)
@@ -15,29 +15,44 @@ let connection_handler ~(error_handler : Error.t -> unit)
   | `Tcp (ip, port) ->
       Format.printf "Starting connection for %a:%i@." Eio.Net.Ipaddr.pp ip port);
 
-  let message_handler (message : Message.t) (state : state) : state option =
-    let handle_connection_error error_code msg =
-      Printf.printf "Connetion error: %s\n%!" msg;
-      let last_stream =
-        match state.phase with
-        | Preface _ -> Int32.zero
-        | Frames frames -> frames.streams.last_client_stream
-      in
-      let debug_data =
-        Bigstringaf.of_string ~off:0 ~len:(String.length msg) msg
-      in
-      write_goaway state.faraday last_stream error_code debug_data;
-      None
+  let handle_connection_error state error_code msg =
+    Printf.printf "Connetion error: %s\n%!" msg;
+    let last_stream =
+      match state.phase with
+      | Preface _ -> Int32.zero
+      | Frames frames -> frames.streams.last_client_stream
     in
+    let debug_data =
+      Bigstringaf.of_string ~off:0 ~len:(String.length msg) msg
+    in
+    write_goaway state.faraday last_stream error_code debug_data;
+    None
+  in
+
+  let handle_stream_error state stream_id code =
+    write_rst_stream state.faraday stream_id code;
     match state.phase with
-    | Preface preface_state -> (
-        match (preface_state.magic_received, message) with
-        | false, Magic_string ->
-            Some
-              {
-                state with
-                phase = Preface { preface_state with magic_received = true };
-              }
+    | Frames frames_state ->
+        Some
+          {
+            state with
+            phase =
+              Frames
+                {
+                  frames_state with
+                  streams =
+                    Streams.stream_transition frames_state.streams stream_id
+                      Closed;
+                };
+          }
+    | _ -> None
+  in
+
+  let message_handler (message : Message.t) (state : state) : state option =
+    match state.phase with
+    | Preface magic_received -> (
+        match (magic_received, message) with
+        | false, Magic_string -> Some { state with phase = Preface true }
         | true, Frame { Frame.frame_payload = Settings settings_list; _ } ->
             write_settings state.faraday Settings.default;
             write_settings_ack state.faraday;
@@ -51,29 +66,16 @@ let connection_handler ~(error_handler : Error.t -> unit)
             in
             Some { state with phase = Frames frames_state }
         | _ ->
-            handle_connection_error Error_code.ProtocolError
+            handle_connection_error state Error_code.ProtocolError
               "Incorrect client connection preface")
     | Frames frames_state -> (
         let next_step next_state =
           Some { state with phase = Frames next_state }
         in
 
-        let connection_error = handle_connection_error in
-        let stream_error stream_id code =
-          write_rst_stream state.faraday stream_id code;
-          Some
-            {
-              state with
-              phase =
-                Frames
-                  {
-                    frames_state with
-                    streams =
-                      Streams.stream_transition frames_state.streams stream_id
-                        Closed;
-                  };
-            }
-        in
+        let connection_error = handle_connection_error state in
+        let stream_error = handle_stream_error state in
+
         let no_error_close () =
           write_goaway state.faraday frames_state.streams.last_server_stream
             Error_code.NoError Bigstringaf.empty;
@@ -139,7 +141,9 @@ let connection_handler ~(error_handler : Error.t -> unit)
                     {
                       Request.meth = Method.of_string pseudo.meth;
                       path = pseudo.path;
-                      headers = [];
+                      authority = pseudo.authority;
+                      scheme = pseudo.scheme;
+                      headers = Headers.filter_pseudo header_list;
                       stream_id;
                     }
                   in
@@ -154,9 +158,8 @@ let connection_handler ~(error_handler : Error.t -> unit)
                       streams =
                         Streams.stream_transition frames_state.streams stream_id
                           (if end_stream then
-                             Half_closed
-                               (Remote (AwaitingResponse response_writer))
-                           else Open (reader, AwaitingResponse response_writer));
+                             Half_closed (Remote (Responding response_writer))
+                           else Open (reader, Responding response_writer));
                     }
               | Open _ | Half_closed (Local _) ->
                   stream_error stream_id Error_code.ProtocolError
@@ -169,12 +172,14 @@ let connection_handler ~(error_handler : Error.t -> unit)
         in
 
         let process_headers_frame frame_header bs =
-          let { Frame.flags; payload_length; _ } = frame_header in
+          let { Frame.flags; stream_id; _ } = frame_header in
           if frames_state.shutdown then
             connection_error Error_code.ProtocolError
               "client tried to open a stream after sending GOAWAY"
-          else if Flags.test_priority flags then
-            connection_error Error_code.InternalError "Priority not implemented"
+          else if stream_id < frames_state.streams.last_client_stream then
+            connection_error Error_code.ProtocolError
+              "received HEADERS with stream ID smaller than the last client \
+               open stream"
           else if not (Flags.test_end_header flags) then (
             let headers_buffer = Bigstringaf.create 10000 in
             let len = Bigstringaf.length bs in
@@ -185,15 +190,13 @@ let connection_handler ~(error_handler : Error.t -> unit)
                 frames_state with
                 headers_state = InProgress (headers_buffer, len);
               })
-          else (
-            Printf.printf "Bs len: %i | payload_length: %i\n%!"
-              (Bigstringaf.length bs) payload_length;
+          else
             match
               decompress_headers_block bs ~len:(Bigstringaf.length bs)
                 frames_state.hpack_decoder
             with
             | Error msg -> connection_error Error_code.CompressionError msg
-            | Ok headers -> process_complete_headers frame_header headers)
+            | Ok headers -> process_complete_headers frame_header headers
         in
 
         let process_continuation_frame frame_header bs =
@@ -235,6 +238,7 @@ let connection_handler ~(error_handler : Error.t -> unit)
         in
 
         let process_data_frame flags stream_id bs =
+          Printf.printf "Received data frame\n%!";
           let end_stream = Flags.test_end_stream flags in
           match Streams.state_of_id frames_state.streams stream_id with
           | Idle | Half_closed (Remote _) ->
@@ -387,61 +391,81 @@ let connection_handler ~(error_handler : Error.t -> unit)
                   "unexpected WINDOW_UPDATE"
         in
 
-        match message with
-        | Magic_string -> next_step frames_state
-        | Frame
-            {
-              Frame.frame_payload = Data payload;
-              frame_header = { flags; stream_id; _ };
-              _;
-            } ->
-            process_data_frame flags stream_id payload
-        | Frame
-            { frame_payload = Settings payload; frame_header = { flags; _ } } ->
-            process_settings_frame flags payload
-        | Frame { frame_payload = Ping bs; _ } ->
-            write_ping state.faraday bs ~ack:true;
-            next_step frames_state
-        | Frame { frame_payload = Headers payload; frame_header; _ } ->
-            process_headers_frame frame_header payload
-        | Frame { frame_payload = Continuation payload; frame_header; _ } ->
-            process_continuation_frame frame_header payload
-        | Frame
-            {
-              frame_payload = RSTStream payload;
-              frame_header = { stream_id; _ };
-              _;
-            } ->
-            process_rst_stream_frame stream_id payload
-        | Frame { frame_payload = PushPromise _; _ } ->
-            connection_error Error_code.ProtocolError "client cannot push"
-        | Frame { frame_payload = GoAway payload; _ } ->
-            process_goaway_frame payload
-        | Frame
-            {
-              frame_payload = WindowUpdate payload;
-              frame_header = { stream_id; _ };
-            } ->
-            process_window_update_frame stream_id payload
-        | Frame { frame_payload = Unknown _; _ } -> next_step frames_state
-        | Frame { frame_payload = Priority _; _ } -> next_step frames_state)
+        match (frames_state.headers_state, message) with
+        | InProgress _, Frame { Frame.frame_payload = Continuation _; _ }
+        | Idle, _ -> (
+            match message with
+            | Magic_string -> next_step frames_state
+            | Frame
+                {
+                  Frame.frame_payload = Data payload;
+                  frame_header = { flags; stream_id; _ };
+                  _;
+                } ->
+                process_data_frame flags stream_id payload
+            | Frame
+                {
+                  frame_payload = Settings payload;
+                  frame_header = { flags; _ };
+                } ->
+                process_settings_frame flags payload
+            | Frame { frame_payload = Ping bs; _ } ->
+                write_ping state.faraday bs ~ack:true;
+                next_step frames_state
+            | Frame { frame_payload = Headers payload; frame_header; _ } ->
+                process_headers_frame frame_header payload
+            | Frame { frame_payload = Continuation payload; frame_header; _ } ->
+                process_continuation_frame frame_header payload
+            | Frame
+                {
+                  frame_payload = RSTStream payload;
+                  frame_header = { stream_id; _ };
+                  _;
+                } ->
+                process_rst_stream_frame stream_id payload
+            | Frame { frame_payload = PushPromise _; _ } ->
+                connection_error Error_code.ProtocolError "client cannot push"
+            | Frame { frame_payload = GoAway payload; _ } ->
+                process_goaway_frame payload
+            | Frame
+                {
+                  frame_payload = WindowUpdate payload;
+                  frame_header = { stream_id; _ };
+                } ->
+                process_window_update_frame stream_id payload
+            | Frame { frame_payload = Unknown _; _ } -> next_step frames_state
+            | Frame { frame_payload = Priority _; _ } -> next_step frames_state)
+        | InProgress _, _ ->
+            connection_error Error_code.ProtocolError
+              "unexpected frame other than CONTINUATION in the middle of \
+               headers block")
   in
 
   let read_io (state : state) (cs : Cstruct.t) : int * state option =
-    let consumed, frames, new_parse_state = Parse.read cs state.parse_state in
+    match Parse.read cs state.parse_state with
+    | Ok (consumed, frames, new_parse_state) ->
+        let state_with_parse = { state with parse_state = new_parse_state } in
 
-    let state_with_parse = { state with parse_state = new_parse_state } in
+        let next_state =
+          List.fold_left
+            (fun state frame ->
+              match state with
+              | None -> None
+              | Some state -> message_handler frame state)
+            (Some state_with_parse) frames
+        in
 
-    let next_state =
-      List.fold_left
-        (fun state frame ->
-          match state with
-          | None -> None
-          | Some state -> message_handler frame state)
-        (Some state_with_parse) frames
-    in
+        (consumed, next_state)
+    | Error err ->
+        let next_state =
+          match err with
+          | Error.ConnectionError (code, msg) ->
+              handle_connection_error state code msg
+          | StreamError (stream_id, code) ->
+              handle_stream_error state stream_id code
+        in
 
-    (consumed, next_state)
+        (0, next_state)
   in
 
   let initial_state =
@@ -449,7 +473,6 @@ let connection_handler ~(error_handler : Error.t -> unit)
       phase = Preface initial_preface_state;
       parse_state = Magic;
       faraday = Faraday.create Settings.default.max_frame_size;
-      hpack_encoder = Hpack.Encoder.create 1000;
     }
   in
 

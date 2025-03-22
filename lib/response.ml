@@ -1,42 +1,57 @@
-type body_fragment = [ `Data of Cstruct.t | `EOF | `Yield ]
-type body_writer = int32 -> unit -> body_fragment
-type response_type = Unary | Streaming of body_writer
+type body_fragment =
+  [ `Data of Cstruct.t | `End of Cstruct.t option * Headers.t list | `Yield ]
 
-type t = {
-  status : Status.t option;
+type body_writer = window_size:int32 -> body_fragment
+
+type final_response = {
+  status : Status.t;
   headers : Headers.t list;
-  end_stream : bool;
-  response_type : response_type;
+  body_writer : body_writer option;
 }
 
-let create_final (status : Status.final) headers =
-  {
-    status = Some (status :> Status.t);
-    headers;
-    end_stream = true;
-    response_type = Unary;
-  }
+type interim_response = {
+  status : Status.informational;
+  headers : Headers.t list;
+}
 
-let create_final_with_streaming ~body_writer (status : Status.final) headers =
-  {
-    status = Some (status :> Status.t);
-    headers;
-    end_stream = false;
-    response_type = Streaming body_writer;
-  }
+type t = [ `Interim of interim_response | `Final of final_response ]
+type response_writer = unit -> t
 
-let create_interim (status : Status.informational) headers =
-  {
-    status = Some (status :> Status.t);
-    headers;
-    end_stream = false;
-    response_type = Unary;
-  }
+let create (status : Status.t) (headers : Headers.t list) : final_response =
+  { status; headers; body_writer = None }
 
-let create_trailers trailers =
-  {
-    status = None;
-    headers = trailers;
-    end_stream = true;
-    response_type = Unary;
-  }
+let create_with_streaming ~(body_writer : body_writer) (status : Status.t)
+    (headers : Headers.t list) : final_response =
+  { status; headers; body_writer = Some body_writer }
+
+let create_interim (status : Status.informational) (headers : Headers.t list) :
+    interim_response =
+  { status; headers }
+
+(*
+
+************
+
+1. Final response - non-100 status, end_stream
+
+************
+
+************
+
+1. Many interim responses - 1xx status
+
+2. Final response - non-1xx status, end_stream
+
+************
+
+************
+
+1. Many interim responses - 1xx status
+
+2. Response - non-1xx status
+
+3. Trailers - no status, end_stream
+
+************
+
+*)

@@ -92,8 +92,7 @@ let write_rst_stream_frame t stream_id e =
 (*   let writer t = bounded_schedule_iovecs t ~len iovecs in *)
 (*   write_frame_with_padding t info Headers len writer *)
 
-let write_response_headers t hpack_encoder frame_info response =
-  let { Response.status; headers; _ } = response in
+let write_response_headers t hpack_encoder frame_info status headers =
   let headers =
     match status with
     | Some status ->
