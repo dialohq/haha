@@ -1,7 +1,9 @@
+open Types
 open Eio
 
-let start ~max_frame_size ~(initial_state : State.t) ?await_user_goaway
-    ~(read_io : State.t -> Cstruct.t -> int * State.t option) socket =
+let start ?request_writer ~max_frame_size ~(initial_state : State.t)
+    ?await_user_goaway ~(read_io : State.t -> Cstruct.t -> int * State.t option)
+    socket =
   let receive_buffer = Cstruct.create max_frame_size in
 
   let read_loop state off =
@@ -30,11 +32,11 @@ let start ~max_frame_size ~(initial_state : State.t) ?await_user_goaway
 
           Serialize.write_headers_response state.State.faraday
             frames_state.hpack_encoder id response;
-          Serialize.write_window_update state.faraday id
-            Flow_control.WindowSize.initial_increment;
 
           match response with
           | `Final { body_writer = Some body_writer; _ } ->
+              Serialize.write_window_update state.faraday id
+                Flow_control.WindowSize.initial_increment;
               let new_frames_state =
                 {
                   frames_state with
@@ -45,6 +47,8 @@ let start ~max_frame_size ~(initial_state : State.t) ?await_user_goaway
 
               `User { state with phase = Frames new_frames_state }
           | `Final { body_writer = None; _ } ->
+              Serialize.write_window_update state.faraday id
+                Flow_control.WindowSize.initial_increment;
               (* TODO: enter half-closed (local) state with reader only *)
               let new_stream_state =
                 match reader_opt with
@@ -61,7 +65,33 @@ let start ~max_frame_size ~(initial_state : State.t) ?await_user_goaway
               in
               `User { state with phase = Frames new_frames_state }
           | `Interim _ -> `User state)
-      | `BodyWriter ((f : Response.body_writer), id) -> (
+      | `RequestWriter (f : unit -> Request.t) ->
+          let request = f () in
+          let id = Streams.get_next_id frames_state.streams `Client in
+
+          Serialize.writer_request_headers state.faraday
+            frames_state.hpack_encoder id request;
+          Serialize.write_window_update state.faraday 1l
+            Flow_control.WindowSize.initial_increment;
+
+          let response_handler = Option.get request.response_handler in
+          let stream_state =
+            match request.body_writer with
+            | Some body_writer ->
+                Streams.Stream.Open
+                  (Responses response_handler, Body body_writer)
+            | None -> Half_closed (Local (Responses response_handler))
+          in
+          let new_frames_state =
+            {
+              frames_state with
+              streams =
+                Streams.stream_transition frames_state.streams id stream_state;
+            }
+          in
+
+          `User { state with phase = Frames new_frames_state }
+      | `BodyWriter ((f : body_writer), id) -> (
           let stream_flow =
             match Streams.flow_of_id frames_state.streams id with
             | None -> failwith "dupa"
@@ -126,7 +156,6 @@ let start ~max_frame_size ~(initial_state : State.t) ?await_user_goaway
                   `User { state with phase = Frames new_frames_state })
           | `End (None, trailers) ->
               let send_trailers = List.length trailers > 0 in
-              Printf.printf "Writing `End None data in runloop\n%!";
               Serialize.write_data ~end_stream:(not send_trailers) state.faraday
                 Bigstringaf.empty ~off:0 ~len:0 id;
               if send_trailers then
@@ -174,8 +203,16 @@ let start ~max_frame_size ~(initial_state : State.t) ?await_user_goaway
       | Frames frames_state ->
           let user_writes = State.search_for_writes frames_state in
 
+          let user_operations =
+            match request_writer with
+            | None -> user_writes
+            | Some writer -> `RequestWriter writer :: user_writes
+          in
+
           let user_writes_handlers =
-            List.map (fun f () -> user_write_handler f frames_state) user_writes
+            List.map
+              (fun f () -> user_write_handler f frames_state)
+              user_operations
           in
 
           let fs =

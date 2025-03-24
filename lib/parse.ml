@@ -47,7 +47,7 @@ let magic_parse bs ~off ~len =
 
 let read (cs : Cstruct.t) (parse_state : parse_state) =
   let { Cstruct.buffer = bs; off; len = packet_len } = cs in
-  let rec loop_frames bs ~off ~len (results : Message.t list) total_consumed
+  let rec loop_frames bs ~off ~len (results : Types.token list) total_consumed
       parse_state =
     match parse_state with
     | Magic -> (

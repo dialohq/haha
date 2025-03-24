@@ -61,6 +61,19 @@ let write_trailers ?padding_length ?(end_header = true) f hpack_encoder
 
   write_response_headers f hpack_encoder frame_info None headers
 
+let writer_request_headers ?padding_length ?(end_header = true) f hpack_encoder
+    stream_id (request : Request.t) =
+  let { Request.meth; path; scheme; authority; headers; body_writer; _ } =
+    request
+  in
+
+  let end_stream = Option.is_none body_writer in
+  let flags = Flags.create ~end_stream ~end_header () in
+  let frame_info = create_frame_info ?padding_length ~flags stream_id in
+  write_request_headers ?authority f hpack_encoder frame_info meth path scheme
+    headers
+
+let write_connection_preface = write_connection_preface
 let write_rst_stream = write_rst_stream_frame
 let write_goaway = write_go_away_frame
 let write_window_update = Serializes.write_window_update_frame

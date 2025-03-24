@@ -44,24 +44,35 @@ let () =
     Printf.printf ":authority: %s\n%!"
     @@ Option.value ~default:"None" (Request.authority request);
     match (meth, path) with
-    | POST, "/" | GET, "/" | POST, "/stream" ->
+    | GET, "/" | POST, "/stream" ->
         let cs = Cstruct.create 16 in
         let interim_responses =
           Dynarray.make 2 (Response.create_interim `Continue [])
         in
-        let data_p, data_r = Eio.Promise.create () in
-        let body_writer ~(window_size : int32) =
-          Printf.printf "body_writer called\n%!";
-          let _ = window_size in
-          if not (Eio.Promise.is_resolved data_p) then (
-            let recv_data = Eio.Promise.await data_p in
-            Cstruct.blit recv_data 0 cs 0 16;
-            Cstruct.LE.set_uint64 recv_data 8
-              (Eio.Time.now env#clock |> Int64.bits_of_float);
-            `Data recv_data)
-          else (
-            Printf.printf "Writin `End None in API\n%!";
-            `End (None, []))
+        let data_stream = Eio.Stream.create 0 in
+        let iterations = ref 0 in
+        let max = 3 in
+        let take_data () =
+          if !iterations < max then
+            let data = Eio.Stream.take data_stream in
+            Some data
+          else None
+        in
+
+        let put_data data =
+          if !iterations < max then (
+            Eio.Stream.add data_stream data;
+            incr iterations)
+        in
+
+        let body_writer ~window_size:_ =
+          match take_data () with
+          | None -> `End (None, [])
+          | Some data ->
+              Cstruct.LE.set_uint64 cs 8
+                (Eio.Time.now env#clock |> Int64.bits_of_float);
+              Cstruct.blit data 0 cs 0 8;
+              `Data cs
         in
 
         Request.handle
@@ -76,14 +87,30 @@ let () =
                 `Final response)
           ~on_data:(fun data ->
             print_bs_hex data;
-            Eio.Promise.try_resolve data_r data |> ignore)
+            put_data data)
+    | POST, "/" ->
+        let body_writer ~window_size:_ = `End (None, []) in
+        Request.handle
+          ~response_writer:(fun () ->
+            `Final (Response.create_with_streaming ~body_writer `OK []))
+          ~on_data:ignore
     | _ ->
         Request.handle
           ~response_writer:(fun () -> `Final (Response.create `Not_found []))
           ~on_data:ignore
   in
-  let connection_handler =
+  let haha_connection_handler =
     Server.connection_handler ~error_handler Settings.default request_handler
+  in
+
+  let connection_handler socket addr =
+    (match addr with
+    | `Unix s -> Printf.printf "Starting connection for %s\n%!" s
+    | `Tcp (ip, port) ->
+        Format.printf "Starting connection for %a:%i@." Eio.Net.Ipaddr.pp ip
+          port);
+
+    haha_connection_handler socket addr
   in
 
   Eio.Net.run_server

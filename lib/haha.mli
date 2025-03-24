@@ -7,6 +7,7 @@ module Response = Response
 module Request = Request
 module Server = Server
 module Settings = Settings
+module Client = Client
 
 (* module Settings : sig *)
 (*   type t = { *)

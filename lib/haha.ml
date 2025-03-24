@@ -8,3 +8,4 @@ module Response = Response
 module Status = Status
 module Headers = Headers
 module Streams = Streams
+module Client = Client 

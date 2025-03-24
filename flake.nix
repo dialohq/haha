@@ -35,6 +35,7 @@
           hex
           yojson
           base64
+          uri
         ];
 
         buildPhase = ''

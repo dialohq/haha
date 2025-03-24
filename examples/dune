@@ -1,3 +1,9 @@
 (executable
- (name test)
+ (name server)
+ (modules Server)
  (libraries haha eio eio_main))
+
+(executable
+ (name client)
+ (modules Client)
+ (libraries haha eio eio_main uri))

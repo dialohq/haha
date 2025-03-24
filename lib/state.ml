@@ -16,8 +16,6 @@ type frames_state = {
 type phase = Preface of bool | Frames of frames_state
 type t = { parse_state : Parse.parse_state; phase : phase; faraday : Faraday.t }
 
-let initial_preface_state = false
-
 let initial_frame_state recv_setttings user_settings =
   let peer_settings = Settings.(update_with_list default recv_setttings) in
   {
@@ -30,6 +28,13 @@ let initial_frame_state recv_setttings user_settings =
     shutdown = false;
     headers_state = Idle;
     flow = Flow_control.initial;
+  }
+
+let initial =
+  {
+    phase = Preface false;
+    parse_state = Magic;
+    faraday = Faraday.create Settings.default.max_frame_size;
   }
 
 let search_for_writes frames_state =

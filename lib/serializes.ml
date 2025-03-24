@@ -25,6 +25,8 @@ let write_uint24 t n =
   write_octet t (n lsr 8);
   write_octet t n
 
+let write_connection_preface t = write_string t Frame.connection_preface
+
 let write_frame_header t frame_header =
   let { Frame.payload_length; flags; stream_id; frame_type } = frame_header in
   write_uint24 t payload_length;
@@ -77,9 +79,6 @@ let write_rst_stream_frame t stream_id e =
     {
       Frame.flags = Flags.default_flags;
       stream_id;
-      (* From RFC7540§6.4:
-       *   The RST_STREAM frame contains a single unsigned, 32-bit integer
-       *   identifying the error code (Section 7). *)
       payload_length = 4;
       frame_type = RSTStream;
     }
@@ -87,18 +86,7 @@ let write_rst_stream_frame t stream_id e =
   write_frame_header t header;
   BE.write_uint32 t (Error_code.serialize e)
 
-(* let write_headers_frame t info ~priority ?len = *)
-(*   let len = match len with Some len -> len | None -> IOVec.lengthv iovecs in *)
-(*   let writer t = bounded_schedule_iovecs t ~len iovecs in *)
-(*   write_frame_with_padding t info Headers len writer *)
-
-let write_response_headers t hpack_encoder frame_info status headers =
-  let headers =
-    match status with
-    | Some status ->
-        { Headers.name = ":status"; value = Status.to_string status } :: headers
-    | None -> headers
-  in
+let write_headers t hpack_encoder frame_info headers =
   let writer t =
     List.iter
       (fun header ->
@@ -124,6 +112,30 @@ let write_response_headers t hpack_encoder frame_info status headers =
       0 headers
   in
   write_frame_with_padding t frame_info Headers length writer
+
+let write_response_headers t hpack_encoder frame_info status headers =
+  let headers =
+    match status with
+    | Some status ->
+        { Headers.name = ":status"; value = Status.to_string status } :: headers
+    | None -> headers
+  in
+
+  write_headers t hpack_encoder frame_info headers
+
+let write_request_headers ?authority t hpack_encoder frame_info meth path scheme
+    headers =
+  let headers =
+    { Headers.name = ":method"; value = Method.to_string meth }
+    :: { name = ":path"; value = path }
+    :: { name = ":scheme"; value = scheme }
+    ::
+    (match authority with
+    | None -> headers
+    | Some authority -> { name = ":authority"; value = authority } :: headers)
+  in
+
+  write_headers t hpack_encoder frame_info headers
 
 let write_settings_frame t info settings =
   let header =
@@ -156,9 +168,6 @@ let write_go_away_frame t last_stream_id error_code debug_data =
     {
       Frame.flags = Flags.default_flags;
       stream_id = Stream_identifier.connection;
-      (* See RFC7540§6.8:
-       *   Last-Stream-ID (4 octets) + Error Code (4 octets) + Additional
-       *   Debug Data (opaque) *)
       payload_length = 8 + debug_data_len;
       frame_type = GoAway;
     }
