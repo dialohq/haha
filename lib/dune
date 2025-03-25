@@ -1,4 +1,4 @@
 (library
  (name haha)
  (public_name haha)
- (libraries eio_main angstrom faraday base64 hpack))
+ (libraries eio_main angstrom faraday base64 hpackv))

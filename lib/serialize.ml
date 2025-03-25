@@ -76,4 +76,4 @@ let writer_request_headers ?padding_length ?(end_header = true) f hpack_encoder
 let write_connection_preface = write_connection_preface
 let write_rst_stream = write_rst_stream_frame
 let write_goaway = write_go_away_frame
-let write_window_update = Serializes.write_window_update_frame
+let write_window_update = write_window_update_frame

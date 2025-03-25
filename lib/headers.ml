@@ -2,7 +2,7 @@ type t = { name : string; value : string }
 
 let of_hpack_list =
   List.map (fun hpack_header ->
-      { name = hpack_header.Hpack.name; value = hpack_header.value })
+      { name = hpack_header.Hpackv.name; value = hpack_header.value })
 
 let of_list = List.map (fun header -> { name = fst header; value = snd header })
 

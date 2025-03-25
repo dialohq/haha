@@ -5,7 +5,7 @@ type stream_state = Streams.((client_readers, client_writer) Stream.state)
 let run ~(error_handler : Error.t -> unit)
     ~(request_writer : Request.request_writer) (config : Settings.t) socket =
   let open Serialize in
-  let preinitial_state = State.initial in
+  let preinitial_state = State.initial () in
 
   write_connection_preface preinitial_state.faraday;
   write_settings preinitial_state.faraday config;
@@ -33,15 +33,12 @@ let run ~(error_handler : Error.t -> unit)
       Flow_control.WindowSize.initial_increment;
     let frames_state = State.initial_frame_state recvd_settings config in
 
-    Printf.printf "Connection fully established\n%!";
-
     Some { state with phase = Frames frames_state }
   in
 
   let process_data_frame (frames_state : frames_state) stream_error
       connection_error next_step no_error_close flags stream_id bs :
       state option =
-    Printf.printf "Received data frame\n%!";
     let end_stream = Flags.test_end_stream flags in
     match (Streams.state_of_id frames_state.streams stream_id, end_stream) with
     | Idle, _ | Half_closed (Remote _), _ ->
@@ -189,7 +186,7 @@ let run ~(error_handler : Error.t -> unit)
 
   let token_handler =
     Runtime.token_handler ~process_complete_headers ~process_data_frame
-      ~handle_preface ~error_handler
+      ~handle_preface ~error_handler ~peer:`Client
   in
 
   let request_writer_handler state frames_state =
@@ -198,7 +195,7 @@ let run ~(error_handler : Error.t -> unit)
     let id = Streams.get_next_id frames_state.State.streams `Client in
     writer_request_headers state.State.faraday frames_state.hpack_encoder id
       request;
-    write_window_update state.faraday 1l
+    write_window_update state.faraday id
       Flow_control.WindowSize.initial_increment;
     let response_handler = Option.get request.response_handler in
     let stream_state : stream_state =
@@ -225,5 +222,5 @@ let run ~(error_handler : Error.t -> unit)
   in
   let default_max_frame_size = Settings.default.max_frame_size in
   Runloop.start ~request_writer_handler ~token_handler
-    ~max_frame_size:default_max_frame_size ~get_body_writers ~initial_state
+    ~max_frame_size:default_max_frame_size ~get_body_writers ~initial_state 0
     socket

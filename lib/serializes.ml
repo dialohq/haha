@@ -90,9 +90,9 @@ let write_headers t hpack_encoder frame_info headers =
   let writer t =
     List.iter
       (fun header ->
-        Hpack.Encoder.encode_header hpack_encoder t
+        Hpackv.Encoder.encode_header hpack_encoder t
           {
-            Hpack.name = header.Headers.name;
+            Hpackv.name = header.Headers.name;
             value = header.value;
             sensitive = false;
           })
@@ -103,9 +103,9 @@ let write_headers t hpack_encoder frame_info headers =
     List.fold_left
       (fun acc header ->
         acc
-        + Hpack.Encoder.calculate_length hpack_encoder
+        + Hpackv.Encoder.calculate_length hpack_encoder
             {
-              Hpack.name = header.Headers.name;
+              Hpackv.name = header.Headers.name;
               value = header.value;
               sensitive = false;
             })

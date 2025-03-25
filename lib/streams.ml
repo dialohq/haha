@@ -41,7 +41,7 @@ type ('readers, 'writers) t = {
   last_server_stream : Stream_identifier.t;
 }
 
-let initial =
+let initial () =
   {
     map = StreamMap.empty;
     last_client_stream = Stream_identifier.connection;
@@ -170,8 +170,8 @@ let combine_after_response t1 t2 =
 
 let flow_of_id t stream_id =
   match StreamMap.find_opt stream_id t.map with
-  | None -> None
-  | Some stream -> Some stream.flow
+  | None -> Flow_control.initial
+  | Some stream -> stream.flow
 
 let state_of_id t stream_id =
   match StreamMap.find_opt stream_id t.map with

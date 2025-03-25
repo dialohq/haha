@@ -1,5 +1,5 @@
 (library
- (public_name hpack)
+ (public_name hpackv)
  (libraries angstrom faraday))
 
 (rule

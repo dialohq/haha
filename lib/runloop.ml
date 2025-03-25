@@ -19,10 +19,11 @@ let start :
     initial_state:('a, 'b) State.t ->
     token_handler:(Types.token -> ('a, 'b) State.t -> ('a, 'b) State.t option) ->
     _ ->
+    _ ->
     _ =
  fun ?request_writer_handler ?await_user_goaway ?get_response_writers
      ?combine_states ~max_frame_size ~get_body_writers ~initial_state
-     ~token_handler socket ->
+     ~token_handler _port socket ->
   let receive_buffer = Cstruct.create max_frame_size in
 
   let read_io state cs =

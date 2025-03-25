@@ -32,18 +32,14 @@ let handle_stream_error state stream_id code =
 
 let body_writer_handler state (frames_state : ('a, 'b) State.frames_state)
     (f : Types.body_writer) id =
-  let stream_flow =
-    match Streams.flow_of_id frames_state.streams id with
-    | None -> failwith "dupa"
-    | Some x -> x
-  in
+  let stream_flow = Streams.flow_of_id frames_state.streams id in
   match f ~window_size:stream_flow.out_flow with
   | `Data { Cstruct.buffer; off; len } -> (
       match
         Flow_control.incr_sent stream_flow (Int32.of_int len)
           ~initial_window_size:frames_state.peer_settings.initial_window_size
       with
-      | Error _ -> failwith "window overflow, report to user"
+      | Error _ -> failwith "window overflow 1, report to user"
       | Ok new_flow ->
           Serialize.write_data ~end_stream:false state.State.faraday buffer ~off
             ~len id;
@@ -61,7 +57,7 @@ let body_writer_handler state (frames_state : ('a, 'b) State.frames_state)
         Flow_control.incr_sent stream_flow (Int32.of_int len)
           ~initial_window_size:frames_state.peer_settings.initial_window_size
       with
-      | Error _ -> failwith "window overflow, report to user"
+      | Error _ -> failwith "window overflow 2, report to user"
       | Ok new_flow ->
           Serialize.write_data ~end_stream:(not send_trailers) state.faraday
             buffer ~off ~len id;
@@ -114,7 +110,7 @@ let body_writer_handler state (frames_state : ('a, 'b) State.frames_state)
   | `Yield -> Eio.Fiber.await_cancel ()
 
 let token_handler ~process_complete_headers ~process_data_frame ~handle_preface
-    ~error_handler (token : token) state =
+    ~error_handler ~peer (token : token) state =
   match state.State.phase with
   | Preface magic_received -> (
       match (magic_received, token) with
@@ -136,7 +132,6 @@ let token_handler ~process_complete_headers ~process_data_frame ~handle_preface
       let next_step next_state =
         Some { state with phase = Frames next_state }
       in
-      let frames_state = frames_state in
 
       let process_complete_headers =
         process_complete_headers frames_state stream_error connection_error
@@ -147,7 +142,7 @@ let token_handler ~process_complete_headers ~process_data_frame ~handle_preface
           no_error_close
       in
       let decompress_headers_block bs ~len hpack_decoder =
-        let hpack_parser = Hpack.Decoder.decode_headers hpack_decoder in
+        let hpack_parser = Hpackv.Decoder.decode_headers hpack_decoder in
         let error' = Error "Decompression error" in
         match Angstrom.Unbuffered.parse hpack_parser with
         | Fail _ -> error'
@@ -166,7 +161,13 @@ let token_handler ~process_complete_headers ~process_data_frame ~handle_preface
         if frames_state.shutdown then
           connection_error Error_code.ProtocolError
             "client tried to open a stream after sending GOAWAY"
-        else if stream_id < frames_state.streams.last_client_stream then
+        else if
+          stream_id
+          <
+          match peer with
+          | `Server -> frames_state.streams.last_client_stream
+          | `Client -> frames_state.streams.last_server_stream
+        then
           connection_error Error_code.ProtocolError
             "received HEADERS with stream ID smaller than the last client open \
              stream"
