@@ -1,10 +1,53 @@
-open Types
 open Eio
 
-let start ?request_writer ~max_frame_size ~(initial_state : State.t)
-    ?await_user_goaway ~(read_io : State.t -> Cstruct.t -> int * State.t option)
-    socket =
+let start :
+    'a 'b.
+    ?request_writer_handler:
+      (('a, 'b) State.t -> ('a, 'b) State.frames_state -> ('a, 'b) State.t) ->
+    ?await_user_goaway:(unit -> unit) ->
+    ?get_response_writers:
+      (('a, 'b) State.t ->
+      ('a, 'b) State.frames_state ->
+      (unit -> ('a, 'b) State.t) list) ->
+    ?combine_states:
+      (('a, 'b) State.frames_state ->
+      ('a, 'b) State.frames_state ->
+      ('a, 'b) State.frames_state) ->
+    max_frame_size:int ->
+    get_body_writers:
+      (('a, 'b) State.frames_state -> (Types.body_writer * int32) list) ->
+    initial_state:('a, 'b) State.t ->
+    token_handler:(Types.token -> ('a, 'b) State.t -> ('a, 'b) State.t option) ->
+    _ ->
+    _ =
+ fun ?request_writer_handler ?await_user_goaway ?get_response_writers
+     ?combine_states ~max_frame_size ~get_body_writers ~initial_state
+     ~token_handler socket ->
   let receive_buffer = Cstruct.create max_frame_size in
+
+  let read_io state cs =
+    match Parse.read cs state.State.parse_state with
+    | Ok (consumed, frames, new_parse_state) ->
+        let state_with_parse = { state with parse_state = new_parse_state } in
+        let next_state =
+          List.fold_left
+            (fun state frame ->
+              match state with
+              | None -> None
+              | Some state -> token_handler frame state)
+            (Some state_with_parse) frames
+        in
+        (consumed, next_state)
+    | Error err ->
+        let next_state =
+          match err with
+          | Error.ConnectionError (code, msg) ->
+              Runtime.handle_connection_error state code msg
+          | StreamError (stream_id, code) ->
+              Runtime.handle_stream_error state stream_id code
+        in
+        (0, next_state)
+  in
 
   let read_loop state off =
     let read_bytes =
@@ -16,176 +59,19 @@ let start ?request_writer ~max_frame_size ~(initial_state : State.t)
     in
     let unconsumed = read_bytes - consumed in
     Cstruct.blit receive_buffer consumed receive_buffer 0 unconsumed;
-    `Read
-      (match next_state with
-      | None ->
-          Printf.printf "Closing TCP connection\n%!";
-          None
-      | Some next_state -> Some (unconsumed, next_state))
+    match next_state with
+    | None ->
+        Printf.printf "Closing TCP connection\n%!";
+        `End
+    | Some next_state -> `Read (unconsumed, next_state)
   in
 
   let rec state_loop read_off state =
-    let user_write_handler f (frames_state : State.frames_state) =
-      match f with
-      | `ResponseWriter (f, reader_opt, id) -> (
-          let response = f () in
-
-          Serialize.write_headers_response state.State.faraday
-            frames_state.hpack_encoder id response;
-
-          match response with
-          | `Final { body_writer = Some body_writer; _ } ->
-              Serialize.write_window_update state.faraday id
-                Flow_control.WindowSize.initial_increment;
-              let new_frames_state =
-                {
-                  frames_state with
-                  streams =
-                    Streams.change_writer frames_state.streams id body_writer;
-                }
-              in
-
-              `User { state with phase = Frames new_frames_state }
-          | `Final { body_writer = None; _ } ->
-              Serialize.write_window_update state.faraday id
-                Flow_control.WindowSize.initial_increment;
-              (* TODO: enter half-closed (local) state with reader only *)
-              let new_stream_state =
-                match reader_opt with
-                | None -> Streams.Stream.Closed
-                | Some reader -> Half_closed (Local reader)
-              in
-              let new_frames_state =
-                {
-                  frames_state with
-                  streams =
-                    Streams.stream_transition frames_state.streams id
-                      new_stream_state;
-                }
-              in
-              `User { state with phase = Frames new_frames_state }
-          | `Interim _ -> `User state)
-      | `RequestWriter (f : unit -> Request.t) ->
-          let request = f () in
-          let id = Streams.get_next_id frames_state.streams `Client in
-
-          Serialize.writer_request_headers state.faraday
-            frames_state.hpack_encoder id request;
-          Serialize.write_window_update state.faraday 1l
-            Flow_control.WindowSize.initial_increment;
-
-          let response_handler = Option.get request.response_handler in
-          let stream_state =
-            match request.body_writer with
-            | Some body_writer ->
-                Streams.Stream.Open
-                  (Responses response_handler, Body body_writer)
-            | None -> Half_closed (Local (Responses response_handler))
-          in
-          let new_frames_state =
-            {
-              frames_state with
-              streams =
-                Streams.stream_transition frames_state.streams id stream_state;
-            }
-          in
-
-          `User { state with phase = Frames new_frames_state }
-      | `BodyWriter ((f : body_writer), id) -> (
-          let stream_flow =
-            match Streams.flow_of_id frames_state.streams id with
-            | None -> failwith "dupa"
-            | Some x -> x
-          in
-
-          match f ~window_size:stream_flow.out_flow with
-          | `Data { Cstruct.buffer; off; len } -> (
-              match
-                Flow_control.incr_sent stream_flow (Int32.of_int len)
-                  ~initial_window_size:
-                    frames_state.peer_settings.initial_window_size
-              with
-              | Error _ -> failwith "window overflow, report to user"
-              | Ok new_flow ->
-                  Serialize.write_data ~end_stream:false state.faraday buffer
-                    ~off ~len id;
-                  let new_frames_state =
-                    {
-                      frames_state with
-                      streams =
-                        Streams.update_stream_flow frames_state.streams id
-                          new_flow;
-                    }
-                  in
-                  `User { state with phase = Frames new_frames_state })
-          | `End (Some { Cstruct.buffer; off; len }, trailers) -> (
-              let send_trailers = List.length trailers > 0 in
-              match
-                Flow_control.incr_sent stream_flow (Int32.of_int len)
-                  ~initial_window_size:
-                    frames_state.peer_settings.initial_window_size
-              with
-              | Error _ -> failwith "window overflow, report to user"
-              | Ok new_flow ->
-                  Serialize.write_data ~end_stream:(not send_trailers)
-                    state.faraday buffer ~off ~len id;
-                  if send_trailers then
-                    Serialize.write_trailers state.faraday
-                      frames_state.hpack_encoder id trailers;
-                  let updated_streams =
-                    Streams.update_stream_flow frames_state.streams id new_flow
-                  in
-
-                  let new_frames_state =
-                    match Streams.state_of_id updated_streams id with
-                    | Open (stream_reader, _) ->
-                        {
-                          frames_state with
-                          streams =
-                            Streams.stream_transition updated_streams id
-                              (Half_closed (Local stream_reader));
-                        }
-                    | _ ->
-                        {
-                          frames_state with
-                          streams =
-                            Streams.stream_transition updated_streams id Closed;
-                        }
-                  in
-
-                  `User { state with phase = Frames new_frames_state })
-          | `End (None, trailers) ->
-              let send_trailers = List.length trailers > 0 in
-              Serialize.write_data ~end_stream:(not send_trailers) state.faraday
-                Bigstringaf.empty ~off:0 ~len:0 id;
-              if send_trailers then
-                Serialize.write_trailers state.faraday
-                  frames_state.hpack_encoder id trailers;
-              let new_frames_state =
-                match Streams.state_of_id frames_state.streams id with
-                | Open (stream_reader, _) ->
-                    {
-                      frames_state with
-                      streams =
-                        Streams.stream_transition frames_state.streams id
-                          (Half_closed (Local stream_reader));
-                    }
-                | _ ->
-                    {
-                      frames_state with
-                      streams =
-                        Streams.stream_transition frames_state.streams id Closed;
-                    }
-              in
-              `User { state with phase = Frames new_frames_state }
-          | `Yield -> Eio.Fiber.await_cancel ())
-    in
-
-    let handle_user_goaway ~f last_client_id =
+    let user_goaway_handler ~f last_client_id =
       f ();
       Printf.printf "Starting shutdown\n%!";
-      Serialize.write_goaway state.faraday last_client_id Error_code.NoError
-        Bigstringaf.empty;
+      Serialize.write_goaway state.State.faraday last_client_id
+        Error_code.NoError Bigstringaf.empty;
       `NoChange
     in
 
@@ -197,55 +83,65 @@ let start ?request_writer ~max_frame_size ~(initial_state : State.t)
               Fiber.any
                 [
                   (fun () -> read_loop state read_off);
-                  (fun () -> handle_user_goaway ~f Int32.zero);
+                  (fun () -> user_goaway_handler ~f Int32.zero);
                 ]
           | None -> read_loop state read_off)
       | Frames frames_state ->
-          let user_writes = State.search_for_writes frames_state in
+          let user_writes_handlers =
+            get_body_writers frames_state
+            |> List.map (fun (f, id) () ->
+                   `NextState
+                     (Runtime.body_writer_handler state frames_state f id))
+          in
 
           let user_operations =
-            match request_writer with
-            | None -> user_writes
-            | Some writer -> `RequestWriter writer :: user_writes
-          in
-
-          let user_writes_handlers =
-            List.map
-              (fun f () -> user_write_handler f frames_state)
-              user_operations
-          in
-
-          let fs =
-            match await_user_goaway with
-            | Some f ->
-                (fun () -> read_loop state read_off)
-                :: (fun () ->
-                  handle_user_goaway ~f frames_state.streams.last_client_stream)
+            match request_writer_handler with
+            | None -> user_writes_handlers
+            | Some request_writer_handler ->
+                (fun () ->
+                  `NextState (request_writer_handler state frames_state))
                 :: user_writes_handlers
-            | None ->
-                (fun () -> read_loop state read_off) :: user_writes_handlers
           in
 
-          Fiber.any
-            ~combine:(fun x y ->
-              match (x, y) with
-              | ( `User ({ State.phase = Frames frames_state1; _ } as state),
-                  `User { phase = Frames frames_state2; _ } ) ->
-                  let new_frames_state =
-                    {
-                      frames_state1 with
-                      streams =
-                        Streams.combine_after_response frames_state1.streams
-                          frames_state2.streams;
-                    }
-                  in
+          let user_operations =
+            match await_user_goaway with
+            | None -> user_operations
+            | Some f ->
+                (fun () ->
+                  user_goaway_handler ~f frames_state.streams.last_client_stream)
+                :: user_operations
+          in
 
-                  `User { state with phase = Frames new_frames_state }
-              | _ -> x)
-            fs
+          let user_operations =
+            match get_response_writers with
+            | None -> user_operations
+            | Some get_response_writers ->
+                let response_writers =
+                  get_response_writers state frames_state
+                  |> List.map (fun writer () -> `NextState (writer ()))
+                in
+                List.concat [ user_operations; response_writers ]
+          in
+
+          let fs = (fun () -> read_loop state read_off) :: user_operations in
+
+          let combine =
+           fun x y ->
+            match ((x, y), combine_states) with
+            | ( ( `NextState ({ State.phase = Frames frames_state1; _ } as state),
+                  `NextState { State.phase = Frames frames_state2; _ } ),
+                Some combine ) ->
+                `NextState
+                  {
+                    state with
+                    phase = Frames (combine frames_state1 frames_state2);
+                  }
+            | _ -> x
+          in
+          Fiber.any ~combine fs
     in
 
-    (match Faraday.operation state.State.faraday with
+    (match Faraday.operation state.faraday with
     | `Close ->
         (* TODO: report internal error *)
         ()
@@ -265,9 +161,9 @@ let start ?request_writer ~max_frame_size ~(initial_state : State.t)
         Faraday.shift state.faraday written);
 
     match new_state with
-    | `Read None -> Faraday.close state.faraday
-    | `Read (Some (unconsumed, next_state)) -> state_loop unconsumed next_state
+    | `End -> Faraday.close state.faraday
+    | `Read (unconsumed, next_state) -> state_loop unconsumed next_state
     | `NoChange -> state_loop read_off state
-    | `User next_state -> state_loop read_off next_state
+    | `NextState next_state -> state_loop read_off next_state
   in
   state_loop 0 initial_state

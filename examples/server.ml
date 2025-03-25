@@ -51,7 +51,7 @@ let () =
         in
         let data_stream = Eio.Stream.create 0 in
         let iterations = ref 0 in
-        let max = 3 in
+        let max = 5 in
         let take_data () =
           if !iterations < max then
             let data = Eio.Stream.take data_stream in
@@ -86,8 +86,15 @@ let () =
                 in
                 `Final response)
           ~on_data:(fun data ->
-            print_bs_hex data;
-            put_data data)
+            match data with
+            | `Data cs ->
+                print_bs_hex cs;
+                put_data cs
+            | `End (Some cs, _) ->
+                print_bs_hex cs;
+                put_data cs;
+                Printf.printf "Peer EOF\n%!"
+            | `End _ -> Printf.printf "Peer EOF\n%!")
     | POST, "/" ->
         let body_writer ~window_size:_ = `End (None, []) in
         Request.handle

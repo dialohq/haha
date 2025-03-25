@@ -1,17 +1,10 @@
 open Serialize
 open Types
 
-module type RUNTIMEOPERATIONS = sig
-  val connection_error : Error_code.t -> string -> State.t option
-  val stream_error : Stream_identifier.t -> Error_code.t -> State.t option
-  val next_step : State.frames_state -> State.t option
-  val frames_state : State.frames_state
-end
-
-let handle_connection_error (state : State.t) error_code msg : State.t option =
+let handle_connection_error state error_code msg =
   Printf.printf "Connetion error: %s\n%!" msg;
   let last_stream =
-    match state.phase with
+    match state.State.phase with
     | Preface _ -> Int32.zero
     | Frames frames -> frames.streams.last_client_stream
   in
@@ -19,8 +12,8 @@ let handle_connection_error (state : State.t) error_code msg : State.t option =
   write_goaway state.faraday last_stream error_code debug_data;
   None
 
-let handle_stream_error (state : State.t) stream_id code =
-  write_rst_stream state.faraday stream_id code;
+let handle_stream_error state stream_id code =
+  write_rst_stream state.State.faraday stream_id code;
   match state.phase with
   | Frames frames_state ->
       Some
@@ -37,11 +30,92 @@ let handle_stream_error (state : State.t) stream_id code =
         }
   | _ -> None
 
-let token_handler
-    ~(process_complete_headers : (module RUNTIMEOPERATIONS) -> _ -> _ -> _)
-    ~handle_preface ~error_handler (token : token) (state : State.t) :
-    State.t option =
-  match state.phase with
+let body_writer_handler state (frames_state : ('a, 'b) State.frames_state)
+    (f : Types.body_writer) id =
+  let stream_flow =
+    match Streams.flow_of_id frames_state.streams id with
+    | None -> failwith "dupa"
+    | Some x -> x
+  in
+  match f ~window_size:stream_flow.out_flow with
+  | `Data { Cstruct.buffer; off; len } -> (
+      match
+        Flow_control.incr_sent stream_flow (Int32.of_int len)
+          ~initial_window_size:frames_state.peer_settings.initial_window_size
+      with
+      | Error _ -> failwith "window overflow, report to user"
+      | Ok new_flow ->
+          Serialize.write_data ~end_stream:false state.State.faraday buffer ~off
+            ~len id;
+          let new_frames_state =
+            {
+              frames_state with
+              streams =
+                Streams.update_stream_flow frames_state.streams id new_flow;
+            }
+          in
+          { state with phase = Frames new_frames_state })
+  | `End (Some { Cstruct.buffer; off; len }, trailers) -> (
+      let send_trailers = List.length trailers > 0 in
+      match
+        Flow_control.incr_sent stream_flow (Int32.of_int len)
+          ~initial_window_size:frames_state.peer_settings.initial_window_size
+      with
+      | Error _ -> failwith "window overflow, report to user"
+      | Ok new_flow ->
+          Serialize.write_data ~end_stream:(not send_trailers) state.faraday
+            buffer ~off ~len id;
+          if send_trailers then
+            Serialize.write_trailers state.faraday frames_state.hpack_encoder id
+              trailers;
+          let updated_streams =
+            Streams.update_stream_flow frames_state.streams id new_flow
+          in
+          let new_frames_state =
+            match Streams.state_of_id updated_streams id with
+            | Open (stream_reader, _) ->
+                {
+                  frames_state with
+                  streams =
+                    Streams.stream_transition updated_streams id
+                      (Half_closed (Local stream_reader));
+                }
+            | _ ->
+                {
+                  frames_state with
+                  streams = Streams.stream_transition updated_streams id Closed;
+                }
+          in
+          { state with phase = Frames new_frames_state })
+  | `End (None, trailers) ->
+      let send_trailers = List.length trailers > 0 in
+      if send_trailers then
+        Serialize.write_trailers state.faraday frames_state.hpack_encoder id
+          trailers
+      else
+        Serialize.write_data ~end_stream:true state.faraday Bigstringaf.empty
+          ~off:0 ~len:0 id;
+      let new_frames_state =
+        match Streams.state_of_id frames_state.streams id with
+        | Open (stream_reader, _) ->
+            {
+              frames_state with
+              streams =
+                Streams.stream_transition frames_state.streams id
+                  (Half_closed (Local stream_reader));
+            }
+        | _ ->
+            {
+              frames_state with
+              streams = Streams.stream_transition frames_state.streams id Closed;
+            }
+      in
+      { state with phase = Frames new_frames_state }
+  | `Yield -> Eio.Fiber.await_cancel ()
+
+let token_handler ~process_complete_headers ~process_data_frame ~handle_preface
+    ~error_handler (token : token) state =
+  match state.State.phase with
   | Preface magic_received -> (
       match (magic_received, token) with
       | false, Magic_string -> Some { state with phase = Preface true }
@@ -57,17 +131,21 @@ let token_handler
 
         None
       in
-
-      let module RuntimeOperations = struct
-        let connection_error = handle_connection_error state
-        let stream_error = handle_stream_error state
-        let next_step next_state = Some { state with phase = Frames next_state }
-        let frames_state = frames_state
-      end in
-      let process_complete_headers =
-        process_complete_headers (module RuntimeOperations)
+      let connection_error = handle_connection_error state in
+      let stream_error = handle_stream_error state in
+      let next_step next_state =
+        Some { state with phase = Frames next_state }
       in
-      let open RuntimeOperations in
+      let frames_state = frames_state in
+
+      let process_complete_headers =
+        process_complete_headers frames_state stream_error connection_error
+          next_step
+      in
+      let process_data_frame =
+        process_data_frame frames_state stream_error connection_error next_step
+          no_error_close
+      in
       let decompress_headers_block bs ~len hpack_decoder =
         let hpack_parser = Hpack.Decoder.decode_headers hpack_decoder in
         let error' = Error "Decompression error" in
@@ -147,62 +225,6 @@ let token_handler
               with
               | Error msg -> connection_error Error_code.CompressionError msg
               | Ok headers -> process_complete_headers frame_header headers)
-      in
-
-      let process_data_frame flags stream_id bs =
-        Printf.printf "Received data frame\n%!";
-        let end_stream = Flags.test_end_stream flags in
-        match Streams.state_of_id frames_state.streams stream_id with
-        | Idle | Half_closed (Remote _) ->
-            stream_error stream_id Error_code.StreamClosed
-        | Reserved _ ->
-            connection_error Error_code.ProtocolError
-              "DATA frame received on reserved stream"
-        | Closed ->
-            connection_error Error_code.StreamClosed
-              "DATA frame received on closed stream!"
-        | Open (reader, writers) ->
-            (match reader with
-            | Body reader -> reader (Cstruct.of_bigarray bs)
-            | _ -> ());
-            if end_stream then
-              next_step
-                {
-                  frames_state with
-                  streams =
-                    Streams.stream_transition frames_state.streams stream_id
-                      (Half_closed (Remote writers));
-                }
-            else
-              next_step
-                {
-                  frames_state with
-                  streams =
-                    Streams.update_last_stream frames_state.streams stream_id;
-                }
-        | Half_closed (Local reader) ->
-            (match reader with
-            | Body reader -> reader (Cstruct.of_bigarray bs)
-            | _ -> ());
-            if end_stream then
-              let new_streams =
-                Streams.stream_transition frames_state.streams stream_id Closed
-              in
-
-              if
-                frames_state.shutdown
-                && Streams.all_closed
-                     ~last_stream_id:frames_state.streams.last_client_stream
-                     new_streams
-              then no_error_close ()
-              else next_step { frames_state with streams = new_streams }
-            else
-              next_step
-                {
-                  frames_state with
-                  streams =
-                    Streams.update_last_stream frames_state.streams stream_id;
-                }
       in
 
       let process_settings_frame flags settings_list =

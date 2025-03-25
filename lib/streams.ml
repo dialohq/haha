@@ -1,32 +1,42 @@
 open Types
 module StreamMap = Map.Make (Int32)
 
+type server_writers =
+  | BodyStream of body_writer
+  | WritingResponse of Response.response_writer
+
+type client_readers =
+  | BodyStream of body_reader
+  | AwaitingResponse of Request.response_handler
+
+type client_writer = body_writer
+type server_reader = body_reader
+
 module Stream = struct
-  type ('body, 'responses) stream_operations =
-    | Body of 'body
-    | Responses of 'responses
+  type ('readers, 'writers) open_state = 'readers * 'writers
 
-  type stream_writers =
-    (body_writer, Response.response_writer) stream_operations
+  type ('readers, 'writers) half_closed =
+    | Remote of 'writers
+    | Local of 'readers
 
-  type stream_readers =
-    (body_reader, Request.response_handler) stream_operations
-
-  type half_closed = Remote of stream_writers | Local of stream_readers
   type reserved = Remote | Local
 
-  type state =
+  type ('readers, 'writers) state =
     | Idle
     | Reserved of reserved
-    | Open of stream_readers * stream_writers
-    | Half_closed of half_closed
+    | Open of ('readers, 'writers) open_state
+    | Half_closed of ('readers, 'writers) half_closed
     | Closed
 
-  type t = { id : Stream_identifier.t; state : state; flow : Flow_control.t }
+  type ('readers, 'writers) t = {
+    id : Stream_identifier.t;
+    state : ('readers, 'writers) state;
+    flow : Flow_control.t;
+  }
 end
 
-type t = {
-  map : Stream.t StreamMap.t;
+type ('readers, 'writers) t = {
+  map : ('readers, 'writers) Stream.t StreamMap.t;
   last_client_stream : Stream_identifier.t;
   last_server_stream : Stream_identifier.t;
 }
@@ -59,19 +69,25 @@ let get_next_id t = function
       if Stream_identifier.is_connection t.last_server_stream then 2l
       else Int32.add t.last_server_stream 2l
 
-let change_writer t id body_writer =
+let change_writer (t : (server_reader, server_writers) t) id body_writer =
   let map =
     StreamMap.update id
       (function
         | None -> None
         | Some old -> (
             match old.Stream.state with
-            | Open (stream_handler, Responses _) ->
+            | Open (body_reader, WritingResponse _) ->
                 Some
-                  { old with state = Open (stream_handler, Body body_writer) }
-            | Half_closed (Remote (Responses _)) ->
+                  {
+                    old with
+                    state = Open (body_reader, BodyStream body_writer);
+                  }
+            | Half_closed (Remote (WritingResponse _)) ->
                 Some
-                  { old with state = Half_closed (Remote (Body body_writer)) }
+                  {
+                    old with
+                    state = Half_closed (Remote (BodyStream body_writer));
+                  }
             | _ -> Some old))
       t.map
   in
@@ -96,7 +112,7 @@ let incr_stream_out_flow t stream_id increment =
     StreamMap.update stream_id
       (function
         | None -> None
-        | Some (old : Stream.t) ->
+        | Some (old : ('a, 'b) Stream.t) ->
             Some
               { old with flow = Flow_control.incr_out_flow old.flow increment })
       t.map
@@ -109,7 +125,7 @@ let update_stream_flow t stream_id new_flow =
     StreamMap.update stream_id
       (function
         | None -> None
-        | Some (old : Stream.t) -> Some { old with flow = new_flow })
+        | Some (old : ('a, 'b) Stream.t) -> Some { old with flow = new_flow })
       t.map
   in
 
@@ -117,7 +133,7 @@ let update_stream_flow t stream_id new_flow =
 
 let all_closed ?(last_stream_id = Int32.max_int) t =
   StreamMap.for_all
-    (fun stream_id (stream : Stream.t) ->
+    (fun stream_id (stream : ('a, 'b) Stream.t) ->
       match (stream_id > last_stream_id, stream.state) with
       | true, _ -> true
       | false, Closed -> true
@@ -127,17 +143,20 @@ let all_closed ?(last_stream_id = Int32.max_int) t =
 let combine_after_response t1 t2 =
   let map =
     StreamMap.union
-      (fun _ stream1 stream2 ->
+      (fun _ (stream1 : (server_reader, server_writers) Stream.t)
+           (stream2 : (server_reader, server_writers) Stream.t) ->
         let stream_state1, stream_state2 =
           (stream1.Stream.state, stream2.state)
         in
 
         match (stream_state1, stream_state2) with
-        | Open (_, Responses _), Open (_, Body _)
-        | Half_closed (Remote (Responses _)), Half_closed (Remote (Body _)) ->
+        | Open (_, WritingResponse _), Open (_, BodyStream _)
+        | ( Half_closed (Remote (WritingResponse _)),
+            Half_closed (Remote (BodyStream _)) ) ->
             Some stream2
-        | Open (_, Body _), Open (_, Responses _)
-        | Half_closed (Remote (Body _)), Half_closed (Remote (Responses _)) ->
+        | Open (_, BodyStream _), Open (_, WritingResponse _)
+        | ( Half_closed (Remote (BodyStream _)),
+            Half_closed (Remote (WritingResponse _)) ) ->
             Some stream1
         | _ -> Some stream1)
       t1.map t2.map
@@ -159,15 +178,37 @@ let state_of_id t stream_id =
   | None -> Stream.Idle
   | Some stream -> stream.state
 
-let get_user_writes t =
+let response_writers t =
   StreamMap.fold
-    (fun id (v : Stream.t) (acc : 'a list) ->
+    (fun id (v : (server_reader, server_writers) Stream.t) (acc : 'a list) ->
       match v.state with
-      | Open (reader, Responses response_writer) ->
-          `ResponseWriter (response_writer, Some reader, id) :: acc
-      | Half_closed (Remote (Responses response_writer)) ->
-          `ResponseWriter (response_writer, None, id) :: acc
-      | Open (_, Body body_writer) | Half_closed (Remote (Body body_writer)) ->
-          `BodyWriter (body_writer, id) :: acc
+      | Open (body_reader, WritingResponse response_writer) ->
+          (response_writer, Some body_reader, id) :: acc
+      | Half_closed (Remote (WritingResponse response_writer)) ->
+          (response_writer, None, id) :: acc
       | _ -> acc)
     t.map []
+
+let body_writers t =
+  match t with
+  | `Server t ->
+      StreamMap.fold
+        (fun id (v : (server_reader, server_writers) Stream.t) (acc : 'a list)
+           ->
+          match v.state with
+          | Open (_, BodyStream body_writer)
+          | Half_closed (Remote (BodyStream body_writer)) ->
+              (body_writer, id) :: acc
+          | _ -> acc)
+        t.map []
+  | `Client t ->
+      StreamMap.fold
+        (fun id (v : (client_readers, client_writer) Stream.t) (acc : 'a list)
+           ->
+          match v.state with
+          | Open (AwaitingResponse _, body_writer)
+          | Open (BodyStream _, body_writer)
+          | Half_closed (Remote body_writer) ->
+              (body_writer, id) :: acc
+          | _ -> acc)
+        t.map []

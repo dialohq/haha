@@ -2,6 +2,7 @@
   description = "HaHa Nix Flake";
 
   inputs.flake-utils.url = "github:numtide/flake-utils";
+  inputs.nix-filter.url = "github:numtide/nix-filter";
   inputs.nixpkgs.inputs.flake-utils.follows = "flake-utils";
   inputs.nixpkgs.url = "github:nixos/nixpkgs/6bf084c4ea625dc3d6b94138df0cab9a9c7b9298";
   inputs.ocaml-overlays.url = "github:nix-ocaml/nix-overlays/d4ac32c12590b5ce8a756374a20476af8769f839";
@@ -11,6 +12,7 @@
     nixpkgs,
     ocaml-overlays,
     flake-utils,
+    nix-filter,
   }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = import nixpkgs {
@@ -21,27 +23,7 @@
         ];
       };
     in rec {
-      packages.default = pkgs.ocamlPackages.buildDunePackage {
-        pname = "haha";
-        version = "0.0.1";
-
-        src = ./.;
-
-        buildInputs = with pkgs.ocamlPackages; [
-          eio_main
-          alcotest
-          angstrom
-          faraday
-          hex
-          yojson
-          base64
-          uri
-        ];
-
-        buildPhase = ''
-          dune build .
-        '';
-      };
+      packages = with pkgs; callPackage ./nix {inherit nix-filter ocamlPackages;};
       devShells = {
         default = pkgs.mkShell {
           inputsFrom = [packages.default];
