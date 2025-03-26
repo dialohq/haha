@@ -27,8 +27,14 @@ let initial_frame_state recv_setttings user_settings =
   let peer_settings = Settings.(update_with_list default recv_setttings) in
   {
     peer_settings;
-    hpack_decoder = Hpackv.Decoder.create 1000;
-    hpack_encoder = Hpackv.Encoder.create 1000;
+    hpack_decoder =
+      Hpackv.Decoder.create
+        (Int.min peer_settings.header_table_size
+           Settings.default.header_table_size);
+    hpack_encoder =
+      Hpackv.Encoder.create
+        (Int.min peer_settings.header_table_size
+           Settings.default.header_table_size);
     local_settings = Settings.default;
     settings_status = Syncing user_settings;
     streams = Streams.initial ();
@@ -36,6 +42,22 @@ let initial_frame_state recv_setttings user_settings =
     headers_state = Idle;
     flow = Flow_control.initial;
   }
+
+let update_hpack_capacity state =
+  match
+    Hpackv.Decoder.set_capacity state.hpack_decoder
+      (Int.min state.peer_settings.header_table_size
+         state.local_settings.header_table_size)
+  with
+  | Error _ as err -> err
+  | Ok _ -> (
+      match
+        Hpackv.Decoder.set_capacity state.hpack_decoder
+          (Int.min state.peer_settings.header_table_size
+             state.local_settings.header_table_size)
+      with
+      | Error _ as err -> err
+      | Ok _ -> Ok ())
 
 let initial () =
   {

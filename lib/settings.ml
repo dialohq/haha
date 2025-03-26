@@ -10,10 +10,6 @@ type setting =
 
 type settings_list = setting list
 
-(* From RFC7540§6.5.1:
- *   The payload of a SETTINGS frame consists of zero or more parameters,
- *   each consisting of an unsigned 16-bit setting identifier and an
- *   unsigned 32-bit value. *)
 let octets_per_setting = 6
 let minimal_frame_size_allowed = 0x4000
 
@@ -29,21 +25,15 @@ type t = {
   header_table_size : int;
   enable_push : bool;
   max_concurrent_streams : int32;
-  (* Indicates the amount tokens the peer allows an H2 endpoint to send. *)
   initial_window_size : WindowSize.t;
   max_frame_size : int;
   max_header_list_size : int option;
 }
 
-(* From RFC7540§11.3 *)
 let default =
   {
     header_table_size = 0x1000;
-    enable_push =
-      true
-      (* From RFC7540§6.5.2:
-       *   SETTINGS_MAX_CONCURRENT_STREAMS (0x3): [...] Initially, there is no
-       *   limit to this value. *);
+    enable_push = true;
     max_concurrent_streams = Int32.max_int;
     initial_window_size = WindowSize.default_initial_window_size;
     max_frame_size = minimal_frame_size_allowed;

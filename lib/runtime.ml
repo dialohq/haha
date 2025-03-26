@@ -143,16 +143,23 @@ let token_handler ~process_complete_headers ~process_data_frame ~handle_preface
       in
       let decompress_headers_block bs ~len hpack_decoder =
         let hpack_parser = Hpackv.Decoder.decode_headers hpack_decoder in
-        let error' = Error "Decompression error" in
+        let error' ?msg () =
+          Error
+            (match msg with
+            | None -> "Decompression error"
+            | Some msg -> Format.sprintf "Decompression error: %s" msg)
+        in
         match Angstrom.Unbuffered.parse hpack_parser with
-        | Fail _ -> error'
-        | Done _ -> error'
+        | Fail (_, _, msg) -> error' ~msg ()
+        | Done _ -> error' ()
         | Partial { continue; _ } -> (
             match continue bs ~off:0 ~len Complete with
-            | Partial _ -> error'
-            | Fail _ -> error'
+            | Partial _ -> error' ()
+            | Fail (_, _, msg) -> error' ~msg ()
             | Done (_, result') ->
-                Result.map_error (fun _ -> "Decompression error") result'
+                Result.map_error
+                  (fun _ -> "Decompression error, hpack error")
+                  result'
                 |> Result.map Headers.of_hpack_list)
       in
 
@@ -232,7 +239,7 @@ let token_handler ~process_complete_headers ~process_data_frame ~handle_preface
         let is_ack = Flags.test_ack flags in
 
         match (frames_state.settings_status, is_ack) with
-        | _, false ->
+        | _, false -> (
             let new_state =
               {
                 frames_state with
@@ -241,9 +248,15 @@ let token_handler ~process_complete_headers ~process_data_frame ~handle_preface
                     settings_list;
               }
             in
-            write_settings_ack state.faraday;
-            next_step new_state
-        | Syncing new_settings, true ->
+
+            match State.update_hpack_capacity new_state with
+            | Error _ ->
+                connection_error Error_code.ProtocolError
+                  "Error updating Hpack buffer capacity"
+            | Ok _ ->
+                write_settings_ack state.faraday;
+                next_step new_state)
+        | Syncing new_settings, true -> (
             let new_state =
               {
                 frames_state with
@@ -254,7 +267,12 @@ let token_handler ~process_complete_headers ~process_data_frame ~handle_preface
                 settings_status = Idle;
               }
             in
-            next_step new_state
+
+            match State.update_hpack_capacity new_state with
+            | Error _ ->
+                connection_error Error_code.ProtocolError
+                  "Error updating Hpack buffer capacity"
+            | Ok _ -> next_step new_state)
         | Idle, true ->
             connection_error Error_code.ProtocolError
               "Unexpected ACK flag in SETTINGS frame."
