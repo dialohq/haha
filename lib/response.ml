@@ -17,7 +17,8 @@ type response_writer = unit -> t
 let status (t : t) =
   match t with `Interim r -> (r.status :> Status.t) | `Final r -> r.status
 
-let headers = function `Interim r -> r.headers | `Final r -> r.headers
+let headers (t : t) =
+  match t with `Interim r -> r.headers | `Final r -> r.headers
 
 let create (status : Status.t) (headers : Headers.t list) : final_response =
   { status; headers; body_writer = None }

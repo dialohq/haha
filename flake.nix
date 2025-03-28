@@ -23,10 +23,10 @@
         ];
       };
     in rec {
-      packages = with pkgs; callPackage ./nix {inherit nix-filter ocamlPackages;};
+      packages = pkgs.callPackage ./nix/packages.nix {inherit nix-filter pkgs;};
       devShells = {
         default = pkgs.mkShell {
-          inputsFrom = [packages.default];
+          inputsFrom = [packages.default packages.examples];
           buildInputs = with pkgs;
           with ocamlPackages; [
             ocamlformat

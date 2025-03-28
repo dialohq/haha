@@ -20,7 +20,7 @@ let write_ping f payload ~(ack : bool) =
   in
   write_ping_frame f frame_info payload
 
-let write_data ?(padding_length = 0) ~end_stream f bs ~off ~len stream_id =
+let write_data ?(padding_length = 0) ~end_stream f stream_id total_len cs_list =
   let frame_info =
     create_frame_info
       ~flags:
@@ -29,7 +29,7 @@ let write_data ?(padding_length = 0) ~end_stream f bs ~off ~len stream_id =
       ~padding_length stream_id
   in
 
-  write_data_frame f ~off ~len frame_info bs
+  write_data_frame f total_len cs_list frame_info
 
 let write_headers_response ?padding_length ?(end_header = true) f hpack_encoder
     stream_id (response : Response.t) =
@@ -65,6 +65,10 @@ let writer_request_headers ?padding_length ?(end_header = true) f hpack_encoder
     stream_id (request : Request.t) =
   let { Request.meth; path; scheme; authority; headers; body_writer; _ } =
     request
+  in
+
+  let headers =
+    { Headers.name = "user-agent"; value = "haha/0.0.1" } :: headers
   in
 
   let end_stream = Option.is_none body_writer in

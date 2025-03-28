@@ -6,6 +6,11 @@ let of_hpack_list =
 
 let of_list = List.map (fun header -> { name = fst header; value = snd header })
 
+let get_string l e =
+  match List.find_opt (fun (h : t) -> h.name = e) l with
+  | None -> None
+  | Some header -> Some header.value
+
 module Pseudo = struct
   let request_required = [ ":method"; ":scheme"; ":path" ]
   let request_available = ":authority" :: request_required

@@ -72,7 +72,7 @@ let () =
               Cstruct.LE.set_uint64 cs 8
                 (Eio.Time.now env#clock |> Int64.bits_of_float);
               Cstruct.blit data 0 cs 0 8;
-              `Data cs
+              `Data [ cs ]
         in
 
         Request.handle
@@ -88,7 +88,8 @@ let () =
           ~on_data:(fun data ->
             match data with
             | `Data cs ->
-                print_bs_hex cs;
+                (* print_bs_hex cs; *)
+                Printf.printf "Received %i bytes\n%!" cs.Cstruct.len;
                 put_data cs
             | `End (Some cs, _) ->
                 print_bs_hex cs;

@@ -24,31 +24,7 @@ let start :
  fun ?request_writer_handler ?await_user_goaway ?get_response_writers
      ?combine_states ~max_frame_size ~get_body_writers ~initial_state
      ~token_handler _port socket ->
-  let receive_buffer = Cstruct.create max_frame_size in
-
-  let read_io state cs =
-    match Parse.read cs state.State.parse_state with
-    | Ok (consumed, frames, new_parse_state) ->
-        let state_with_parse = { state with parse_state = new_parse_state } in
-        let next_state =
-          List.fold_left
-            (fun state frame ->
-              match state with
-              | None -> None
-              | Some state -> token_handler frame state)
-            (Some state_with_parse) frames
-        in
-        (consumed, next_state)
-    | Error err ->
-        let next_state =
-          match err with
-          | Error.ConnectionError (code, msg) ->
-              Runtime.handle_connection_error state code msg
-          | StreamError (stream_id, code) ->
-              Runtime.handle_stream_error state stream_id code
-        in
-        (0, next_state)
-  in
+  let receive_buffer = Cstruct.create (max_frame_size + 9) in
 
   let read_loop state off =
     let read_bytes =
@@ -56,9 +32,10 @@ let start :
         (Cstruct.sub receive_buffer off (Cstruct.length receive_buffer - off))
     in
     let consumed, next_state =
-      read_io state (Cstruct.sub receive_buffer 0 (read_bytes + off))
+      Runtime.read_io ~token_handler state
+        (Cstruct.sub receive_buffer 0 (read_bytes + off))
     in
-    let unconsumed = read_bytes - consumed in
+    let unconsumed = read_bytes + off - consumed in
     Cstruct.blit receive_buffer consumed receive_buffer 0 unconsumed;
     match next_state with
     | None ->
@@ -67,99 +44,96 @@ let start :
     | Some next_state -> `Read (unconsumed, next_state)
   in
 
-  let rec state_loop read_off state =
-    let user_goaway_handler ~f last_client_id =
-      f ();
-      Printf.printf "Starting shutdown\n%!";
-      Serialize.write_goaway state.State.faraday last_client_id
-        Error_code.NoError Bigstringaf.empty;
-      `NoChange
-    in
-
-    let new_state =
-      match state.phase with
-      | Preface _ -> (
-          match await_user_goaway with
-          | Some f ->
-              Fiber.any
-                [
-                  (fun () -> read_loop state read_off);
-                  (fun () -> user_goaway_handler ~f Int32.zero);
-                ]
-          | None -> read_loop state read_off)
-      | Frames frames_state ->
-          let user_writes_handlers =
-            get_body_writers frames_state
-            |> List.map (fun (f, id) () ->
-                   `NextState
-                     (Runtime.body_writer_handler state frames_state f id))
-          in
-
-          let user_operations =
-            match request_writer_handler with
-            | None -> user_writes_handlers
-            | Some request_writer_handler ->
-                (fun () ->
-                  `NextState (request_writer_handler state frames_state))
-                :: user_writes_handlers
-          in
-
-          let user_operations =
-            match await_user_goaway with
-            | None -> user_operations
-            | Some f ->
-                (fun () ->
-                  user_goaway_handler ~f frames_state.streams.last_client_stream)
-                :: user_operations
-          in
-
-          let user_operations =
-            match get_response_writers with
-            | None -> user_operations
-            | Some get_response_writers ->
-                let response_writers =
-                  get_response_writers state frames_state
-                  |> List.map (fun writer () -> `NextState (writer ()))
-                in
-                List.concat [ user_operations; response_writers ]
-          in
-
-          let fs = (fun () -> read_loop state read_off) :: user_operations in
-
-          let combine =
-           fun x y ->
-            match ((x, y), combine_states) with
-            | ( ( `NextState ({ State.phase = Frames frames_state1; _ } as state),
-                  `NextState { State.phase = Frames frames_state2; _ } ),
-                Some combine ) ->
-                `NextState
-                  {
-                    state with
-                    phase = Frames (combine frames_state1 frames_state2);
-                  }
-            | _ -> x
-          in
-          Fiber.any ~combine fs
-    in
-
-    (match Faraday.operation state.faraday with
+  let write faraday =
+    match Faraday.operation faraday with
     | `Close ->
         (* TODO: report internal error *)
         ()
     | `Yield -> ()
     | `Writev bs_list ->
         let written, cs_list =
-          List.fold_left
-            (fun ((to_write, cs_list) : int * Cstruct.t list)
-                 (bs_iovec : Bigstringaf.t Faraday.iovec) ->
-              ( bs_iovec.len + to_write,
-                Cstruct.of_bigarray ~off:bs_iovec.off ~len:bs_iovec.len
-                  bs_iovec.buffer
-                :: cs_list ))
-            (0, []) bs_list
+          List.fold_left_map
+            (fun acc { Faraday.buffer; off; len } ->
+              (acc + len, Cstruct.of_bigarray buffer ~off ~len))
+            0 bs_list
         in
         Flow.write socket (List.rev cs_list);
-        Faraday.shift state.faraday written);
+        Faraday.shift faraday written
+  in
+
+  let rec state_loop read_off state =
+    let operations =
+      let read_op = fun () -> read_loop state read_off in
+      match state.State.phase with
+      | Preface _ -> (
+          match await_user_goaway with
+          | Some f ->
+              (fun () -> Runtime.user_goaway_handler state ~f Int32.zero)
+              :: [ read_op ]
+          | None -> [ read_op ])
+      | Frames frames_state ->
+          let add_request_writer_handler ops =
+            match request_writer_handler with
+            | None -> ops
+            | Some request_writer_handler ->
+                (fun () ->
+                  `NextState (request_writer_handler state frames_state))
+                :: ops
+          in
+
+          let add_response_writer_handlers ops =
+            match get_response_writers with
+            | None -> ops
+            | Some get_response_writers ->
+                let response_ops =
+                  get_response_writers state frames_state
+                  |> List.map (fun writer () -> `NextState (writer ()))
+                in
+                List.concat [ ops; response_ops ]
+          in
+
+          let add_body_writer_ops ops =
+            let body_ops =
+              get_body_writers frames_state
+              |> List.map (fun (f, id) () ->
+                     `NextState
+                       (Runtime.body_writer_handler
+                          ~write:(fun () -> write state.faraday)
+                          state frames_state f id))
+            in
+            List.concat [ body_ops; ops ]
+          in
+
+          let add_goaway_handler ops =
+            match await_user_goaway with
+            | None -> ops
+            | Some f ->
+                (fun () ->
+                  Runtime.user_goaway_handler state ~f
+                    frames_state.streams.last_client_stream)
+                :: ops
+          in
+
+          [ read_op ] |> add_request_writer_handler
+          |> add_response_writer_handlers |> add_goaway_handler
+          |> add_body_writer_ops
+    in
+
+    (* race condition of responding immediately to multiple requests *)
+    let combine =
+     fun x y ->
+      match ((x, y), combine_states) with
+      | ( ( `NextState ({ State.phase = Frames frames_state1; _ } as state),
+            `NextState { State.phase = Frames frames_state2; _ } ),
+          Some combine ) ->
+          `NextState
+            { state with phase = Frames (combine frames_state1 frames_state2) }
+      | _ -> x
+    in
+
+    let new_state = Fiber.any ~combine operations in
+
+    write state.faraday;
 
     match new_state with
     | `End -> Faraday.close state.faraday

@@ -51,7 +51,7 @@ let write_frame_with_padding t info frame_type length writer =
       let writer' t =
         write_uint8 t pad_length;
         writer t;
-        schedule_bigstring ~off:0 ~len:pad_length t
+        write_bigstring ~off:0 ~len:pad_length t
           (get_padding info.padding_length)
       in
       let header =
@@ -67,12 +67,16 @@ let write_frame_with_padding t info frame_type length writer =
   write_frame_header t header;
   writer t
 
-let write_data_frame t ?off ?len info body =
-  let writer t = schedule_bigstring t ?off ?len body in
-  let length =
-    match len with Some len -> len | None -> Bigstringaf.length body
+let write_data_frame t total_len cs_list info =
+  let writer t =
+    List.iter
+      (fun (cs : Cstruct.t) ->
+        (* TODO: change to schedule_bigstring for zero-copy *)
+        write_bigstring t cs.buffer ~off:cs.off ~len:cs.len)
+      cs_list
   in
-  write_frame_with_padding t info Data length writer
+
+  write_frame_with_padding t info Data total_len writer
 
 let write_rst_stream_frame t stream_id e =
   let header =
@@ -160,7 +164,7 @@ let write_ping_frame t info ?(off = 0) payload =
     }
   in
   write_frame_header t header;
-  schedule_bigstring ~off ~len:payload_length t payload
+  write_bigstring ~off ~len:payload_length t payload
 
 let write_go_away_frame t last_stream_id error_code debug_data =
   let debug_data_len = Bigstringaf.length debug_data in
@@ -175,7 +179,7 @@ let write_go_away_frame t last_stream_id error_code debug_data =
   write_frame_header t header;
   BE.write_uint32 t last_stream_id;
   BE.write_uint32 t (Error_code.serialize error_code);
-  schedule_bigstring t ~off:0 ~len:debug_data_len debug_data
+  write_bigstring t ~off:0 ~len:debug_data_len debug_data
 
 let write_window_update_frame t stream_id window_size =
   let header =

@@ -99,12 +99,11 @@ let run ~(error_handler : Error.t -> unit)
 
     match (end_stream, pseudo_validation) with
     | _, Invalid | false, No_pseudo ->
-        Printf.printf "Received some HEADERS, trailers\n%!";
         stream_error stream_id Error_code.ProtocolError
     | true, No_pseudo -> (
-        (* TODO: should expose trailers to API - body_reader could take some `Data of cs and `End of data option * trailers variants *)
         match stream_state with
-        | Open (_, writers) ->
+        | Open (BodyStream reader, writers) ->
+            reader (`End (None, header_list));
             next_step
               {
                 frames_state with
@@ -112,7 +111,8 @@ let run ~(error_handler : Error.t -> unit)
                   Streams.stream_transition frames_state.streams stream_id
                     (Half_closed (Remote writers));
               }
-        | Half_closed (Local _) ->
+        | Half_closed (Local (BodyStream reader)) ->
+            reader (`End (None, header_list));
             next_step
               {
                 frames_state with
@@ -120,9 +120,11 @@ let run ~(error_handler : Error.t -> unit)
                   Streams.stream_transition frames_state.streams stream_id
                     Closed;
               }
-        | Reserved _ ->
-            (* TODO: check if this is the correct error *)
-            stream_error stream_id Error_code.ProtocolError
+        | Open (AwaitingResponse _, _)
+        | Half_closed (Local (AwaitingResponse _)) ->
+            connection_error Error_code.ProtocolError
+              "received first HEADERS in this stream with no pseudo-headers"
+        | Reserved _ -> stream_error stream_id Error_code.StreamClosed
         | Idle -> stream_error stream_id Error_code.ProtocolError
         | Closed | Half_closed (Remote _) ->
             connection_error Error_code.StreamClosed

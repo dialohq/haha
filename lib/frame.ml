@@ -39,6 +39,21 @@ module FrameType = struct
     | 8 -> WindowUpdate
     | 9 -> Continuation
     | x -> Unknown x
+
+  let pp fmt p =
+    Format.fprintf fmt
+      (match p with
+      | Data -> "DATA"
+      | Headers -> "HEADERS"
+      | Priority -> "PRIORITY"
+      | RSTStream -> "RSTSTREAM"
+      | Settings -> "SETTINGS"
+      | PushPromise -> "PUSH_PROMISE"
+      | Ping -> "PING"
+      | GoAway -> "GOAWAY"
+      | WindowUpdate -> "WINDOW_UPDATE"
+      | Continuation -> "CONTINUATION"
+      | Unknown _ -> "UNKNOWN")
 end
 
 type frame_header = {

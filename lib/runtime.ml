@@ -2,7 +2,6 @@ open Serialize
 open Types
 
 let handle_connection_error state error_code msg =
-  Printf.printf "Connetion error: %s\n%!" msg;
   let last_stream =
     match state.State.phase with
     | Preface _ -> Int32.zero
@@ -30,19 +29,30 @@ let handle_stream_error state stream_id code =
         }
   | _ -> None
 
-let body_writer_handler state (frames_state : ('a, 'b) State.frames_state)
-    (f : Types.body_writer) id =
+let body_writer_handler ~write state
+    (frames_state : ('a, 'b) State.frames_state) (f : Types.body_writer) id =
   let stream_flow = Streams.flow_of_id frames_state.streams id in
+  let max_frame_size = frames_state.peer_settings.max_frame_size in
   match f ~window_size:stream_flow.out_flow with
-  | `Data { Cstruct.buffer; off; len } -> (
+  | `Data cs_list -> (
+      let total_len =
+        List.fold_left (fun acc cs -> cs.Cstruct.len + acc) 0 cs_list
+      in
+
       match
-        Flow_control.incr_sent stream_flow (Int32.of_int len)
+        Flow_control.incr_sent stream_flow (Int32.of_int total_len)
           ~initial_window_size:frames_state.peer_settings.initial_window_size
       with
       | Error _ -> failwith "window overflow 1, report to user"
       | Ok new_flow ->
-          Serialize.write_data ~end_stream:false state.State.faraday buffer ~off
-            ~len id;
+          let distributed = Util.split_cstructs cs_list max_frame_size in
+          List.iteri
+            (fun i (cs_list, len) ->
+              Serialize.write_data ~end_stream:false state.State.faraday id len
+                cs_list;
+              if i < List.length distributed - 1 then write ())
+            distributed;
+
           let new_frames_state =
             {
               frames_state with
@@ -50,17 +60,26 @@ let body_writer_handler state (frames_state : ('a, 'b) State.frames_state)
                 Streams.update_stream_flow frames_state.streams id new_flow;
             }
           in
-          { state with phase = Frames new_frames_state })
-  | `End (Some { Cstruct.buffer; off; len }, trailers) -> (
+          { state with State.phase = Frames new_frames_state })
+  | `End (Some cs_list, trailers) -> (
       let send_trailers = List.length trailers > 0 in
+      let total_len =
+        List.fold_left (fun acc cs -> cs.Cstruct.len + acc) 0 cs_list
+      in
       match
-        Flow_control.incr_sent stream_flow (Int32.of_int len)
+        Flow_control.incr_sent stream_flow (Int32.of_int total_len)
           ~initial_window_size:frames_state.peer_settings.initial_window_size
       with
       | Error _ -> failwith "window overflow 2, report to user"
       | Ok new_flow ->
-          Serialize.write_data ~end_stream:(not send_trailers) state.faraday
-            buffer ~off ~len id;
+          let distributed = Util.split_cstructs cs_list max_frame_size in
+          List.iteri
+            (fun i (cs_list, len) ->
+              Serialize.write_data ~end_stream:(not send_trailers) state.faraday
+                id len cs_list;
+              if i < List.length distributed - 1 then write ())
+            distributed;
+
           if send_trailers then
             Serialize.write_trailers state.faraday frames_state.hpack_encoder id
               trailers;
@@ -89,8 +108,8 @@ let body_writer_handler state (frames_state : ('a, 'b) State.frames_state)
         Serialize.write_trailers state.faraday frames_state.hpack_encoder id
           trailers
       else
-        Serialize.write_data ~end_stream:true state.faraday Bigstringaf.empty
-          ~off:0 ~len:0 id;
+        Serialize.write_data ~end_stream:true state.faraday id 0
+          [ Cstruct.empty ];
       let new_frames_state =
         match Streams.state_of_id frames_state.streams id with
         | Open (stream_reader, _) ->
@@ -108,6 +127,36 @@ let body_writer_handler state (frames_state : ('a, 'b) State.frames_state)
       in
       { state with phase = Frames new_frames_state }
   | `Yield -> Eio.Fiber.await_cancel ()
+
+let user_goaway_handler state ~f last_client_id =
+  f ();
+  Printf.printf "Starting shutdown\n%!";
+  Serialize.write_goaway state.State.faraday last_client_id Error_code.NoError
+    Bigstringaf.empty;
+  `NoChange
+
+let read_io ~token_handler state cs =
+  match Parse.read cs state.State.parse_state with
+  | Ok (consumed, frames, new_parse_state) ->
+      let state_with_parse = { state with parse_state = new_parse_state } in
+      let next_state =
+        List.fold_left
+          (fun state frame ->
+            match state with
+            | None -> None
+            | Some state -> token_handler frame state)
+          (Some state_with_parse) frames
+      in
+      (consumed, next_state)
+  | Error err ->
+      let next_state =
+        match err with
+        | Error.ConnectionError (code, msg) ->
+            handle_connection_error state code msg
+        | StreamError (stream_id, code) ->
+            handle_stream_error state stream_id code
+      in
+      (0, next_state)
 
 let token_handler ~process_complete_headers ~process_data_frame ~handle_preface
     ~error_handler ~peer (token : token) state =
@@ -236,9 +285,7 @@ let token_handler ~process_complete_headers ~process_data_frame ~handle_preface
       in
 
       let process_settings_frame flags settings_list =
-        let is_ack = Flags.test_ack flags in
-
-        match (frames_state.settings_status, is_ack) with
+        match (frames_state.settings_status, Flags.test_ack flags) with
         | _, false -> (
             let new_state =
               {
@@ -343,8 +390,6 @@ let token_handler ~process_complete_headers ~process_data_frame ~handle_preface
                       increment;
                 }
           | _ ->
-              Printf.printf "unexpected WINDOW_UPDATE, stream_id %li\n%!"
-                stream_id;
               connection_error Error_code.ProtocolError
                 "unexpected WINDOW_UPDATE"
       in

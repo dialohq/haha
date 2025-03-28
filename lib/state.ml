@@ -21,6 +21,7 @@ type ('readers, 'writers) t = {
   parse_state : Parse.parse_state;
   phase : ('readers, 'writers) phase;
   faraday : Faraday.t;
+  faraday_buffer : Bigstringaf.t;
 }
 
 let initial_frame_state recv_setttings user_settings =
@@ -60,8 +61,10 @@ let update_hpack_capacity state =
       | Ok _ -> Ok ())
 
 let initial () =
+  let write_buffer = Bigstringaf.create 20_000 in
   {
     phase = Preface false;
     parse_state = Magic;
-    faraday = Faraday.create Settings.default.max_frame_size;
+    faraday = Faraday.of_bigstring write_buffer;
+    faraday_buffer = write_buffer;
   }

@@ -24,7 +24,7 @@ let () =
           let cs = Cstruct.create 16 in
           Cstruct.LE.set_uint64 cs 0
             (Eio.Time.now env#clock |> Int64.bits_of_float);
-          Eio.Stream.add data_stream (`Data cs);
+          Eio.Stream.add data_stream (`Data [ cs ]);
           loop (sent + 1))
         else Eio.Stream.add data_stream (`End (None, []))
       in

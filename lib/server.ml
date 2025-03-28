@@ -84,7 +84,8 @@ let connection_handler ~(error_handler : Error.t -> unit)
         stream_error stream_id Error_code.ProtocolError
     | true, No_pseudo -> (
         match stream_state with
-        | Open (_, writers) ->
+        | Open (reader, writers) ->
+            reader (`End (None, header_list));
             next_step
               {
                 frames_state with
@@ -92,7 +93,8 @@ let connection_handler ~(error_handler : Error.t -> unit)
                   Streams.stream_transition frames_state.streams stream_id
                     (Half_closed (Remote writers));
               }
-        | Half_closed (Local _) ->
+        | Half_closed (Local reader) ->
+            reader (`End (None, header_list));
             next_step
               {
                 frames_state with
@@ -100,9 +102,7 @@ let connection_handler ~(error_handler : Error.t -> unit)
                   Streams.stream_transition frames_state.streams stream_id
                     Closed;
               }
-        | Reserved _ ->
-            (* TODO: check if this is the correct error *)
-            stream_error stream_id Error_code.ProtocolError
+        | Reserved _ -> stream_error stream_id Error_code.StreamClosed
         | Idle -> stream_error stream_id Error_code.ProtocolError
         | Closed | Half_closed (Remote _) ->
             connection_error Error_code.StreamClosed
