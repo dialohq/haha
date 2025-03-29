@@ -1,29 +1,6 @@
 open Angstrom
 module AU = Angstrom.Unbuffered
 
-let default_frame_header =
-  {
-    Frame.payload_length = 0;
-    flags = Flags.default_flags;
-    stream_id = -1l;
-    frame_type = Unknown (-1);
-  }
-
-type parse_context = {
-  mutable remaining_bytes_to_skip : int;
-  mutable did_report_stream_error : bool;
-  (* TODO: This should change as new settings frames arrive, but we don't yet
-   * resize the read buffer. *)
-  max_frame_size : int;
-}
-
-let create_parse_context max_frame_size =
-  {
-    remaining_bytes_to_skip = 0;
-    did_report_stream_error = false;
-    max_frame_size;
-  }
-
 let connection_error error_code msg =
   Error Error.(ConnectionError (error_code, msg))
 

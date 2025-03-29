@@ -1,13 +1,6 @@
 open Haha
 
 let () =
-  let print_bs_hex bs =
-    String.iter
-      (fun c -> Printf.printf "%02X " (Char.code c))
-      (Cstruct.to_string bs);
-    print_newline ()
-  in
-  let _ = print_bs_hex in
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let socket =
@@ -40,9 +33,9 @@ let () =
 
     Response.handle ~on_data:(fun cs ->
         match cs with
-        | `Data cs -> print_bs_hex cs
+        | `Data cs -> Cstruct.hexdump cs
         | `End (Some cs, _) ->
-            print_bs_hex cs;
+            Cstruct.hexdump cs;
             Printf.printf "Peer EOF\n%!"
         | `End _ -> Printf.printf "Peer EOF\n%!")
   in

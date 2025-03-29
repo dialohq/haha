@@ -1,14 +1,6 @@
 open Haha
 
 let () =
-  let print_bs_hex bs =
-    String.iter
-      (fun c -> Printf.printf "%02X " (Char.code c))
-      (Cstruct.to_string bs);
-    print_newline ()
-  in
-  let _ = print_bs_hex in
-
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let addr = `Tcp (Eio.Net.Ipaddr.V4.any, 8080) in
@@ -88,11 +80,10 @@ let () =
           ~on_data:(fun data ->
             match data with
             | `Data cs ->
-                (* print_bs_hex cs; *)
                 Printf.printf "Received %i bytes\n%!" cs.Cstruct.len;
                 put_data cs
             | `End (Some cs, _) ->
-                print_bs_hex cs;
+                Cstruct.hexdump cs;
                 put_data cs;
                 Printf.printf "Peer EOF\n%!"
             | `End _ -> Printf.printf "Peer EOF\n%!")
