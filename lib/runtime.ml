@@ -165,16 +165,13 @@ let read_io ~frame_handler (state : ('a, 'b) State.state) cs =
           (Some state_with_parse) frames
       in
       (consumed, next_state)
-  | Error err ->
-      let next_state =
-        match err with
-        | Error.ConnectionError err ->
-            handle_connection_error ~state err;
-            None
-        | StreamError (stream_id, code) ->
-            Some (handle_stream_error state stream_id code)
-      in
-      (0, next_state)
+  | Error err -> (
+      match err with
+      | _, Error.ConnectionError err ->
+          handle_connection_error ~state err;
+          (0, None)
+      | consumed, StreamError (stream_id, code) ->
+          (consumed, Some (handle_stream_error state stream_id code)))
 
 let frame_handler ~process_complete_headers ~process_data_frame ~error_handler
     ~peer (frame : Frame.t) (state : ('a, 'b) State.state) =

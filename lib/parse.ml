@@ -19,23 +19,24 @@ let magic_parse bs ~off ~len =
           parsing_error "error parsing connection preface string"
       | Done (consumed, _) -> Ok consumed)
 
-let parsing_error msg =
-  `Fail (Error.ConnectionError (Error_code.ProtocolError, msg))
+let parsing_error msg consumed =
+  `Fail (consumed, Error.ConnectionError (Error_code.ProtocolError, msg))
 
 let continue_frame_parse state =
   match state with
   | AU.Partial { committed; continue } -> `Partial (committed, continue)
-  | Fail (_, _, msg) -> parsing_error msg
+  | Fail (consumed, _, msg) -> parsing_error msg consumed
   | Done (consumed, result') -> (
       match result' with
-      | Error err -> `Fail err
+      | Error err -> `Fail (consumed, err)
       | Ok frame -> `Complete (consumed, frame))
 
 let start_frame_parse bs ~off ~len frame_parser =
   let parser = AU.parse frame_parser in
   match parser with
-  | Fail (_, _, msg) -> parsing_error msg
-  | Done _ -> parsing_error "error parsing, malformed frame"
+  | Fail (consumed, _, msg) -> parsing_error msg consumed
+  | Done (consumed, _) ->
+      parsing_error "error parsing, malformed frame" consumed
   | Partial { continue; _ } ->
       continue_frame_parse (continue bs ~off ~len Incomplete)
 
