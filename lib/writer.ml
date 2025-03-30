@@ -16,7 +16,7 @@ let write t socket =
             (acc + len, Cstruct.of_bigarray buffer ~off ~len))
           0 bs_list
       in
-      Eio.Flow.write socket (List.rev cs_list);
+      Eio.Flow.write socket cs_list;
       Faraday.shift t.faraday written
 
 let write_settings t settings =

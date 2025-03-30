@@ -1,6 +1,6 @@
 open Types
 
-type state = Streams.((server_reader, server_writers) State.state)
+type state = Streams.((server_reader, server_writers) State.t)
 type stream_state = Streams.((server_reader, server_writers) Stream.state)
 type request_handler = Request.t -> body_reader * Response.response_writer
 
@@ -94,33 +94,41 @@ let connection_handler ~(error_handler : Error.t -> unit)
     | end_stream, Valid pseudo -> (
         match stream_state with
         | Idle ->
-            let request =
-              {
-                Request.meth = Method.of_string pseudo.meth;
-                path = pseudo.path;
-                authority = pseudo.authority;
-                scheme = pseudo.scheme;
-                headers = Headers.filter_pseudo header_list;
-                body_writer = None;
-                response_handler = None;
-              }
-            in
+            let open_streams = Streams.count_open state.streams in
+            if
+              open_streams
+              < Int32.to_int state.local_settings.max_concurrent_streams
+            then
+              let request =
+                {
+                  Request.meth = Method.of_string pseudo.meth;
+                  path = pseudo.path;
+                  authority = pseudo.authority;
+                  scheme = pseudo.scheme;
+                  headers = Headers.filter_pseudo header_list;
+                  body_writer = None;
+                  response_handler = None;
+                }
+              in
 
-            let reader, response_writer = request_handler request in
+              let reader, response_writer = request_handler request in
 
-            let new_stream_state : stream_state =
-              if end_stream then
-                Half_closed (Remote (WritingResponse response_writer))
-              else Open (reader, WritingResponse response_writer)
-            in
+              let new_stream_state : stream_state =
+                if end_stream then
+                  Half_closed (Remote (WritingResponse response_writer))
+                else Open (reader, WritingResponse response_writer)
+              in
 
-            next_step
-              {
-                state with
-                streams =
-                  Streams.stream_transition state.streams stream_id
-                    new_stream_state;
-              }
+              next_step
+                {
+                  state with
+                  streams =
+                    Streams.stream_transition state.streams stream_id
+                      new_stream_state;
+                }
+            else
+              connection_error Error_code.ProtocolError
+                "MAX_CONCURRENT_STREAMS setting reached"
         | Open _ | Half_closed (Local _) ->
             stream_error stream_id Error_code.ProtocolError
         | Reserved _ ->

@@ -14,7 +14,7 @@ let handle_connection_error ?state ((error_code, msg) : Error.connection_error)
       let writer = create (9 + 4 + 4 + String.length msg) in
       write_goaway writer last_stream error_code debug_data
 
-let handle_stream_error (state : ('a, 'b) State.state) stream_id code =
+let handle_stream_error (state : ('a, 'b) State.t) stream_id code =
   write_rst_stream state.writer stream_id code;
   {
     state with
@@ -43,7 +43,7 @@ let parse_preface_settings ?user_settings ~socket ~receive_buffer =
       ->
         let peer_settings = Settings.(update_with_list default settings_list) in
         let open Writer in
-        let writer = create peer_settings.max_frame_size in
+        let writer = create (peer_settings.max_frame_size + 9) in
 
         (match user_settings with
         | Some user_settings -> write_settings writer user_settings
@@ -62,7 +62,7 @@ let parse_preface_settings ?user_settings ~socket ~receive_buffer =
   in
   parse_loop
 
-let body_writer_handler ~write (state : ('a, 'b) State.state)
+let body_writer_handler ~write (state : ('a, 'b) State.t)
     (f : Types.body_writer) id =
   let stream_flow = Streams.flow_of_id state.streams id in
   let max_frame_size = state.peer_settings.max_frame_size in
@@ -152,7 +152,7 @@ let user_goaway_handler state ~f last_client_id =
   write_goaway state.State.writer last_client_id Error_code.NoError
     Bigstringaf.empty
 
-let read_io ~frame_handler (state : ('a, 'b) State.state) cs =
+let read_io ~frame_handler (state : ('a, 'b) State.t) cs =
   match Parse.read_frames cs with
   | Ok (consumed, frames, continue_opt) ->
       let state_with_parse = { state with parse_state = continue_opt } in
@@ -174,7 +174,7 @@ let read_io ~frame_handler (state : ('a, 'b) State.state) cs =
           (consumed, Some (handle_stream_error state stream_id code)))
 
 let frame_handler ~process_complete_headers ~process_data_frame ~error_handler
-    ~peer (frame : Frame.t) (state : ('a, 'b) State.state) =
+    ~peer (frame : Frame.t) (state : ('a, 'b) State.t) =
   let no_error_close () =
     write_goaway state.writer state.streams.last_server_stream
       Error_code.NoError Bigstringaf.empty;
@@ -284,38 +284,23 @@ let frame_handler ~process_complete_headers ~process_data_frame ~error_handler
   let process_settings_frame { Frame.flags; _ } settings_list =
     match (state.settings_status, Flags.test_ack flags) with
     | _, false -> (
-        let new_state =
-          {
-            state with
-            peer_settings =
-              Settings.update_with_list state.peer_settings settings_list;
-          }
-        in
-
-        match State.update_hpack_capacity new_state with
-        | Error _ ->
-            connection_error Error_code.ProtocolError
-              "Error updating Hpack buffer capacity"
-        | Ok _ ->
+      
+        match State.update_state_with_peer_settings state settings_list with
+        | Error msg -> connection_error Error_code.InternalError msg
+        | Ok new_state ->
             write_settings_ack state.writer;
             next_step new_state)
-    | Syncing new_settings, true -> (
+    | Syncing new_settings, true ->
         let new_state =
           {
             state with
             local_settings =
-              Settings.(
-                update_with_list state.local_settings
-                  (to_settings_list new_settings));
+              Settings.(update_with_list state.local_settings new_settings);
             settings_status = Idle;
           }
         in
 
-        match State.update_hpack_capacity new_state with
-        | Error _ ->
-            connection_error Error_code.ProtocolError
-              "Error updating Hpack buffer capacity"
-        | Ok _ -> next_step new_state)
+        next_step new_state
     | Idle, true ->
         connection_error Error_code.ProtocolError
           "Unexpected ACK flag in SETTINGS frame."

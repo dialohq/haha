@@ -1,7 +1,7 @@
-type settings_sync = Syncing of Settings.t | Idle
+type settings_sync = Syncing of Settings.settings_list | Idle
 type headers_state = Idle | InProgress of Bigstringaf.t * int
 
-type ('readers, 'writers) state = {
+type ('readers, 'writers) t = {
   peer_settings : Settings.t;
   local_settings : Settings.t;
   settings_status : settings_sync;
@@ -28,7 +28,7 @@ let initial ~writer ~peer_settings ~user_settings =
         (Int.min peer_settings.header_table_size
            Settings.default.header_table_size);
     local_settings = Settings.default;
-    settings_status = Syncing user_settings;
+    settings_status = Syncing Settings.(to_settings_list user_settings);
     streams = Streams.initial ();
     shutdown = false;
     headers_state = Idle;
@@ -36,18 +36,40 @@ let initial ~writer ~peer_settings ~user_settings =
     flow = Flow_control.initial;
   }
 
-let update_hpack_capacity state =
-  match
-    Hpackv.Decoder.set_capacity state.hpack_decoder
-      (Int.min state.peer_settings.header_table_size
-         state.local_settings.header_table_size)
-  with
-  | Error _ as err -> err
-  | Ok _ -> (
-      match
-        Hpackv.Decoder.set_capacity state.hpack_decoder
-          (Int.min state.peer_settings.header_table_size
-             state.local_settings.header_table_size)
-      with
-      | Error _ as err -> err
-      | Ok _ -> Ok ())
+let update_state_with_peer_settings (t : ('a, 'b) t) settings_list =
+  let rec loop list (state : ('a, 'b) t) : (('a, 'b) t, string) result =
+    match list with
+    | [] -> Ok state
+    | Settings.HeaderTableSize x :: l -> (
+        match
+          Result.map
+            (fun _ -> state)
+            (Hpackv.Decoder.set_capacity state.hpack_decoder x)
+        with
+        | Error _ -> Error "error updating HPack decoder capacity"
+        | Ok state -> loop l state)
+    | MaxFrameSize _ :: l -> loop l state
+    | MaxHeaderListSize _ :: l -> loop l state
+    | _ :: l -> loop l state
+  in
+
+  loop settings_list
+    { t with peer_settings = Settings.(update_with_list default settings_list) }
+
+let update_state_with_local_settings (t : ('a, 'b) t) settings_list =
+  let rec loop list (state : ('a, 'b) t) : (('a, 'b) t, string) result =
+    match list with
+    | [] -> Ok state
+    | Settings.HeaderTableSize x :: l ->
+        Hpackv.Encoder.set_capacity state.hpack_encoder x;
+        loop l state
+    | MaxFrameSize _ :: l -> loop l state
+    | MaxHeaderListSize _ :: l -> loop l state
+    | _ :: l -> loop l state
+  in
+
+  loop settings_list
+    {
+      t with
+      local_settings = Settings.(update_with_list default settings_list);
+    }

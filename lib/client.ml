@@ -1,6 +1,6 @@
 open Writer
 
-type state = Streams.((client_readers, client_writer) State.state)
+type state = Streams.((client_readers, client_writer) State.t)
 type stream_state = Streams.((client_readers, client_writer) Stream.state)
 
 let run ~(error_handler : Error.t -> unit)

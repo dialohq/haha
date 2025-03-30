@@ -61,6 +61,12 @@ let stream_transition t id state =
     { t with last_client_stream = Int32.max id t.last_client_stream; map }
   else { t with last_server_stream = Int32.max id t.last_server_stream; map }
 
+let count_open t =
+  StreamMap.fold
+    (fun _ (v : ('a, 'b) Stream.t) acc ->
+      match v.state with Open _ | Half_closed _ -> acc + 1 | _ -> acc)
+    t.map 0
+
 let get_next_id t = function
   | `Client ->
       if Stream_identifier.is_connection t.last_client_stream then 1l

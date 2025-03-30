@@ -2,17 +2,14 @@ open Eio
 
 let start :
     'a 'b.
-    ?request_writer_handler:(('a, 'b) State.state -> ('a, 'b) State.state) ->
+    ?request_writer_handler:(('a, 'b) State.t -> ('a, 'b) State.t) ->
     ?await_user_goaway:(unit -> unit) ->
-    ?get_response_writers:
-      (('a, 'b) State.state -> (unit -> ('a, 'b) State.state) list) ->
-    ?combine_states:
-      (('a, 'b) State.state -> ('a, 'b) State.state -> ('a, 'b) State.state) ->
-    get_body_writers:(('a, 'b) State.state -> (Types.body_writer * int32) list) ->
+    ?get_response_writers:(('a, 'b) State.t -> (unit -> ('a, 'b) State.t) list) ->
+    ?combine_states:(('a, 'b) State.t -> ('a, 'b) State.t -> ('a, 'b) State.t) ->
+    get_body_writers:(('a, 'b) State.t -> (Types.body_writer * int32) list) ->
     initial_state_result:
-      (('a, 'b) State.state * Cstruct.t, Error.connection_error) result ->
-    frame_handler:
-      (Frame.t -> ('a, 'b) State.state -> ('a, 'b) State.state option) ->
+      (('a, 'b) State.t * Cstruct.t, Error.connection_error) result ->
+    frame_handler:(Frame.t -> ('a, 'b) State.t -> ('a, 'b) State.t option) ->
     receive_buffer:Cstruct.t ->
     _ ->
     _ =
