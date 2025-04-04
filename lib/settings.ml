@@ -5,7 +5,7 @@ type setting =
   | EnablePush of int
   | MaxConcurrentStreams of int32
   | InitialWindowSize of int32
-  | MaxFrameSize (* this means payload size *) of int
+  | MaxFrameSize of int
   | MaxHeaderListSize of int
 
 type settings_list = setting list
@@ -68,10 +68,6 @@ let write_settings_payload t settings_list =
   let open Faraday in
   List.iter
     (fun setting ->
-      (* From RFC7540§6.5.1:
-       *   The payload of a SETTINGS frame consists of zero or more parameters,
-       *   each consisting of an unsigned 16-bit setting identifier and an
-       *   unsigned 32-bit value. *)
       BE.write_uint16 t (serialize_key setting);
       match setting with
       | MaxConcurrentStreams value | InitialWindowSize value ->
@@ -108,6 +104,6 @@ let pp_hum formatter t =
     in
     Format.fprintf formatter "@[(%S %Ld)@]" key value
   in
-  Format.fprintf formatter "@[(";
+  Format.fprintf formatter "@[{";
   Format.pp_print_list pp_elem formatter (to_settings_list t);
-  Format.fprintf formatter ")@]"
+  Format.fprintf formatter "}@]"

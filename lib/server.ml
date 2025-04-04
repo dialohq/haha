@@ -1,18 +1,26 @@
 open Types
 
-type state = Streams.((server_reader, server_writers) State.t)
-type stream_state = Streams.((server_reader, server_writers) Stream.state)
+type state = (Streams.server_reader, Streams.server_writers) State.t
+
+type stream_state =
+  (Streams.server_reader, Streams.server_writers) Streams.Stream.state
+
 type request_handler = Request.t -> body_reader * Response.response_writer
+
+let pp_hum_state =
+  State.pp_hum Streams.pp_hum_server_reader Streams.pp_hum_server_writers
 
 (* TODO: config argument could have some more user-friendly type so there is no need to look into RFC *)
 let connection_handler ~(error_handler : Error.t -> unit)
-    ?(goaway_writer : (unit -> unit) option) (config : Settings.t)
-    (request_handler : request_handler) socket _ =
+    ?(goaway_writer : (unit -> unit) option) ?(debug = false)
+    (config : Settings.t) (request_handler : request_handler) socket _ =
+  let semaphore = Eio.Semaphore.make 1 in
+
   let process_data_frame (state : state) stream_error connection_error next_step
       no_error_close { Frame.stream_id; flags; _ } bs =
     let end_stream = Flags.test_end_stream flags in
     match (Streams.state_of_id state.streams stream_id, end_stream) with
-    | Idle, _ | Half_closed (Remote _), _ ->
+    | Idle, _ | HalfClosed (Remote _), _ ->
         stream_error stream_id Error_code.StreamClosed
     | Reserved _, _ ->
         connection_error Error_code.ProtocolError
@@ -27,7 +35,7 @@ let connection_handler ~(error_handler : Error.t -> unit)
             state with
             streams =
               Streams.stream_transition state.streams stream_id
-                (Half_closed (Remote writers));
+                (HalfClosed (Remote writers));
           }
     | Open (reader, _), false ->
         reader (`Data (Cstruct.of_bigarray bs));
@@ -36,7 +44,7 @@ let connection_handler ~(error_handler : Error.t -> unit)
             state with
             streams = Streams.update_last_stream state.streams stream_id;
           }
-    | Half_closed (Local reader), true ->
+    | HalfClosed (Local reader), true ->
         reader (`End (Some (Cstruct.of_bigarray bs), []));
         let new_streams =
           Streams.stream_transition state.streams stream_id Closed
@@ -48,7 +56,7 @@ let connection_handler ~(error_handler : Error.t -> unit)
                new_streams
         then no_error_close ()
         else next_step { state with streams = new_streams }
-    | Half_closed (Local reader), false ->
+    | HalfClosed (Local reader), false ->
         reader (`Data (Cstruct.of_bigarray bs));
         next_step
           {
@@ -76,9 +84,9 @@ let connection_handler ~(error_handler : Error.t -> unit)
                 state with
                 streams =
                   Streams.stream_transition state.streams stream_id
-                    (Half_closed (Remote writers));
+                    (HalfClosed (Remote writers));
               }
-        | Half_closed (Local reader) ->
+        | HalfClosed (Local reader) ->
             reader (`End (None, header_list));
             next_step
               {
@@ -88,7 +96,7 @@ let connection_handler ~(error_handler : Error.t -> unit)
               }
         | Reserved _ -> stream_error stream_id Error_code.StreamClosed
         | Idle -> stream_error stream_id Error_code.ProtocolError
-        | Closed | Half_closed (Remote _) ->
+        | Closed | HalfClosed (Remote _) ->
             connection_error Error_code.StreamClosed
               "HEADERS received on a closed stream")
     | end_stream, Valid pseudo -> (
@@ -115,7 +123,7 @@ let connection_handler ~(error_handler : Error.t -> unit)
 
               let new_stream_state : stream_state =
                 if end_stream then
-                  Half_closed (Remote (WritingResponse response_writer))
+                  HalfClosed (Remote (WritingResponse response_writer))
                 else Open (reader, WritingResponse response_writer)
               in
 
@@ -129,12 +137,12 @@ let connection_handler ~(error_handler : Error.t -> unit)
             else
               connection_error Error_code.ProtocolError
                 "MAX_CONCURRENT_STREAMS setting reached"
-        | Open _ | Half_closed (Local _) ->
+        | Open _ | HalfClosed (Local _) ->
             stream_error stream_id Error_code.ProtocolError
         | Reserved _ ->
             connection_error Error_code.ProtocolError
               "HEADERS received on reserved stream"
-        | Half_closed (Remote _) | Closed ->
+        | HalfClosed (Remote _) | Closed ->
             connection_error Error_code.StreamClosed
               "HEADERS received on closed stream")
   in
@@ -163,7 +171,7 @@ let connection_handler ~(error_handler : Error.t -> unit)
         let new_stream_state =
           match reader_opt with
           | None -> Streams.Stream.Closed
-          | Some reader -> Half_closed (Local reader)
+          | Some reader -> HalfClosed (Local reader)
         in
         {
           state with
@@ -183,12 +191,8 @@ let connection_handler ~(error_handler : Error.t -> unit)
     Streams.body_writers (`Server state.State.streams)
   in
 
-  let combine_states s1 s2 =
-    {
-      s1 with
-      State.streams =
-        Streams.combine_after_response s1.State.streams s2.State.streams;
-    }
+  let combine_states =
+    State.combine ~combine_streams:Streams.combine_server_streams
   in
 
   let receive_buffer = Cstruct.create (9 + config.max_frame_size) in
@@ -203,7 +207,7 @@ let connection_handler ~(error_handler : Error.t -> unit)
     | Ok _ -> (
         match
           Runtime.parse_preface_settings ~socket ~receive_buffer ~user_settings
-            0 0 0 None
+            ()
         with
         | Error _ as err -> err
         | Ok (peer_settings, rest_to_parse, writer) ->
@@ -213,5 +217,5 @@ let connection_handler ~(error_handler : Error.t -> unit)
   in
 
   Runloop.start ~receive_buffer ~frame_handler ~get_body_writers
-    ~get_response_writers ~combine_states ~initial_state_result
-    ?await_user_goaway:goaway_writer socket
+    ~get_response_writers ~combine_states ~initial_state_result ~pp_hum_state
+    ~debug ~semaphore ?await_user_goaway:goaway_writer socket

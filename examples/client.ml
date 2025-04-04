@@ -25,7 +25,7 @@ let () =
 
       `Stop_daemon);
 
-  let body_writer ~window_size:_ = Eio.Stream.take data_stream in
+  let body_writer ~window_size:_ = (Eio.Stream.take data_stream, ignore) in
 
   let response_handler (response : Response.t) =
     let status = Response.status response in

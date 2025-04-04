@@ -26,3 +26,16 @@ let incr_sent t n ~initial_window_size =
   (*   t.sent new_flow.sent initial_window_size t.out_flow; *)
 
   if is_overflow ~initial_window_size new_flow then Error () else Ok new_flow
+
+let max t1 t2 =
+  {
+    out_flow = Int32.max t1.out_flow t2.out_flow;
+    sent = Int32.max t1.sent t2.sent;
+  }
+
+let pp_hum fmt t =
+  let open Format in
+  fprintf fmt "@[<v 2>{";
+  fprintf fmt "out_flow = %li" t.out_flow;
+  fprintf fmt "@ sent = %li" t.sent;
+  fprintf fmt "@]}"

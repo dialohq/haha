@@ -49,13 +49,9 @@ let parse_data_frame ({ Frame.payload_length; _ } as frame_header) =
 
 let parse_priority =
   lift2
-    (fun stream_dependency weight ->
-      let e = Priority.test_exclusive stream_dependency in
-      {
-        Priority.exclusive = e;
-        weight = weight + 1;
-        stream_dependency = parse_stream_identifier stream_dependency;
-      })
+    (fun stream_dependency _weight ->
+      let _exclusive = Util.test_bit_int32 stream_dependency 31 in
+      ())
     BE.any_int32 any_uint8
 
 let parse_headers_frame frame_header =
@@ -75,7 +71,7 @@ let parse_headers_frame frame_header =
 let parse_priority_frame ({ Frame.payload_length; _ } as headers) =
   match Frame.validate_frame_headers headers with
   | Error _ as err -> advance payload_length >>| fun () -> err
-  | Ok _ -> lift (fun priority -> Ok (Frame.Priority priority)) parse_priority
+  | Ok _ -> lift (fun () -> Ok Frame.Priority) parse_priority
 
 let parse_error_code = lift Error_code.parse BE.any_int32
 

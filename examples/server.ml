@@ -59,12 +59,12 @@ let () =
 
         let body_writer ~window_size:_ =
           match take_data () with
-          | None -> `End (None, [])
+          | None -> (`End (None, []), ignore)
           | Some data ->
               Cstruct.LE.set_uint64 cs 8
                 (Eio.Time.now env#clock |> Int64.bits_of_float);
               Cstruct.blit data 0 cs 0 8;
-              `Data [ cs ]
+              (`Data [ cs ], ignore)
         in
 
         Request.handle
@@ -88,7 +88,7 @@ let () =
                 Printf.printf "Peer EOF\n%!"
             | `End _ -> Printf.printf "Peer EOF\n%!")
     | POST, "/" ->
-        let body_writer ~window_size:_ = `End (None, []) in
+        let body_writer ~window_size:_ = (`End (None, []), ignore) in
         Request.handle
           ~response_writer:(fun () ->
             `Final (Response.create_with_streaming ~body_writer `OK []))

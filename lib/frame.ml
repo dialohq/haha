@@ -40,7 +40,7 @@ module FrameType = struct
     | 9 -> Continuation
     | x -> Unknown x
 
-  let pp fmt p =
+  let pp_hum fmt p =
     Format.fprintf fmt
       (match p with
       | Data -> "DATA"
@@ -66,7 +66,7 @@ type frame_header = {
 type frame_payload =
   | Data of Bigstringaf.t
   | Headers of Bigstringaf.t
-  | Priority of Priority.t
+  | Priority
   | RSTStream of Error_code.t
   | Settings of Settings.settings_list
   | PushPromise of Stream_identifier.t * Bigstringaf.t
@@ -149,6 +149,8 @@ let validate_frame_headers
         Error.connection_error ProtocolError
           "CONTINUATION must be associated with a stream"
       else Ok ()
-  | Unknown _ ->
-      (* unreachable *)
-      Ok ()
+  | Unknown _ -> Ok ()
+
+let pp_hum fmt t =
+  Format.fprintf fmt "%a [%li]" FrameType.pp_hum t.frame_header.frame_type
+    t.frame_header.stream_id

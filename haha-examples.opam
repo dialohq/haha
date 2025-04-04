@@ -2,7 +2,7 @@
 opam-version: "2.0"
 synopsis: "Examples for Haha library"
 depends: [
-  "dune" {>= "3.17"}
+  "dune" {>= "3.15"}
   "haha"
   "uri"
   "odoc" {with-doc}

@@ -57,9 +57,9 @@ let read_frames ({ Cstruct.len = total_len; _ } as cs) =
             (total_consumed + consumed)
             None
         else Ok (total_consumed + consumed, new_results, None)
-    | `Partial (committed, continue) ->
-        Ok (total_consumed + committed, results, Some continue)
+    | `Partial (consumed, continue) ->
+        Ok (total_consumed + consumed, results, Some continue)
     | `Fail err -> Error err
   in
 
-  loop_frames cs [] 0 None
+  loop_frames cs [] 0

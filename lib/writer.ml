@@ -2,6 +2,9 @@ open Serializes
 
 type t = { faraday : Faraday.t; buffer : Bigstringaf.t }
 
+let pp_hum fmt t =
+  Format.fprintf fmt "<length %i>" (Bigstringaf.length t.buffer)
+
 let create capacity =
   let buffer = Bigstringaf.create capacity in
   { buffer; faraday = Faraday.of_bigstring buffer }
@@ -60,6 +63,10 @@ let write_headers_response ?padding_length ?(end_header = true) t hpack_encoder
         (status, headers, Flags.default_flags)
     | `Final { status; headers; body_writer = None } ->
         (status, headers, Flags.default_flags |> Flags.set_end_stream)
+  in
+
+  let headers =
+    { Headers.name = "user-agent"; value = "haha/0.0.1" } :: headers
   in
 
   let flags = if end_header then Flags.set_end_header flags else flags in
