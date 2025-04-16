@@ -2,19 +2,18 @@ open Writer
 
 let handle_connection_error ?state ((error_code, msg) : Error.connection_error)
     =
-  Printf.printf "Sending connection error: %s\n%!" msg;
   let last_stream =
     match state with
     | None -> Int32.zero
     (* TODO: change last id to peer stream id, not just client *)
-    | Some state -> state.State.streams.last_client_stream
+    | Some state -> state.State.streams.last_peer_stream
   in
   let debug_data = Bigstringaf.of_string ~off:0 ~len:(String.length msg) msg in
   match state with
-  | Some { writer; _ } -> write_goaway writer last_stream error_code debug_data
+  | Some { writer; _ } -> write_goaway ~debug_data writer last_stream error_code
   | None ->
       let writer = create (9 + 4 + 4 + String.length msg) in
-      write_goaway writer last_stream error_code debug_data
+      write_goaway ~debug_data writer last_stream error_code
 
 let handle_stream_error (state : ('a, 'b) State.t) stream_id code =
   write_rst_stream state.writer stream_id code;
@@ -23,7 +22,7 @@ let handle_stream_error (state : ('a, 'b) State.t) stream_id code =
     streams = Streams.stream_transition state.streams stream_id Closed;
   }
 
-let parse_preface_settings ?user_settings ~socket ~receive_buffer () =
+let process_preface_settings ?user_settings ~socket ~receive_buffer () =
   let rec parse_loop read_off total_consumed total_read continue_opt =
     let read_len =
       Eio.Flow.single_read socket
@@ -42,7 +41,7 @@ let parse_preface_settings ?user_settings ~socket ~receive_buffer () =
           (total_consumed + consumed)
           (total_read + read_len) (Some continue)
     | `Complete (consumed, { Frame.frame_payload = Settings settings_list; _ })
-      ->
+      -> (
         let peer_settings = Settings.(update_with_list default settings_list) in
         let open Writer in
         let writer = create (peer_settings.max_frame_size + 9) in
@@ -53,24 +52,33 @@ let parse_preface_settings ?user_settings ~socket ~receive_buffer () =
         write_settings_ack writer;
         write_window_update writer Stream_identifier.connection
           Flow_control.WindowSize.initial_increment;
-        write writer socket;
+        match write writer socket with
+        | Ok () ->
+            let rest_off = read_off + total_consumed + consumed in
+            let rest_len = total_read + read_len - rest_off in
 
-        let rest_off = read_off + total_consumed + consumed in
-        let rest_len = total_read + read_len - rest_off in
-
-        Ok (peer_settings, Cstruct.sub receive_buffer rest_off rest_len, writer)
+            Ok
+              ( peer_settings,
+                Cstruct.sub receive_buffer rest_off rest_len,
+                writer )
+        | Error msg -> Error (Error_code.ConnectError, msg))
     | `Complete (_, _) ->
         Error (Error_code.ProtocolError, "invalid client preface")
   in
   parse_loop 0 0 0 None
 
-let body_writer_handler ~write (state : ('a, 'b) State.t)
-    (f : Types.body_writer) id =
-  let stream_flow = Streams.flow_of_id state.streams id in
-  let max_frame_size = state.peer_settings.max_frame_size in
-  let res, on_flush = f ~window_size:stream_flow.out_flow in
+let body_writer_handler ?(debug = false)
+    (f : unit -> Types.body_writer_fragment) id =
+  let _ = debug in
+  let res, on_flush = f () in
 
-  ( (match res with
+  fun (state : ('a, 'b) State.t) ->
+    let state =
+      { state with flush_thunk = Util.merge_thunks state.flush_thunk on_flush }
+    in
+    let stream_flow = Streams.flow_of_id state.streams id in
+    let max_frame_size = state.peer_settings.max_frame_size in
+    match res with
     | `Data cs_list -> (
         let total_len =
           List.fold_left (fun acc cs -> cs.Cstruct.len + acc) 0 cs_list
@@ -107,10 +115,10 @@ let body_writer_handler ~write (state : ('a, 'b) State.t)
         | Ok new_flow -> (
             let distributed = Util.split_cstructs cs_list max_frame_size in
             List.iteri
-              (fun i (cs_list, len) ->
+              (fun _ (cs_list, len) ->
                 write_data ~end_stream:(not send_trailers) state.writer id len
-                  cs_list;
-                if i < List.length distributed - 1 then write ())
+                  cs_list
+                (* if i < List.length distributed - 1 then write () *))
               distributed;
 
             if send_trailers then
@@ -149,60 +157,40 @@ let body_writer_handler ~write (state : ('a, 'b) State.t)
               state with
               streams = Streams.stream_transition state.streams id Closed;
             })
-    | `Yield -> Eio.Fiber.await_cancel ()),
-    on_flush )
+    | `Yield -> Eio.Fiber.await_cancel ()
 
-let user_goaway_handler state ~f last_client_id =
+let user_goaway_handler ~f =
   f ();
-  Printf.printf "Starting shutdown\n%!";
-  write_goaway state.State.writer last_client_id Error_code.NoError
-    Bigstringaf.empty
+  fun state ->
+    write_goaway state.State.writer state.streams.last_peer_stream
+      Error_code.NoError;
+    { state with shutdown = true }
 
-let read_io ~frame_handler ~debug (state : ('a, 'b) State.t) cs =
+let read_io ~debug ~frame_handler (state : ('a, 'b) State.t) cs =
   match Parse.read_frames cs state.parse_state with
   | Ok (consumed, frames, continue_opt) ->
-      (if debug then
-         Format.(
-           printf "Parsed frames: %a\n%!"
-             (pp_print_list Frame.pp_hum ~pp_sep:(fun x () ->
-                  pp_print_string x " | "))
-             frames));
+      let _ = debug in
       let state_with_parse = { state with parse_state = continue_opt } in
-      if debug then
-        Printf.printf "parse_state with continue: %b\n%!"
-        @@ Option.is_some continue_opt;
-      (* let next_state = *)
-      (*   List.fold_left *)
-      (*     (fun state frame -> *)
-      (*       match state with *)
-      (*       | None -> None *)
-      (*       | Some state -> frame_handler frame state) *)
-      (*     (Some state_with_parse) frames *)
-      (* in *)
-      let next_state, rest_frames =
-        match frames with
-        | [] -> (Some state_with_parse, [])
-        | frame :: rest_frames ->
-            (frame_handler frame state_with_parse, rest_frames)
+      let next_state =
+        List.fold_left
+          (fun state frame ->
+            match state with
+            | None -> None
+            | Some state -> frame_handler frame state)
+          (Some state_with_parse) frames
       in
 
-      (consumed, next_state, rest_frames)
+      (consumed, next_state)
   | Error err -> (
       match err with
       | _, Error.ConnectionError err ->
           handle_connection_error ~state err;
-          (0, None, [])
+          (0, None)
       | consumed, StreamError (stream_id, code) ->
-          (consumed, Some (handle_stream_error state stream_id code), []))
+          (consumed, Some (handle_stream_error state stream_id code)))
 
 let frame_handler ~process_complete_headers ~process_data_frame ~error_handler
-    ~peer (frame : Frame.t) (state : ('a, 'b) State.t) =
-  let no_error_close () =
-    write_goaway state.writer state.streams.last_server_stream
-      Error_code.NoError Bigstringaf.empty;
-
-    None
-  in
+    (frame : Frame.t) (state : ('a, 'b) State.t) =
   let connection_error code msg =
     handle_connection_error ~state (code, msg);
     None
@@ -215,7 +203,6 @@ let frame_handler ~process_complete_headers ~process_data_frame ~error_handler
   in
   let process_data_frame =
     process_data_frame state stream_error connection_error next_step
-      no_error_close
   in
   let decompress_headers_block bs ~len hpack_decoder =
     let hpack_parser = Hpackv.Decoder.decode_headers hpack_decoder in
@@ -240,21 +227,8 @@ let frame_handler ~process_complete_headers ~process_data_frame ~error_handler
   in
 
   let process_headers_frame frame_header bs =
-    let { Frame.flags; stream_id; _ } = frame_header in
-    if state.shutdown then
-      connection_error Error_code.ProtocolError
-        "client tried to open a stream after sending GOAWAY"
-    else if
-      stream_id
-      <
-      match peer with
-      | `Server -> state.streams.last_client_stream
-      | `Client -> state.streams.last_server_stream
-    then
-      connection_error Error_code.ProtocolError
-        "received HEADERS with stream ID smaller than the last client open \
-         stream"
-    else if not (Flags.test_end_header flags) then (
+    let { Frame.flags; _ } = frame_header in
+    if not (Flags.test_end_header flags) then (
       let headers_buffer = Bigstringaf.create 10000 in
       let len = Bigstringaf.length bs in
       Bigstringaf.blit bs ~src_off:0 headers_buffer ~dst_off:0 ~len;
@@ -337,36 +311,25 @@ let frame_handler ~process_complete_headers ~process_data_frame ~error_handler
           "RST_STREAM received on a closed stream!"
     | _ -> (
         error_handler (Error.StreamError (stream_id, error_code));
-        let new_streams =
+        let streams =
           Streams.stream_transition state.streams stream_id Closed
         in
-        match
-          ( state.shutdown,
-            Streams.all_closed ~last_stream_id:state.streams.last_client_stream
-              new_streams )
-        with
-        | true, true -> no_error_close ()
-        | _ -> next_step { state with streams = new_streams })
+        match (state.shutdown, Streams.all_closed streams) with
+        | true, true -> None
+        | _ -> next_step { state with streams })
   in
 
   let process_goaway_frame payload =
-    let last_stream_id, code, msg = payload in
+    (* TODO: we should "cancel" whatever requests were sent with stream_id greater than _last_stream_id *)
+    let _last_stream_id, code, msg = payload in
     match code with
     | Error_code.NoError -> (
         (* graceful shutdown *)
-        match Streams.all_closed ~last_stream_id state.streams with
+        match Streams.all_closed state.streams with
         | false ->
-            let new_state =
-              {
-                state with
-                shutdown = true;
-                streams =
-                  Streams.update_last_stream ~strict:true state.streams
-                    last_stream_id;
-              }
-            in
+            let new_state = { state with shutdown = true } in
             next_step new_state
-        | true -> no_error_close ())
+        | true -> None)
     | _ ->
         error_handler (Error.ConnectionError (code, Bigstringaf.to_string msg));
         None

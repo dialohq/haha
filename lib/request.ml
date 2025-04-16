@@ -12,7 +12,7 @@ type t = {
   response_handler : response_handler option;
 }
 
-type request_writer = unit -> t
+type request_writer = unit -> t option
 
 let path t = t.path
 let meth t = t.meth

@@ -165,7 +165,8 @@ let write_ping_frame t info ?(off = 0) payload =
   write_frame_header t header;
   schedule_bigstring ~off ~len:payload_length t payload
 
-let write_go_away_frame t last_stream_id error_code debug_data =
+let write_go_away_frame ?(debug_data = Bigstringaf.empty) t last_stream_id
+    error_code =
   let debug_data_len = Bigstringaf.length debug_data in
   let header =
     {

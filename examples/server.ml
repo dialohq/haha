@@ -41,7 +41,7 @@ let () =
         let interim_responses =
           Dynarray.make 2 (Response.create_interim `Continue [])
         in
-        let data_stream = Eio.Stream.create 0 in
+        let data_stream = Eio.Stream.create Int.max_int in
         let iterations = ref 0 in
         let max = 5 in
         let take_data () =

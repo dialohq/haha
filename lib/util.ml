@@ -36,3 +36,8 @@ let split_cstructs cstructs max_bytes =
       (group, group_size) :: build_all_groups new_remaining
   in
   build_all_groups cstructs
+
+let merge_thunks f1 f2 : unit -> unit =
+ fun () ->
+  f1 ();
+  f2 ()

@@ -20,10 +20,6 @@ let incr_out_flow t n = { t with out_flow = Int32.(add t.out_flow n) }
 
 let incr_sent t n ~initial_window_size =
   let new_flow = { t with sent = Int32.(add t.sent n) } in
-  (* Printf.printf *)
-  (*   "Previous sent: %li | New sent: %li | Initial window: %li | Out flow: %li\n\ *)
-  (*    %!" *)
-  (*   t.sent new_flow.sent initial_window_size t.out_flow; *)
 
   if is_overflow ~initial_window_size new_flow then Error () else Ok new_flow
 

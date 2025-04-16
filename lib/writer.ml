@@ -10,17 +10,25 @@ let create capacity =
   { buffer; faraday = Faraday.of_bigstring buffer }
 
 let write t socket =
-  match Faraday.operation t.faraday with
-  | `Close | `Yield -> ()
-  | `Writev bs_list ->
+  let op = Faraday.operation t.faraday in
+  match op with
+  | `Close -> Ok ()
+  | `Yield -> Ok ()
+  | `Writev bs_list -> (
       let written, cs_list =
         List.fold_left_map
           (fun acc { Faraday.buffer; off; len } ->
             (acc + len, Cstruct.of_bigarray buffer ~off ~len))
           0 bs_list
       in
-      Eio.Flow.write socket cs_list;
-      Faraday.shift t.faraday written
+      try
+        Eio.Flow.write socket cs_list;
+
+        Faraday.shift t.faraday written;
+        Ok ()
+      with exn ->
+        Error
+          (Format.sprintf "TCP connection error: %s" (Printexc.to_string exn)))
 
 let write_settings t settings =
   let frame_info = create_frame_info Stream_identifier.connection in
@@ -106,5 +114,5 @@ let writer_request_headers ?padding_length ?(end_header = true) t hpack_encoder
 
 let write_connection_preface t = write_connection_preface t.faraday
 let write_rst_stream t = write_rst_stream_frame t.faraday
-let write_goaway t = write_go_away_frame t.faraday
+let write_goaway ?debug_data t = write_go_away_frame ?debug_data t.faraday
 let write_window_update t = write_window_update_frame t.faraday

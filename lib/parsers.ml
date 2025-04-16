@@ -26,16 +26,15 @@ let parse_frame_header =
   <?> "frame_header" <* commit
 
 let parse_padded_payload { Frame.payload_length; flags; _ } parser =
-  if Flags.test_padded flags then (
+  if Flags.test_padded flags then
     any_uint8 >>= fun pad_length ->
     if pad_length >= payload_length then
       advance (payload_length - 1) >>| fun () ->
       connection_error ProtocolError "Padding size exceeds payload size"
     else
       let relevant_length = payload_length - 1 - pad_length in
-      Printf.printf "Relevant length: %i\n%!" relevant_length;
 
-      parser relevant_length <* advance pad_length)
+      parser relevant_length <* advance pad_length
   else parser payload_length
 
 let parse_data_frame ({ Frame.payload_length; _ } as frame_header) =

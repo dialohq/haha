@@ -16,7 +16,7 @@ type t = {
   response_handler : response_handler option;
 }
 
-type request_writer = unit -> t
+type request_writer = unit -> t option
 
 val path : t -> string
 val meth : t -> Method.t

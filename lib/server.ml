@@ -14,10 +14,8 @@ let pp_hum_state =
 let connection_handler ~(error_handler : Error.t -> unit)
     ?(goaway_writer : (unit -> unit) option) ?(debug = false)
     (config : Settings.t) (request_handler : request_handler) socket _ =
-  let semaphore = Eio.Semaphore.make 1 in
-
   let process_data_frame (state : state) stream_error connection_error next_step
-      no_error_close { Frame.stream_id; flags; _ } bs =
+      { Frame.stream_id; flags; _ } bs =
     let end_stream = Flags.test_end_stream flags in
     match (Streams.state_of_id state.streams stream_id, end_stream) with
     | Idle, _ | HalfClosed (Remote _), _ ->
@@ -39,30 +37,26 @@ let connection_handler ~(error_handler : Error.t -> unit)
           }
     | Open (reader, _), false ->
         reader (`Data (Cstruct.of_bigarray bs));
-        next_step
-          {
-            state with
-            streams = Streams.update_last_stream state.streams stream_id;
-          }
+
+        let streams =
+          if Stream_identifier.is_server stream_id then state.streams
+          else Streams.update_last_peer_stream state.streams stream_id
+        in
+        next_step { state with streams }
     | HalfClosed (Local reader), true ->
         reader (`End (Some (Cstruct.of_bigarray bs), []));
-        let new_streams =
+        let streams =
           Streams.stream_transition state.streams stream_id Closed
         in
-
-        if
-          state.shutdown
-          && Streams.all_closed ~last_stream_id:state.streams.last_client_stream
-               new_streams
-        then no_error_close ()
-        else next_step { state with streams = new_streams }
+        next_step { state with streams }
     | HalfClosed (Local reader), false ->
         reader (`Data (Cstruct.of_bigarray bs));
-        next_step
-          {
-            state with
-            streams = Streams.update_last_stream state.streams stream_id;
-          }
+
+        let streams =
+          if Stream_identifier.is_server stream_id then state.streams
+          else Streams.update_last_peer_stream state.streams stream_id
+        in
+        next_step { state with streams }
   in
 
   let process_complete_headers (state : state) stream_error connection_error
@@ -88,12 +82,10 @@ let connection_handler ~(error_handler : Error.t -> unit)
               }
         | HalfClosed (Local reader) ->
             reader (`End (None, header_list));
-            next_step
-              {
-                state with
-                streams =
-                  Streams.stream_transition state.streams stream_id Closed;
-              }
+            let streams =
+              Streams.stream_transition state.streams stream_id Closed
+            in
+            next_step { state with streams }
         | Reserved _ -> stream_error stream_id Error_code.StreamClosed
         | Idle -> stream_error stream_id Error_code.ProtocolError
         | Closed | HalfClosed (Remote _) ->
@@ -149,50 +141,65 @@ let connection_handler ~(error_handler : Error.t -> unit)
 
   let frame_handler =
     Runtime.frame_handler ~process_complete_headers ~process_data_frame
-      ~error_handler ~peer:`Server
+      ~error_handler
   in
 
-  let response_writer_handler (state : state) response_writer reader_opt id =
+  let response_writer_handler response_writer reader_opt id =
     let open Writer in
     let response = response_writer () in
 
-    write_headers_response state.writer state.hpack_encoder id response;
-    match response with
-    | `Final { body_writer = Some body_writer; _ } ->
-        write_window_update state.writer id
-          Flow_control.WindowSize.initial_increment;
-        {
-          state with
-          streams = Streams.change_writer state.streams id body_writer;
-        }
-    | `Final { body_writer = None; _ } ->
-        write_window_update state.writer id
-          Flow_control.WindowSize.initial_increment;
-        let new_stream_state =
-          match reader_opt with
-          | None -> Streams.Stream.Closed
-          | Some reader -> HalfClosed (Local reader)
-        in
-        {
-          state with
-          streams = Streams.stream_transition state.streams id new_stream_state;
-        }
-    | `Interim _ -> state
+    fun (state : state) ->
+      write_headers_response state.writer state.hpack_encoder id response;
+      match response with
+      | `Final { body_writer = Some body_writer; _ } ->
+          write_window_update state.writer id
+            Flow_control.WindowSize.initial_increment;
+          {
+            state with
+            streams = Streams.change_writer state.streams id body_writer;
+          }
+      | `Final { body_writer = None; _ } ->
+          write_window_update state.writer id
+            Flow_control.WindowSize.initial_increment;
+          let new_stream_state =
+            match reader_opt with
+            | None -> Streams.Stream.Closed
+            | Some reader -> HalfClosed (Local reader)
+          in
+          {
+            state with
+            streams =
+              Streams.stream_transition state.streams id new_stream_state;
+          }
+      | `Interim _ -> state
   in
   let get_response_writers state =
     let response_writers = Streams.response_writers state.State.streams in
 
     List.map
-      (fun (response_writer, reader_opt, id) () ->
-        response_writer_handler state response_writer reader_opt id)
+      (fun (response_writer, reader_opt, id) () state ->
+        response_writer_handler response_writer reader_opt id state)
       response_writers
   in
+
   let get_body_writers state =
     Streams.body_writers (`Server state.State.streams)
+    |> List.map (fun (f, id) () ->
+           let handler = Runtime.body_writer_handler f id in
+           fun state -> handler state)
   in
 
-  let combine_states =
-    State.combine ~combine_streams:Streams.combine_server_streams
+  let user_functions_handlers state =
+    let writers =
+      List.concat [ get_response_writers state; get_body_writers state ]
+    in
+    match goaway_writer with
+    | None -> writers
+    | Some f ->
+        (fun () ->
+          let handler = Runtime.user_goaway_handler ~f in
+          fun state -> handler state)
+        :: writers
   in
 
   let receive_buffer = Cstruct.create (9 + config.max_frame_size) in
@@ -206,8 +213,8 @@ let connection_handler ~(error_handler : Error.t -> unit)
     | Error _ as err -> err
     | Ok _ -> (
         match
-          Runtime.parse_preface_settings ~socket ~receive_buffer ~user_settings
-            ()
+          Runtime.process_preface_settings ~socket ~receive_buffer
+            ~user_settings ()
         with
         | Error _ as err -> err
         | Ok (peer_settings, rest_to_parse, writer) ->
@@ -216,6 +223,5 @@ let connection_handler ~(error_handler : Error.t -> unit)
                 rest_to_parse ))
   in
 
-  Runloop.start ~receive_buffer ~frame_handler ~get_body_writers
-    ~get_response_writers ~combine_states ~initial_state_result ~pp_hum_state
-    ~debug ~semaphore ?await_user_goaway:goaway_writer socket
+  Runloop.start ~receive_buffer ~frame_handler ~initial_state_result
+    ~pp_hum_state ~debug ~user_functions_handlers ~error_handler socket

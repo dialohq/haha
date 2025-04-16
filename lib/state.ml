@@ -13,6 +13,8 @@ type ('readers, 'writers) t = {
   writer : Writer.t;
   parse_state : Parse.continue option;
   flow : Flow_control.t;
+  read_off : int;
+  flush_thunk : unit -> unit;
 }
 
 let initial ~writer ~peer_settings ~user_settings =
@@ -34,6 +36,8 @@ let initial ~writer ~peer_settings ~user_settings =
     headers_state = Idle;
     parse_state = None;
     flow = Flow_control.initial;
+    read_off = 0;
+    flush_thunk = ignore;
   }
 
 let combine ~combine_streams s1 s2 =
@@ -49,6 +53,10 @@ let combine ~combine_streams s1 s2 =
       | None, Some x -> Some x
       | None, None -> None);
   }
+
+let do_flush t =
+  t.flush_thunk ();
+  { t with flush_thunk = ignore }
 
 let update_state_with_peer_settings (t : ('a, 'b) t) settings_list =
   let rec loop list (state : ('a, 'b) t) : (('a, 'b) t, string) result =

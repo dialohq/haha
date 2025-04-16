@@ -93,15 +93,15 @@ type s_stream = (server_reader, server_writers) Stream.t
 
 type ('readers, 'writers) t = {
   map : ('readers, 'writers) Stream.t StreamMap.t;
-  last_client_stream : Stream_identifier.t;
-  last_server_stream : Stream_identifier.t;
+  last_peer_stream : Stream_identifier.t;
+  last_local_stream : Stream_identifier.t;
 }
 
 let initial () =
   {
     map = StreamMap.empty;
-    last_client_stream = Stream_identifier.connection;
-    last_server_stream = Stream_identifier.connection;
+    last_peer_stream = Stream_identifier.connection;
+    last_local_stream = Stream_identifier.connection;
   }
 
 let stream_transition t id state =
@@ -113,9 +113,7 @@ let stream_transition t id state =
       t.map
   in
 
-  if Stream_identifier.is_client id then
-    { t with last_client_stream = Int32.max id t.last_client_stream; map }
-  else { t with last_server_stream = Int32.max id t.last_server_stream; map }
+  { t with map }
 
 let count_open t =
   StreamMap.fold
@@ -125,11 +123,11 @@ let count_open t =
 
 let get_next_id t = function
   | `Client ->
-      if Stream_identifier.is_connection t.last_client_stream then 1l
-      else Int32.add t.last_client_stream 2l
+      if Stream_identifier.is_connection t.last_local_stream then 1l
+      else Int32.add t.last_local_stream 2l
   | `Server ->
-      if Stream_identifier.is_connection t.last_server_stream then 2l
-      else Int32.add t.last_server_stream 2l
+      if Stream_identifier.is_connection t.last_local_stream then 2l
+      else Int32.add t.last_local_stream 2l
 
 let change_writer (t : (server_reader, server_writers) t) id body_writer =
   let map =
@@ -155,19 +153,15 @@ let change_writer (t : (server_reader, server_writers) t) id body_writer =
   in
   { t with map }
 
-let update_last_stream ?(strict = false) t stream_id =
-  if Stream_identifier.is_client stream_id then
-    {
-      t with
-      last_client_stream =
-        (if strict then stream_id else Int32.max stream_id t.last_client_stream);
-    }
-  else
-    {
-      t with
-      last_server_stream =
-        (if strict then stream_id else Int32.max stream_id t.last_server_stream);
-    }
+let update_last_peer_stream ?(strict = false) t stream_id =
+  {
+    t with
+    last_peer_stream =
+      (if strict then stream_id else Int32.max stream_id t.last_peer_stream);
+  }
+
+let update_last_local_stream id t =
+  { t with last_local_stream = Int32.max id t.last_local_stream }
 
 let incr_stream_out_flow t stream_id increment =
   let map =
@@ -193,89 +187,11 @@ let update_stream_flow t stream_id new_flow =
 
   { t with map }
 
-let all_closed ?(last_stream_id = Int32.max_int) t =
+let all_closed t =
   StreamMap.for_all
-    (fun stream_id (stream : ('a, 'b) Stream.t) ->
-      match (stream_id > last_stream_id, stream.state) with
-      | true, _ -> true
-      | false, Closed -> true
-      | false, _ -> false)
+    (fun _ (stream : ('a, 'b) Stream.t) ->
+      match stream.state with Closed -> true | _ -> false)
     t.map
-
-let combine_server_streams t1 t2 =
-  let map =
-    StreamMap.union
-      (fun _ (stream1 : s_stream) (stream2 : s_stream) ->
-        let flow = Flow_control.max stream1.flow stream2.flow in
-        match (stream1.state, stream2.state) with
-        | _, Idle | Closed, Open _ | Closed, HalfClosed _ ->
-            Some { stream1 with flow }
-        | Open (_, WritingResponse _), Open (_, BodyStream _)
-        | ( HalfClosed (Remote (WritingResponse _)),
-            HalfClosed (Remote (BodyStream _)) ) ->
-            Some { stream2 with flow }
-        | Open (_, BodyStream _), Open (_, WritingResponse _)
-        | ( HalfClosed (Remote (BodyStream _)),
-            HalfClosed (Remote (WritingResponse _)) ) ->
-            Some { stream1 with flow }
-        | HalfClosed (Remote _), HalfClosed (Local _)
-        | HalfClosed (Local _), HalfClosed (Remote _) ->
-            Some { flow; state = Closed }
-        | HalfClosed (Local _r), Open (r, _w) ->
-            Some { flow; state = HalfClosed (Local r) }
-        | HalfClosed (Remote _w), Open (_r, w) ->
-            Some { flow; state = HalfClosed (Remote w) }
-        | Idle, _ | Open _, Closed | HalfClosed _, Closed ->
-            Some { stream2 with flow }
-        | Open (r, _w), HalfClosed (Local _r) ->
-            Some { flow; state = HalfClosed (Local r) }
-        | Open (_r, w), HalfClosed (Remote _w) ->
-            Some { flow; state = HalfClosed (Remote w) }
-        | _ -> Some { stream1 with flow })
-      t1.map t2.map
-  in
-
-  {
-    map;
-    last_client_stream = Int32.max t1.last_client_stream t2.last_client_stream;
-    last_server_stream = Int32.max t1.last_server_stream t2.last_server_stream;
-  }
-
-let combine_client_streams t1 t2 =
-  let map =
-    StreamMap.union
-      (fun _ (stream1 : c_stream) (stream2 : c_stream) ->
-        let flow = Flow_control.max stream1.flow stream2.flow in
-        match (stream1.state, stream2.state) with
-        | Open (AwaitingResponse _, _), Open (BodyStream _, _)
-        | ( HalfClosed (Local (AwaitingResponse _)),
-            HalfClosed (Local (BodyStream _)) ) ->
-            Some { stream2 with flow }
-        | Open (BodyStream _, _), Open (AwaitingResponse _, _)
-        | ( HalfClosed (Local (BodyStream _)),
-            HalfClosed (Local (AwaitingResponse _)) ) ->
-            Some { stream1 with flow }
-        | _, Idle | Closed, Open _ | Closed, HalfClosed _ ->
-            Some { stream1 with flow }
-        | HalfClosed (Local _r), Open (r, _w) ->
-            Some { flow; state = HalfClosed (Local r) }
-        | HalfClosed (Remote _w), Open (_r, w) ->
-            Some { flow; state = HalfClosed (Remote w) }
-        | Idle, _ | Open _, Closed | HalfClosed _, Closed ->
-            Some { stream2 with flow }
-        | Open (r, _w), HalfClosed (Local _r) ->
-            Some { flow; state = HalfClosed (Local r) }
-        | Open (_r, w), HalfClosed (Remote _w) ->
-            Some { flow; state = HalfClosed (Remote w) }
-        | _ -> Some { stream1 with flow })
-      t1.map t2.map
-  in
-
-  {
-    map;
-    last_client_stream = Int32.max t1.last_client_stream t2.last_client_stream;
-    last_server_stream = Int32.max t1.last_server_stream t2.last_server_stream;
-  }
 
 let flow_of_id t stream_id =
   match StreamMap.find_opt stream_id t.map with
@@ -307,7 +223,7 @@ let body_writers t =
           match v.state with
           | Open (_, BodyStream body_writer)
           | HalfClosed (Remote (BodyStream body_writer)) ->
-              (body_writer, id) :: acc
+              ((fun () -> body_writer ~window_size:v.flow.out_flow), id) :: acc
           | _ -> acc)
         t.map []
   | `Client t ->
@@ -317,7 +233,7 @@ let body_writers t =
           | Open (AwaitingResponse _, body_writer)
           | Open (BodyStream _, body_writer)
           | HalfClosed (Remote body_writer) ->
-              (body_writer, id) :: acc
+              ((fun () -> body_writer ~window_size:v.flow.out_flow), id) :: acc
           | _ -> acc)
         t.map []
 
@@ -333,8 +249,8 @@ let pp_hum_generic fmt t =
       | _ -> ())
     t.map;
   fprintf fmt "}@];";
-  fprintf fmt "@ last_client_stream = %ld;" t.last_client_stream;
-  fprintf fmt "@ last_server_stream = %ld" t.last_server_stream;
+  fprintf fmt "@ last_peer_stream = %ld;" t.last_peer_stream;
+  fprintf fmt "@ last_local_stream = %ld" t.last_local_stream;
   fprintf fmt "@]}"
 
 let pp_hum pp_readers pp_writers fmt t =
@@ -351,6 +267,6 @@ let pp_hum pp_readers pp_writers fmt t =
       | _ -> ())
     t.map;
   fprintf fmt "}@];";
-  fprintf fmt "@ last_client_stream = %ld;" t.last_client_stream;
-  fprintf fmt "@ last_server_stream = %ld" t.last_server_stream;
+  fprintf fmt "@ last_peer_stream = %ld;" t.last_peer_stream;
+  fprintf fmt "@ last_local_stream = %ld" t.last_local_stream;
   fprintf fmt "@]}"

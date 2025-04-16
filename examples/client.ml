@@ -10,22 +10,13 @@ let () =
   let max = 10 in
   let data_stream = Eio.Stream.create 0 in
 
-  Eio.Fiber.fork_daemon ~sw (fun () ->
-      let rec loop sent : unit =
-        if sent < max then (
-          Eio.Time.sleep env#clock 1.;
-          let cs = Cstruct.create 16 in
-          Cstruct.LE.set_uint64 cs 0
-            (Eio.Time.now env#clock |> Int64.bits_of_float);
-          Eio.Stream.add data_stream (`Data [ cs ]);
-          loop (sent + 1))
-        else Eio.Stream.add data_stream (`End (None, []))
-      in
-      loop 0;
+  let send_data data =
+    let p, r = Eio.Promise.create () in
+    Eio.Stream.add data_stream (data, Eio.Promise.resolve r);
+    Eio.Promise.await p
+  in
 
-      `Stop_daemon);
-
-  let body_writer ~window_size:_ = (Eio.Stream.take data_stream, ignore) in
+  let body_writer ~window_size:_ = Eio.Stream.take data_stream in
 
   let response_handler (response : Response.t) =
     let status = Response.status response in
@@ -44,14 +35,34 @@ let () =
     Request.create_with_streaming ~body_writer ~response_handler ~headers:[]
       POST "/stream"
   in
-  let requests = Dynarray.of_list [ sample_request ] in
+  (* let requests = Dynarray.of_list [ sample_request ] in *)
+  let req_stream = Eio.Stream.create 0 in
 
-  let written = ref false in
+  let request_writer () = Eio.Stream.take req_stream in
 
-  let request_writer () =
-    Printf.printf "Request writer called\n%!";
-    if !written then Eio.Fiber.await_cancel () else written := true;
-    Dynarray.pop_last requests
+  let write_req () = Eio.Stream.add req_stream (Some sample_request) in
+  let write_end () = Eio.Stream.add req_stream None in
+
+  Eio.Fiber.fork ~sw (fun () ->
+      Client.run
+        ~error_handler:(function
+          | ConnectionError _ -> Printf.printf "Received connection error\n%!"
+          | StreamError _ -> Printf.printf "Received stream error\n%!")
+        ~request_writer Settings.default socket);
+
+  Printf.printf "Writing request...\n%!";
+  write_req ();
+
+  let rec loop sent : unit =
+    if sent < max then (
+      Eio.Time.sleep env#clock 0.2;
+      let cs = Cstruct.create 16 in
+      Cstruct.LE.set_uint64 cs 0 (Eio.Time.now env#clock |> Int64.bits_of_float);
+      send_data (`Data [ cs ]);
+      loop (sent + 1))
+    else send_data (`End (None, []))
   in
+  loop 0;
 
-  Client.run ~error_handler:ignore ~request_writer Settings.default socket
+  Eio.Time.sleep env#clock 2.;
+  write_end ()
