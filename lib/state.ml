@@ -40,20 +40,6 @@ let initial ~writer ~peer_settings ~user_settings =
     flush_thunk = ignore;
   }
 
-let combine ~combine_streams s1 s2 =
-  {
-    s1 with
-    flow = Flow_control.max s1.flow s2.flow;
-    streams = combine_streams s1.streams s2.streams;
-    parse_state =
-      (match (s1.parse_state, s2.parse_state) with
-      | Some x, Some y when x == y -> Some x
-      | Some _, Some _ -> failwith "gowno"
-      | Some x, None -> Some x
-      | None, Some x -> Some x
-      | None, None -> None);
-  }
-
 let do_flush t =
   t.flush_thunk ();
   { t with flush_thunk = ignore }

@@ -16,6 +16,7 @@ let connection_handler ~(error_handler : Error.t -> unit)
     (config : Settings.t) (request_handler : request_handler) socket _ =
   let process_data_frame (state : state) stream_error connection_error next_step
       { Frame.stream_id; flags; _ } bs =
+    let open Writer in
     let end_stream = Flags.test_end_stream flags in
     match (Streams.state_of_id state.streams stream_id, end_stream) with
     | Idle, _ | HalfClosed (Remote _), _ ->
@@ -32,31 +33,85 @@ let connection_handler ~(error_handler : Error.t -> unit)
           {
             state with
             streams =
-              Streams.stream_transition state.streams stream_id
-                (HalfClosed (Remote writers));
+              Streams.(
+                stream_transition state.streams stream_id
+                  (HalfClosed (Remote writers))
+                |> update_flow_on_data
+                     ~send_update:(write_window_update state.writer stream_id)
+                     stream_id
+                     (Bigstringaf.length bs |> Int32.of_int));
+            flow =
+              Flow_control.receive_data
+                ~send_update:
+                  (write_window_update state.writer Stream_identifier.connection)
+                state.flow
+                (Bigstringaf.length bs |> Int32.of_int);
           }
     | Open (reader, _), false ->
         reader (`Data (Cstruct.of_bigarray bs));
 
         let streams =
-          if Stream_identifier.is_server stream_id then state.streams
-          else Streams.update_last_peer_stream state.streams stream_id
+          (if Stream_identifier.is_server stream_id then state.streams
+           else Streams.update_last_peer_stream state.streams stream_id)
+          |> Streams.update_flow_on_data
+               ~send_update:(write_window_update state.writer stream_id)
+               stream_id
+               (Bigstringaf.length bs |> Int32.of_int)
         in
-        next_step { state with streams }
+        next_step
+          {
+            state with
+            streams;
+            flow =
+              Flow_control.receive_data
+                ~send_update:
+                  (write_window_update state.writer Stream_identifier.connection)
+                state.flow
+                (Bigstringaf.length bs |> Int32.of_int);
+          }
     | HalfClosed (Local reader), true ->
         reader (`End (Some (Cstruct.of_bigarray bs), []));
         let streams =
-          Streams.stream_transition state.streams stream_id Closed
+          Streams.(
+            stream_transition state.streams stream_id Closed
+            |> update_flow_on_data
+                 ~send_update:(write_window_update state.writer stream_id)
+                 stream_id
+                 (Bigstringaf.length bs |> Int32.of_int))
         in
-        next_step { state with streams }
+        next_step
+          {
+            state with
+            streams;
+            flow =
+              Flow_control.receive_data
+                ~send_update:
+                  (write_window_update state.writer Stream_identifier.connection)
+                state.flow
+                (Bigstringaf.length bs |> Int32.of_int);
+          }
     | HalfClosed (Local reader), false ->
         reader (`Data (Cstruct.of_bigarray bs));
 
         let streams =
-          if Stream_identifier.is_server stream_id then state.streams
-          else Streams.update_last_peer_stream state.streams stream_id
+          (if Stream_identifier.is_server stream_id then state.streams
+           else Streams.update_last_peer_stream state.streams stream_id)
+          |> Streams.update_flow_on_data
+               ~send_update:(write_window_update state.writer stream_id)
+               stream_id
+               (Bigstringaf.length bs |> Int32.of_int)
         in
-        next_step { state with streams }
+        next_step
+          {
+            state with
+            streams;
+            flow =
+              Flow_control.receive_data
+                ~send_update:
+                  (write_window_update state.writer Stream_identifier.connection)
+                state.flow
+                (Bigstringaf.length bs |> Int32.of_int);
+          }
   in
 
   let process_complete_headers (state : state) stream_error connection_error

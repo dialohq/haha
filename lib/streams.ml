@@ -187,6 +187,23 @@ let update_stream_flow t stream_id new_flow =
 
   { t with map }
 
+let update_flow_on_data ~send_update id n t =
+  let map =
+    StreamMap.update id
+      (function
+        | None -> None
+        | Some o ->
+            Some
+              {
+                o with
+                Stream.flow =
+                  Flow_control.receive_data ~send_update o.Stream.flow n;
+              })
+      t.map
+  in
+
+  { t with map }
+
 let all_closed t =
   StreamMap.for_all
     (fun _ (stream : ('a, 'b) Stream.t) ->
