@@ -22,7 +22,11 @@ let start :
           (Flow.single_read socket
              (Cstruct.sub receive_buffer off
                 (Cstruct.length receive_buffer - off)))
-      with End_of_file -> Error ()
+      with
+      | Eio.Cancel.Cancelled _ as e -> raise e
+      | End_of_file -> Error ()
+      | Eio.Io (Eio.Net.(E (Connection_reset _)), _) -> Error ()
+      | _ -> Error ()
     in
     fun state ->
       match read_bytes with
