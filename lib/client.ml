@@ -217,7 +217,6 @@ let run ?(debug = false) ~(error_handler : Error.t -> unit)
           write_goaway state.writer state.streams.last_peer_stream
             Error_code.NoError;
           let new_state = { state with shutdown = true } in
-          Format.printf "State: @.%a@." pp_hum_state new_state;
           new_state
       | Some request ->
           let id = Streams.get_next_id state.streams `Client in

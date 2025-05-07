@@ -32,6 +32,7 @@
             ocamlformat
             ocaml-lsp
             h2spec
+            utop
 
             alejandra
           ];
