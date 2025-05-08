@@ -94,6 +94,10 @@ type s_stream = (server_reader, server_writers) Stream.t
 type ('readers, 'writers) t = {
   map : ('readers, 'writers) Stream.t StreamMap.t;
   last_peer_stream : Stream_identifier.t;
+      (** [last_peer_stream] is the last peer-initiated streams that was
+          acknowledged/proccessed locally. This means we should update this
+          value when receiving either HEADERS as a server or PUSH_PROMISE as a
+          client. *)
   last_local_stream : Stream_identifier.t;
 }
 
@@ -109,6 +113,7 @@ let stream_transition t id state =
     StreamMap.update id
       (function
         | None -> Some { Stream.state; flow = Flow_control.initial }
+        | Some _ when state = Closed -> None
         | Some old -> Some { old with state })
       t.map
   in
@@ -217,7 +222,8 @@ let flow_of_id t stream_id =
 
 let state_of_id t stream_id =
   match StreamMap.find_opt stream_id t.map with
-  | None -> Stream.Idle
+  | None when stream_id > t.last_local_stream -> Stream.Idle
+  | None -> Closed
   | Some stream -> stream.state
 
 let response_writers t =

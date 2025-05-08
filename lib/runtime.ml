@@ -5,7 +5,6 @@ let handle_connection_error ?state ((error_code, msg) : Error.connection_error)
   let last_stream =
     match state with
     | None -> Int32.zero
-    (* TODO: change last id to peer stream id, not just client *)
     | Some state -> state.State.streams.last_peer_stream
   in
   let debug_data = Bigstringaf.of_string ~off:0 ~len:(String.length msg) msg in
