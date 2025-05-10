@@ -28,11 +28,17 @@ let pp_hum_server_reader fmt (_ : server_reader) =
   Format.fprintf fmt "BodyStream <body_reader>"
 
 module Stream = struct
-  type ('readers, 'writers) open_state = 'readers * 'writers
+  type error_handler = Error.stream_error -> unit
+
+  type ('readers, 'writers) open_state = {
+    readers : 'readers;
+    writers : 'writers;
+    error_handler : error_handler;
+  }
 
   type ('readers, 'writers) half_closed =
-    | Remote of 'writers
-    | Local of 'readers
+    | Remote of { writers : 'writers; error_handler : error_handler }
+    | Local of { readers : 'readers; error_handler : error_handler }
 
   type reserved = Remote | Local
 
@@ -56,7 +62,7 @@ module Stream = struct
     | Idle -> fprintf fmt "Idle"
     | Reserved Remote -> fprintf fmt "Reserved Remote"
     | Reserved Local -> fprintf fmt "Reserved Local"
-    | Open (readers, writers) ->
+    | Open { readers; writers; _ } ->
         fprintf fmt "@[<hv>Open (@,%a,@,%a)@]"
           (fun fmt _ -> fprintf fmt "<readers>")
           readers
@@ -76,12 +82,12 @@ module Stream = struct
     | Idle -> fprintf fmt "Idle"
     | Reserved Remote -> fprintf fmt "Reserved Remote"
     | Reserved Local -> fprintf fmt "Reserved Local"
-    | Open (readers, writers) ->
+    | Open { readers; writers; _ } ->
         fprintf fmt "@[<hv>Open (@,%a,@,%a)@]" pp_readers readers pp_writers
           writers
-    | HalfClosed (Remote writers) ->
+    | HalfClosed (Remote { writers; _ }) ->
         fprintf fmt "HalfClosed (Remote %a)" pp_writers writers
-    | HalfClosed (Local readers) ->
+    | HalfClosed (Local { readers; _ }) ->
         fprintf fmt "HalfClosed (Local %a)" pp_readers readers
     | Closed -> fprintf fmt "Closed");
     fprintf fmt ";@ flow = %a" Flow_control.pp_hum t.flow;
@@ -141,17 +147,20 @@ let change_writer (t : (server_reader, server_writers) t) id body_writer =
         | None -> None
         | Some old -> (
             match old.Stream.state with
-            | Open (body_reader, WritingResponse _) ->
+            | Open ({ writers = WritingResponse _; _ } as state) ->
                 Some
                   {
                     old with
-                    state = Open (body_reader, BodyStream body_writer);
+                    state = Open { state with writers = BodyStream body_writer };
                   }
-            | HalfClosed (Remote (WritingResponse _)) ->
+            | HalfClosed (Remote ({ writers = WritingResponse _; _ } as state))
+              ->
                 Some
                   {
                     old with
-                    state = HalfClosed (Remote (BodyStream body_writer));
+                    state =
+                      HalfClosed
+                        (Remote { state with writers = BodyStream body_writer });
                   }
             | _ -> Some old))
       t.map
@@ -230,10 +239,17 @@ let response_writers t =
   StreamMap.fold
     (fun id (v : (server_reader, server_writers) Stream.t) (acc : 'a list) ->
       match v.state with
-      | Open (body_reader, WritingResponse response_writer) ->
-          (response_writer, Some body_reader, id) :: acc
-      | HalfClosed (Remote (WritingResponse response_writer)) ->
-          (response_writer, None, id) :: acc
+      | Open
+          {
+            readers = body_reader;
+            writers = WritingResponse response_writer;
+            error_handler;
+          } ->
+          (response_writer, Some body_reader, id, error_handler) :: acc
+      | HalfClosed
+          (Remote
+             { writers = WritingResponse response_writer; error_handler; _ }) ->
+          (response_writer, None, id, error_handler) :: acc
       | _ -> acc)
     t.map []
 
@@ -244,8 +260,8 @@ let body_writers t =
       StreamMap.fold
         (fun id (v : s_stream) (acc : 'a list) ->
           match v.state with
-          | Open (_, BodyStream body_writer)
-          | HalfClosed (Remote (BodyStream body_writer)) ->
+          | Open { writers = BodyStream body_writer; _ }
+          | HalfClosed (Remote { writers = BodyStream body_writer; _ }) ->
               ((fun () -> body_writer ~window_size:v.flow.out_flow), id) :: acc
           | _ -> acc)
         t.map []
@@ -253,9 +269,8 @@ let body_writers t =
       StreamMap.fold
         (fun id (v : c_stream) (acc : 'a list) ->
           match v.state with
-          | Open (AwaitingResponse _, body_writer)
-          | Open (BodyStream _, body_writer)
-          | HalfClosed (Remote body_writer) ->
+          | Open { writers = body_writer; _ }
+          | HalfClosed (Remote { writers = body_writer; _ }) ->
               ((fun () -> body_writer ~window_size:v.flow.out_flow), id) :: acc
           | _ -> acc)
         t.map []
@@ -263,7 +278,7 @@ let body_writers t =
 let pp_hum_generic fmt t =
   let open Format in
   fprintf fmt "@[<v 2>{";
-  fprintf fmt "map = @[<v 2>{";
+  fprintf fmt "map = <length %i> @[<v 2>{" @@ StreamMap.cardinal t.map;
   StreamMap.iter
     (fun key value ->
       match value.Stream.state with
@@ -279,7 +294,7 @@ let pp_hum_generic fmt t =
 let pp_hum pp_readers pp_writers fmt t =
   let open Format in
   fprintf fmt "@[<v 2>{";
-  fprintf fmt "map = @[<v 2>{";
+  fprintf fmt "map = <length %i> @[<v 2>{" @@ StreamMap.cardinal t.map;
   StreamMap.iter
     (fun key value ->
       match value.Stream.state with

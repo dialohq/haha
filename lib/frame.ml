@@ -82,72 +82,65 @@ let validate_frame_headers
     ({ frame_type; payload_length; flags; stream_id } : frame_header) :
     (unit, Error.t) result =
   let open Error_code in
+  let conn_error code msg = Error (Error.conn_prot_err code msg) in
+  let stream_error id code = Error (Error.stream_prot_err id code) in
+
   match frame_type with
   | Settings ->
       if not (Stream_identifier.is_connection stream_id) then
-        Error.connection_error ProtocolError
+        conn_error ProtocolError
           "SETTINGS must be associated with stream id 0x0"
       else if payload_length mod 6 <> 0 then
-        Error.connection_error FrameSizeError
+        conn_error FrameSizeError
           "SETTINGS payload size must be a multiple of 6"
       else if Flags.test_ack flags && payload_length <> 0 then
-        Error.connection_error FrameSizeError "SETTINGS with ACK must be empty"
+        conn_error FrameSizeError "SETTINGS with ACK must be empty"
       else Ok ()
   | Ping ->
       if not (Stream_identifier.is_connection stream_id) then
-        Error.connection_error ProtocolError
-          "PING must be associated with stream id 0x0"
+        conn_error ProtocolError "PING must be associated with stream id 0x0"
       else if payload_length <> 8 then
-        Error.connection_error FrameSizeError
-          "PING payload must be 8 octets in length"
+        conn_error FrameSizeError "PING payload must be 8 octets in length"
       else Ok ()
   | Headers ->
       if Stream_identifier.is_connection stream_id then
-        Error.connection_error ProtocolError
-          "HEADERS must be associated with a stream"
+        conn_error ProtocolError "HEADERS must be associated with a stream"
       else if Stream_identifier.is_server stream_id then
-        Error.connection_error ProtocolError
+        conn_error ProtocolError
           "HEADERS must have a odd-numbered stream identifier"
       else Ok ()
   | Data ->
       if Stream_identifier.is_connection stream_id then
-        Error.connection_error ProtocolError
-          "DATA frames must be associated with a stream"
+        conn_error ProtocolError "DATA frames must be associated with a stream"
       else Ok ()
   | PushPromise ->
       if Stream_identifier.is_connection stream_id then
-        Error.connection_error ProtocolError
-          "PUSH_PROMISE must be associated with a stream"
+        conn_error ProtocolError "PUSH_PROMISE must be associated with a stream"
       else Ok ()
   | GoAway ->
       if not (Stream_identifier.is_connection stream_id) then
-        Error.connection_error ProtocolError
-          "GOAWAY must be associated with stream id 0x0"
+        conn_error ProtocolError "GOAWAY must be associated with stream id 0x0"
       else Ok ()
   | RSTStream ->
       if Stream_identifier.is_connection stream_id then
-        Error.connection_error ProtocolError
-          "RST_STREAM must be associated with a stream"
+        conn_error ProtocolError "RST_STREAM must be associated with a stream"
       else if payload_length <> 4 then
-        Error.connection_error FrameSizeError
+        conn_error FrameSizeError
           "RST_STREAM payload must be 4 octets in length"
       else Ok ()
   | Priority ->
       if Stream_identifier.is_connection stream_id then
-        Error.connection_error ProtocolError
-          "PRIORITY must be associated with a stream"
-      else if payload_length <> 5 then
-        Error.stream_error stream_id FrameSizeError
+        conn_error ProtocolError "PRIORITY must be associated with a stream"
+      else if payload_length <> 5 then stream_error stream_id FrameSizeError
       else Ok ()
   | WindowUpdate ->
       if payload_length <> 4 then
-        Error.connection_error FrameSizeError
+        conn_error FrameSizeError
           "WINDOW_UPDATE payload must be 4 octets in length"
       else Ok ()
   | Continuation ->
       if Stream_identifier.is_connection stream_id then
-        Error.connection_error ProtocolError
-          "CONTINUATION must be associated with a stream"
+        conn_error ProtocolError "CONTINUATION must be associated with a stream"
       else Ok ()
   | Unknown _ -> Ok ()
 

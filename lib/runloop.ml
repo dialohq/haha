@@ -10,7 +10,7 @@ let start :
     user_functions_handlers:
       (('a, 'b) State.t -> (unit -> ('a, 'b) State.t -> ('a, 'b) State.t) list) ->
     debug:bool ->
-    error_handler:(Error.t -> unit) ->
+    error_handler:(Error.connection_error -> unit) ->
     _ ->
     _ =
  fun ~initial_state_result ~frame_handler ~receive_buffer ~pp_hum_state:_
@@ -23,17 +23,18 @@ let start :
              (Cstruct.sub receive_buffer off
                 (Cstruct.length receive_buffer - off)))
       with
+      (* NOTE: we might want to do other error handling for specific exceptions *)
       | Eio.Cancel.Cancelled _ as e -> raise e
-      | End_of_file -> Error ()
-      | Eio.Io (Eio.Net.(E (Connection_reset _)), _) -> Error ()
-      | _ -> Error ()
+      | End_of_file as exn -> Error exn
+      | Eio.Io (Eio.Net.(E (Connection_reset _)), _) as exn -> Error exn
+      | exn -> Error exn
     in
     fun state ->
       match read_bytes with
-      | Error _ ->
-          let err = (Error_code.InternalError, "End_of_file") in
+      | Error exn ->
+          let err : Error.connection_error = Exn exn in
           Runtime.handle_connection_error ~state err;
-          error_handler (Error.ConnectionError err);
+          error_handler err;
           None
       | Ok read_bytes -> (
           let consumed, next_state =
@@ -72,13 +73,18 @@ let start :
         match Writer.write state.State.writer socket with
         | Ok () ->
             if new_state.shutdown && Streams.all_closed new_state.streams then
-              Faraday.close new_state.writer.faraday
-            else state_loop (State.do_flush new_state)
-        | Error _ -> Faraday.close state.writer.faraday)
+              Faraday.close (State.do_flush new_state).writer.faraday
+            else (state_loop [@tailcall]) (State.do_flush new_state)
+        | Error err ->
+            Runtime.handle_connection_error ~state err;
+            error_handler err;
+            Faraday.close state.writer.faraday)
   in
 
   match initial_state_result with
-  | Error err -> Runtime.handle_connection_error err
+  | Error err ->
+      Runtime.handle_connection_error err;
+      error_handler err
   | Ok (initial_state, rest_to_parse) ->
       if Cstruct.length rest_to_parse > 0 then
         match

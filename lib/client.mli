@@ -1,7 +1,7 @@
 val run :
   ?debug:bool ->
-  error_handler:(Error.t -> unit) ->
+  ?config:Settings.t ->
   request_writer:Request.request_writer ->
-  Settings.t ->
+  error_handler:(Error.connection_error -> unit) ->
   [> `Flow | `R | `W ] Eio.Resource.t ->
   unit

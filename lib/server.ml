@@ -5,15 +5,24 @@ type state = (Streams.server_reader, Streams.server_writers) State.t
 type stream_state =
   (Streams.server_reader, Streams.server_writers) Streams.Stream.state
 
-type request_handler = Request.t -> body_reader * Response.response_writer
+type request_handler =
+  Request.t ->
+  body_reader * Response.response_writer * (Error.stream_error -> unit)
 
 let pp_hum_state =
   State.pp_hum Streams.pp_hum_server_reader Streams.pp_hum_server_writers
 
 (* TODO: config argument could have some more user-friendly type so there is no need to look into RFC *)
-let connection_handler ~(error_handler : Error.t -> unit)
-    ?(goaway_writer : (unit -> unit) option) ?(debug = false)
-    (config : Settings.t) (request_handler : request_handler) socket _ =
+let connection_handler :
+    ?debug:bool ->
+    ?config:Settings.t ->
+    ?goaway_writer:(unit -> unit) ->
+    error_handler:(Error.connection_error -> unit) ->
+    request_handler ->
+    _ Eio.Resource.t ->
+    _ =
+ fun ?(debug = false) ?(config = Settings.default) ?goaway_writer ~error_handler
+     request_handler socket _ ->
   let process_data_frame (state : state) stream_error connection_error next_step
       { Frame.stream_id; flags; _ } bs =
     let open Writer in
@@ -27,15 +36,15 @@ let connection_handler ~(error_handler : Error.t -> unit)
     | Closed, _ ->
         connection_error Error_code.StreamClosed
           "DATA frame received on closed stream!"
-    | Open (reader, writers), true ->
-        reader (`End (Some (Cstruct.of_bigarray bs), []));
+    | Open { readers; writers; error_handler }, true ->
+        readers (`End (Some (Cstruct.of_bigarray bs), []));
         next_step
           {
             state with
             streams =
               Streams.(
                 stream_transition state.streams stream_id
-                  (HalfClosed (Remote writers))
+                  (HalfClosed (Remote { writers; error_handler }))
                 |> update_flow_on_data
                      ~send_update:(write_window_update state.writer stream_id)
                      stream_id
@@ -47,8 +56,8 @@ let connection_handler ~(error_handler : Error.t -> unit)
                 state.flow
                 (Bigstringaf.length bs |> Int32.of_int);
           }
-    | Open (reader, _), false ->
-        reader (`Data (Cstruct.of_bigarray bs));
+    | Open { readers; _ }, false ->
+        readers (`Data (Cstruct.of_bigarray bs));
 
         let streams =
           (if Stream_identifier.is_server stream_id then state.streams
@@ -69,8 +78,8 @@ let connection_handler ~(error_handler : Error.t -> unit)
                 state.flow
                 (Bigstringaf.length bs |> Int32.of_int);
           }
-    | HalfClosed (Local reader), true ->
-        reader (`End (Some (Cstruct.of_bigarray bs), []));
+    | HalfClosed (Local { readers; _ }), true ->
+        readers (`End (Some (Cstruct.of_bigarray bs), []));
         let streams =
           Streams.(
             stream_transition state.streams stream_id Closed
@@ -90,8 +99,8 @@ let connection_handler ~(error_handler : Error.t -> unit)
                 state.flow
                 (Bigstringaf.length bs |> Int32.of_int);
           }
-    | HalfClosed (Local reader), false ->
-        reader (`Data (Cstruct.of_bigarray bs));
+    | HalfClosed (Local { readers; _ }), false ->
+        readers (`Data (Cstruct.of_bigarray bs));
 
         let streams =
           (if Stream_identifier.is_server stream_id then state.streams
@@ -126,17 +135,17 @@ let connection_handler ~(error_handler : Error.t -> unit)
         stream_error stream_id Error_code.ProtocolError
     | true, No_pseudo -> (
         match stream_state with
-        | Open (reader, writers) ->
-            reader (`End (None, header_list));
+        | Open { readers; writers; error_handler } ->
+            readers (`End (None, header_list));
             next_step
               {
                 state with
                 streams =
                   Streams.stream_transition state.streams stream_id
-                    (HalfClosed (Remote writers));
+                    (HalfClosed (Remote { writers; error_handler }));
               }
-        | HalfClosed (Local reader) ->
-            reader (`End (None, header_list));
+        | HalfClosed (Local { readers; _ }) ->
+            readers (`End (None, header_list));
             let streams =
               Streams.stream_transition state.streams stream_id Closed
             in
@@ -154,6 +163,7 @@ let connection_handler ~(error_handler : Error.t -> unit)
               open_streams
               < Int32.to_int state.local_settings.max_concurrent_streams
             then
+              (* TODO: this should be a different type than the exponsed request *)
               let request =
                 {
                   Request.meth = Method.of_string pseudo.meth;
@@ -163,15 +173,29 @@ let connection_handler ~(error_handler : Error.t -> unit)
                   headers = Headers.filter_pseudo header_list;
                   body_writer = None;
                   response_handler = None;
+                  error_handler = Obj.magic ();
                 }
               in
 
-              let reader, response_writer = request_handler request in
+              let readers, response_writer, error_handler =
+                request_handler request
+              in
 
               let new_stream_state : stream_state =
                 if end_stream then
-                  HalfClosed (Remote (WritingResponse response_writer))
-                else Open (reader, WritingResponse response_writer)
+                  HalfClosed
+                    (Remote
+                       {
+                         writers = WritingResponse response_writer;
+                         error_handler;
+                       })
+                else
+                  Open
+                    {
+                      readers;
+                      writers = WritingResponse response_writer;
+                      error_handler;
+                    }
               in
 
               next_step
@@ -199,7 +223,7 @@ let connection_handler ~(error_handler : Error.t -> unit)
       ~error_handler
   in
 
-  let response_writer_handler response_writer reader_opt id =
+  let response_writer_handler response_writer reader_opt id error_handler =
     let open Writer in
     let response = response_writer () in
 
@@ -219,7 +243,7 @@ let connection_handler ~(error_handler : Error.t -> unit)
           let new_stream_state =
             match reader_opt with
             | None -> Streams.Stream.Closed
-            | Some reader -> HalfClosed (Local reader)
+            | Some readers -> HalfClosed (Local { readers; error_handler })
           in
           {
             state with
@@ -232,8 +256,9 @@ let connection_handler ~(error_handler : Error.t -> unit)
     let response_writers = Streams.response_writers state.State.streams in
 
     List.map
-      (fun (response_writer, reader_opt, id) () state ->
-        response_writer_handler response_writer reader_opt id state)
+      (fun (response_writer, reader_opt, id, error_handler) () state ->
+        response_writer_handler response_writer reader_opt id error_handler
+          state)
       response_writers
   in
 
@@ -248,9 +273,9 @@ let connection_handler ~(error_handler : Error.t -> unit)
     let writers =
       List.concat [ get_response_writers state; get_body_writers state ]
     in
-    match goaway_writer with
-    | None -> writers
-    | Some f ->
+    match (state.shutdown, goaway_writer) with
+    | true, _ | _, None -> writers
+    | false, Some f ->
         (fun () ->
           let handler = Runtime.user_goaway_handler ~f in
           fun state -> handler state)
@@ -261,7 +286,8 @@ let connection_handler ~(error_handler : Error.t -> unit)
   let user_settings = config in
   let mstring_len = String.length Frame.connection_preface in
 
-  let initial_state_result =
+  let initial_state_result :
+      (('a, 'b) State.t * Cstruct.t, Error.connection_error) result =
     Eio.Flow.read_exact socket (Cstruct.sub receive_buffer 0 mstring_len);
 
     match Parse.magic_parse receive_buffer.buffer ~off:0 ~len:mstring_len with

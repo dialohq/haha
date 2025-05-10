@@ -1,12 +1,8 @@
 open Angstrom
 module AU = Angstrom.Unbuffered
 
-let connection_error error_code msg =
-  Error Error.(ConnectionError (error_code, msg))
-
-let stream_error error_code stream_id =
-  Error Error.(StreamError (stream_id, error_code))
-
+let connection_error code msg = Error (Error.conn_prot_err code msg)
+let stream_error code id = Error (Error.stream_prot_err id code)
 let parse_uint24 o1 o2 o3 = (o1 lsl 16) lor (o2 lsl 8) lor o3
 
 let take_bigstring_unsafe n =

@@ -26,9 +26,7 @@ let write t socket =
 
         Faraday.shift t.faraday written;
         Ok ()
-      with exn ->
-        Error
-          (Format.sprintf "TCP connection error: %s" (Printexc.to_string exn)))
+      with exn -> Error (Error.Exn exn))
 
 let write_settings t settings =
   let frame_info = create_frame_info Stream_identifier.connection in

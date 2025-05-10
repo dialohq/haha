@@ -1,7 +1,14 @@
 open Writer
 
-let handle_connection_error ?state ((error_code, msg) : Error.connection_error)
-    =
+let handle_connection_error ?state error =
+  let error_code, msg =
+    match error with
+    | Error.ProtocolError err -> err
+    | Exn exn ->
+        ( Error_code.InternalError,
+          Format.sprintf "internal exception: %s" (Printexc.to_string exn) )
+  in
+
   let last_stream =
     match state with
     | None -> Int32.zero
@@ -34,13 +41,16 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
         (Cstruct.sub receive_buffer read_off read_len)
         continue_opt
     with
-    | `Fail _ -> Error (Error_code.ProtocolError, "invalid client preface")
+    | `Fail _ ->
+        Error
+          (Error.ProtocolError
+             (Error_code.ProtocolError, "invalid client preface"))
     | `Partial (consumed, continue) ->
         parse_loop consumed
           (total_consumed + consumed)
           (total_read + read_len) (Some continue)
     | `Complete (consumed, { Frame.frame_payload = Settings settings_list; _ })
-      -> (
+      ->
         let peer_settings = Settings.(update_with_list default settings_list) in
         let open Writer in
         let writer = create (peer_settings.max_frame_size + 9) in
@@ -51,18 +61,18 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
         write_settings_ack writer;
         write_window_update writer Stream_identifier.connection
           Flow_control.WindowSize.initial_increment;
-        match write writer socket with
-        | Ok () ->
-            let rest_off = read_off + total_consumed + consumed in
-            let rest_len = total_read + read_len - rest_off in
+        write writer socket
+        |> Result.map (fun () ->
+               let rest_off = read_off + total_consumed + consumed in
+               let rest_len = total_read + read_len - rest_off in
 
-            Ok
-              ( peer_settings,
-                Cstruct.sub receive_buffer rest_off rest_len,
-                writer )
-        | Error msg -> Error (Error_code.ConnectError, msg))
+               ( peer_settings,
+                 Cstruct.sub receive_buffer rest_off rest_len,
+                 writer ))
     | `Complete (_, _) ->
-        Error (Error_code.ProtocolError, "invalid client preface")
+        Error
+          (Error.ProtocolError
+             (Error_code.ProtocolError, "invalid client preface"))
   in
   parse_loop 0 0 0 None
 
@@ -126,12 +136,12 @@ let body_writer_handler ?(debug = false)
               Streams.update_stream_flow state.streams id new_flow
             in
             match Streams.state_of_id updated_streams id with
-            | Open (stream_reader, _) ->
+            | Open { readers; error_handler; _ } ->
                 {
                   state with
                   streams =
                     Streams.stream_transition updated_streams id
-                      (HalfClosed (Local stream_reader));
+                      (HalfClosed (Local { readers; error_handler }));
                 }
             | _ ->
                 {
@@ -144,12 +154,12 @@ let body_writer_handler ?(debug = false)
           write_trailers state.writer state.hpack_encoder id trailers
         else write_data ~end_stream:true state.writer id 0 [ Cstruct.empty ];
         match Streams.state_of_id state.streams id with
-        | Open (stream_reader, _) ->
+        | Open { readers; error_handler; _ } ->
             {
               state with
               streams =
                 Streams.stream_transition state.streams id
-                  (HalfClosed (Local stream_reader));
+                  (HalfClosed (Local { readers; error_handler }));
             }
         | _ ->
             {
@@ -188,10 +198,11 @@ let read_io ~debug ~frame_handler (state : ('a, 'b) State.t) cs =
       | consumed, StreamError (stream_id, code) ->
           (consumed, Some (handle_stream_error state stream_id code)))
 
-let frame_handler ~process_complete_headers ~process_data_frame ~error_handler
-    (frame : Frame.t) (state : ('a, 'b) State.t) =
+let frame_handler ~process_complete_headers ~process_data_frame
+    ~(error_handler : Error.connection_error -> unit) (frame : Frame.t)
+    (state : ('a, 'b) State.t) =
   let connection_error code msg =
-    handle_connection_error ~state (code, msg);
+    handle_connection_error ~state (Error.ProtocolError (code, msg));
     None
   in
   let stream_error id code = Some (handle_stream_error state id code) in
@@ -300,7 +311,7 @@ let frame_handler ~process_complete_headers ~process_data_frame ~error_handler
           "Unexpected ACK flag in SETTINGS frame."
   in
 
-  let process_rst_stream_frame { Frame.stream_id; _ } error_code =
+  let process_rst_stream_frame { Frame.stream_id; _ } _error_code =
     match Streams.state_of_id state.streams stream_id with
     | Idle ->
         connection_error Error_code.ProtocolError
@@ -309,7 +320,8 @@ let frame_handler ~process_complete_headers ~process_data_frame ~error_handler
         connection_error Error_code.StreamClosed
           "RST_STREAM received on a closed stream!"
     | _ -> (
-        error_handler (Error.StreamError (stream_id, error_code));
+        (* TODO: handler per stream *)
+        (* error_handler (Error.StreamError (stream_id, error_code)); *)
         let streams =
           Streams.stream_transition state.streams stream_id Closed
         in
@@ -330,7 +342,7 @@ let frame_handler ~process_complete_headers ~process_data_frame ~error_handler
             next_step new_state
         | true -> None)
     | _ ->
-        error_handler (Error.ConnectionError (code, Bigstringaf.to_string msg));
+        error_handler (Error.ProtocolError (code, Bigstringaf.to_string msg));
         None
   in
 

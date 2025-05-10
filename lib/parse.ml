@@ -8,7 +8,9 @@ type continue =
   (Frame.t, Error.t) result AU.state
 
 let magic_parse bs ~off ~len =
-  let parsing_error msg = Error (Error_code.ProtocolError, msg) in
+  let parsing_error msg =
+    Error (Error.ProtocolError (Error_code.ProtocolError, msg))
+  in
   let parser = AU.parse Parsers.connection_preface in
   match parser with
   | Fail (_, _, msg) -> parsing_error msg
@@ -20,7 +22,7 @@ let magic_parse bs ~off ~len =
       | Done (consumed, _) -> Ok consumed)
 
 let parsing_error msg consumed =
-  `Fail (consumed, Error.ConnectionError (Error_code.ProtocolError, msg))
+  `Fail (consumed, Error.conn_prot_err Error_code.ProtocolError msg)
 
 let continue_frame_parse state =
   match state with
