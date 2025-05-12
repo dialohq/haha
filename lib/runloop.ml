@@ -4,17 +4,17 @@ let start :
     'a 'b.
     initial_state_result:
       (('a, 'b) State.t * Cstruct.t, Error.connection_error) result ->
-    frame_handler:(Frame.t -> ('a, 'b) State.t -> ('a, 'b) State.t option) ->
+    frame_handler:(Frame.t -> ('a, 'b) State.t -> ('a, 'b) Runtime.step) ->
     receive_buffer:Cstruct.t ->
     pp_hum_state:(Format.formatter -> ('a, 'b) State.t -> unit) ->
     user_functions_handlers:
       (('a, 'b) State.t -> (unit -> ('a, 'b) State.t -> ('a, 'b) State.t) list) ->
     debug:bool ->
-    error_handler:(Error.connection_error -> unit) ->
+    (* error_handler:(Error.connection_error -> unit) -> *)
     _ ->
     _ =
  fun ~initial_state_result ~frame_handler ~receive_buffer ~pp_hum_state:_
-     ~user_functions_handlers ~debug ~error_handler socket ->
+     ~user_functions_handlers ~debug (* ~error_handler *) socket ->
   let read_loop off =
     let read_bytes =
       try
@@ -34,8 +34,8 @@ let start :
       | Error exn ->
           let err : Error.connection_error = Exn exn in
           Runtime.handle_connection_error ~state err;
-          error_handler err;
-          None
+          (* error_handler err; *)
+          Runtime.ConnectionError err
       | Ok read_bytes -> (
           let consumed, next_state =
             Runtime.read_io ~debug ~frame_handler state
@@ -44,8 +44,9 @@ let start :
           let unconsumed = read_bytes + off - consumed in
           Cstruct.blit receive_buffer consumed receive_buffer 0 unconsumed;
           match next_state with
-          | None -> None
-          | Some next_state -> Some { next_state with read_off = unconsumed })
+          | NextState next_state ->
+              NextState { next_state with read_off = unconsumed }
+          | other -> other)
   in
 
   let operations state =
@@ -55,46 +56,59 @@ let start :
       user_functions_handlers state
       |> List.map (fun f () ->
              let handler = f () in
-             fun state -> Some (handler state))
+             fun state -> Runtime.NextState (handler state))
     in
 
     base_op :: opt_functions
   in
 
   let combine x y =
-   fun state ->
-    match x state with None -> None | Some new_state -> y new_state
+   fun step ->
+    match x step with
+    | Runtime.NextState new_state -> y new_state
+    | other -> other
   in
 
-  let rec state_loop state =
+  let rec state_loop state : (unit, Error.connection_error) result =
+    let close_faraday () = Faraday.close state.State.writer.faraday in
+
     match (Fiber.any ~combine (operations state)) state with
-    | None -> Faraday.close state.writer.faraday
-    | Some new_state -> (
+    | ConnectionError err ->
+        close_faraday ();
+        Error err
+    | End ->
+        close_faraday ();
+        Ok ()
+    | NextState new_state -> (
         match Writer.write state.State.writer socket with
         | Ok () ->
-            if new_state.shutdown && Streams.all_closed new_state.streams then
-              Faraday.close (State.do_flush new_state).writer.faraday
+            if new_state.shutdown && Streams.all_closed new_state.streams then (
+              Faraday.close (State.do_flush new_state).writer.faraday;
+              Ok ())
             else (state_loop [@tailcall]) (State.do_flush new_state)
         | Error err ->
             Runtime.handle_connection_error ~state err;
-            error_handler err;
-            Faraday.close state.writer.faraday)
+            (* error_handler err; *)
+            close_faraday ();
+            Error err)
   in
 
   match initial_state_result with
   | Error err ->
       Runtime.handle_connection_error err;
-      error_handler err
+      (* error_handler err *)
+      Error err
   | Ok (initial_state, rest_to_parse) ->
       if Cstruct.length rest_to_parse > 0 then
         match
           Runtime.read_io ~debug ~frame_handler initial_state rest_to_parse
         with
-        | consumed, Some next_state ->
+        | consumed, NextState next_state ->
             state_loop
               {
                 next_state with
                 read_off = rest_to_parse.Cstruct.len - consumed;
               }
-        | _, None -> ()
+        | _, End -> Ok ()
+        | _, ConnectionError err -> Error err
       else state_loop initial_state

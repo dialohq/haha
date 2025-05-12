@@ -104,7 +104,7 @@ let () =
     in
 
     Server.connection_handler ~goaway_writer ~error_handler
-      ~config:Settings.default ~request_handler socket addr;
+      ~config:Settings.default request_handler socket addr;
     Printf.printf "End of TCP connection\n%!"
   in
 

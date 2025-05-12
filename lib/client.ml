@@ -12,11 +12,11 @@ let run :
     ?debug:bool ->
     ?config:Settings.t ->
     request_writer:Request.request_writer ->
-    error_handler:(Error.connection_error -> unit) ->
+    (* error_handler:(Error.connection_error -> unit) -> *)
     _ Eio.Resource.t ->
-    unit =
+    (unit, Error.connection_error) result =
  fun ?(debug = false) ?(config = Settings.default) ~request_writer
-     ~error_handler socket ->
+     (* ~error_handler *) socket ->
   let process_data_frame (state : state) stream_error connection_error next_step
       { Frame.flags; stream_id; _ } bs =
     let end_stream = Flags.test_end_stream flags in
@@ -232,7 +232,6 @@ let run :
 
   let frame_handler =
     Runtime.frame_handler ~process_complete_headers ~process_data_frame
-      ~error_handler
   in
 
   let request_writer_handler () =
@@ -308,4 +307,4 @@ let run :
   in
 
   Runloop.start ~frame_handler ~receive_buffer ~initial_state_result
-    ~pp_hum_state ~debug ~user_functions_handlers ~error_handler socket
+    ~pp_hum_state ~debug ~user_functions_handlers socket

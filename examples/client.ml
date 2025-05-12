@@ -13,9 +13,7 @@ let () =
   let send_data data =
     let p, r = Eio.Promise.create () in
     Eio.Stream.add data_stream (data, Eio.Promise.resolve r);
-    Printf.printf "Data sent, waiting for callback\n%!";
-    Eio.Promise.await p;
-    Printf.printf "Flushed\n%!"
+    Eio.Promise.await p
   in
 
   let body_writer ~window_size:_ = Eio.Stream.take data_stream in
@@ -45,15 +43,17 @@ let () =
   let write_req () = Eio.Stream.add req_stream (Some sample_request) in
   let _write_end () = Eio.Stream.add req_stream None in
 
+  let error_handler = function
+    | Haha.Error.ProtocolError (_, msg) ->
+        Printf.printf "Received connection error: %s\n%!" msg
+    | Exn exn ->
+        Printf.printf "Received connection error exn: %s\n%!"
+        @@ Printexc.to_string exn
+  in
+
   Eio.Fiber.fork ~sw (fun () ->
-      Client.run ~request_writer
-        ~error_handler:(function
-          | Haha.Error.ProtocolError (_, msg) ->
-              Printf.printf "Received connection error: %s\n%!" msg
-          | Exn exn ->
-              Printf.printf "Received connection error exn: %s\n%!"
-              @@ Printexc.to_string exn)
-        ~config:Settings.default socket);
+      Client.run ~request_writer ~config:Settings.default socket
+      |> Result.iter_error error_handler);
 
   Printf.printf "Writing request...\n%!";
   write_req ();

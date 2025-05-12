@@ -220,7 +220,6 @@ let connection_handler :
 
   let frame_handler =
     Runtime.frame_handler ~process_complete_headers ~process_data_frame
-      ~error_handler
   in
 
   let response_writer_handler response_writer reader_opt id error_handler =
@@ -305,4 +304,5 @@ let connection_handler :
   in
 
   Runloop.start ~receive_buffer ~frame_handler ~initial_state_result
-    ~pp_hum_state ~debug ~user_functions_handlers ~error_handler socket
+    ~pp_hum_state ~debug ~user_functions_handlers socket
+  |> Result.iter_error error_handler

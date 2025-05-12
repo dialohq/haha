@@ -1,5 +1,10 @@
 open Writer
 
+type ('a, 'b) step =
+  | End
+  | ConnectionError of Error.connection_error
+  | NextState of ('a, 'b) State.t
+
 let handle_connection_error ?state error =
   let error_code, msg =
     match error with
@@ -180,33 +185,34 @@ let read_io ~debug ~frame_handler (state : ('a, 'b) State.t) cs =
   | Ok (consumed, frames, continue_opt) ->
       let _ = debug in
       let state_with_parse = { state with parse_state = continue_opt } in
-      let next_state =
+      let next_step =
         List.fold_left
           (fun state frame ->
             match state with
-            | None -> None
-            | Some state -> frame_handler frame state)
-          (Some state_with_parse) frames
+            | NextState state -> frame_handler frame state
+            | other -> other)
+          (NextState state_with_parse) frames
       in
 
-      (consumed, next_state)
+      (consumed, next_step)
   | Error err -> (
       match err with
       | _, Error.ConnectionError err ->
           handle_connection_error ~state err;
-          (0, None)
+          (0, ConnectionError err)
       | consumed, StreamError (stream_id, code) ->
-          (consumed, Some (handle_stream_error state stream_id code)))
+          (consumed, NextState (handle_stream_error state stream_id code)))
 
 let frame_handler ~process_complete_headers ~process_data_frame
-    ~(error_handler : Error.connection_error -> unit) (frame : Frame.t)
-    (state : ('a, 'b) State.t) =
+    (* ~(error_handler : Error.connection_error -> unit) *) (frame : Frame.t)
+    (state : ('a, 'b) State.t) : ('a, 'b) step =
   let connection_error code msg =
-    handle_connection_error ~state (Error.ProtocolError (code, msg));
-    None
+    let err = Error.ProtocolError (code, msg) in
+    handle_connection_error ~state err;
+    ConnectionError err
   in
-  let stream_error id code = Some (handle_stream_error state id code) in
-  let next_step next_state = Some next_state in
+  let stream_error id code = NextState (handle_stream_error state id code) in
+  let next_step next_state = NextState next_state in
 
   let process_complete_headers =
     process_complete_headers state stream_error connection_error next_step
@@ -326,7 +332,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
           Streams.stream_transition state.streams stream_id Closed
         in
         match (state.shutdown, Streams.all_closed streams) with
-        | true, true -> None
+        | true, true -> End
         | _ -> next_step { state with streams })
   in
 
@@ -340,10 +346,11 @@ let frame_handler ~process_complete_headers ~process_data_frame
         | false ->
             let new_state = { state with shutdown = true } in
             next_step new_state
-        | true -> None)
+        | true -> End)
     | _ ->
-        error_handler (Error.ProtocolError (code, Bigstringaf.to_string msg));
-        None
+        let err = Error.ProtocolError (code, Bigstringaf.to_string msg) in
+        (* error_handler err; *)
+        ConnectionError err
   in
 
   let process_window_update_frame { Frame.stream_id; _ } increment =
