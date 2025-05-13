@@ -61,17 +61,17 @@ let () =
               incr iterations)
           in
 
-          let body_writer ~window_size:_ =
+          let body_writer _ ~window_size:_ =
             match take_data () with
-            | None -> (`End (None, []), ignore)
+            | None -> (`End (None, []), ignore, ())
             | Some data ->
                 Cstruct.LE.set_uint64 cs 8
                   (Eio.Time.now env#clock |> Int64.bits_of_float);
                 Cstruct.blit data 0 cs 0 8;
-                (`Data [ cs ], ignore)
+                (`Data [ cs ], ignore, ())
           in
 
-          Request.handle ~error_handler:ignore
+          Request.handle ~context:() ~error_handler:ignore
             ~response_writer:(fun () ->
               Printf.printf "response_writer called\n%!";
               match Dynarray.pop_last_opt interim_responses with
@@ -81,7 +81,7 @@ let () =
                     Response.create_with_streaming ~body_writer `OK []
                   in
                   `Final response)
-            ~on_data:(fun data ->
+            ~on_data:(fun _ data ->
               match data with
               | `Data cs ->
                   Printf.printf "Received %i bytes\n%!" cs.Cstruct.len;
@@ -92,15 +92,15 @@ let () =
                   Printf.printf "Peer EOF\n%!"
               | `End _ -> Printf.printf "Peer EOF\n%!")
       | POST, "/" ->
-          let body_writer ~window_size:_ = (`End (None, []), ignore) in
-          Request.handle ~error_handler:ignore
+          let body_writer _ ~window_size:_ = (`End (None, []), ignore, ()) in
+          Request.handle ~context:() ~error_handler:ignore
             ~response_writer:(fun () ->
               `Final (Response.create_with_streaming ~body_writer `OK []))
-            ~on_data:ignore
+            ~on_data:(fun _ _ -> ())
       | _ ->
-          Request.handle ~error_handler:ignore
+          Request.handle ~context:() ~error_handler:ignore
             ~response_writer:(fun () -> `Final (Response.create `Not_found []))
-            ~on_data:ignore
+            ~on_data:(fun _ _ -> ())
     in
 
     Server.connection_handler ~goaway_writer ~error_handler

@@ -60,14 +60,14 @@ let write_data ?(padding_length = 0) ~end_stream t stream_id total_len cs_list =
   write_data_frame t.faraday total_len cs_list frame_info
 
 let write_headers_response ?padding_length ?(end_header = true) t hpack_encoder
-    stream_id (response : Response.t) =
+    stream_id (response : _ Response.t) =
   let status, headers, flags =
     match response with
-    | `Interim { status; headers } ->
+    | `Interim { status; headers; _ } ->
         ((status :> Status.t), headers, Flags.default_flags)
-    | `Final { status; headers; body_writer = Some _ } ->
+    | `Final { status; headers; body_writer = Some _; _ } ->
         (status, headers, Flags.default_flags)
-    | `Final { status; headers; body_writer = None } ->
+    | `Final { status; headers; body_writer = None; _ } ->
         (status, headers, Flags.default_flags |> Flags.set_end_stream)
   in
 
@@ -95,7 +95,7 @@ let write_trailers ?padding_length ?(end_header = true) t hpack_encoder
   write_response_headers t.faraday hpack_encoder frame_info None headers
 
 let writer_request_headers ?padding_length ?(end_header = true) t hpack_encoder
-    stream_id (request : Request.t) =
+    stream_id (request : 'c Request.t) =
   let { Request.meth; path; scheme; authority; headers; body_writer; _ } =
     request
   in

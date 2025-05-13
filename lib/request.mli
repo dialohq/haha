@@ -4,50 +4,57 @@ open Types
    1. response handler -> always sync
    w. body_reader - always sync
 *)
-type response_handler = Response.t -> body_reader
+type 'context response_handler = 'context Response.t -> 'context body_reader
 
-type t = {
+type 'context t = {
   path : string;
   meth : Method.t;
   authority : string option;
   scheme : string;
   headers : Headers.t list;
-  body_writer : body_writer option;
-  response_handler : response_handler option;
+  body_writer : 'context body_writer option;
+  response_handler : 'context response_handler option;
   error_handler : Error_code.t -> unit;
+  initial_context : 'context;
 }
 
-type request_writer = unit -> t option
+type 'context request_writer = unit -> 'context t option
 
-val path : t -> string
-val meth : t -> Method.t
-val scheme : t -> string
-val authority : t -> string option
-val headers : t -> Headers.t list
+val path : 'context t -> string
+val meth : 'context t -> Method.t
+val scheme : 'context t -> string
+val authority : 'context t -> string option
+val headers : 'context t -> Headers.t list
 
 val create :
   ?authority:string ->
   ?scheme:string ->
-  response_handler:response_handler ->
+  context:'context ->
+  response_handler:'context response_handler ->
   error_handler:(Error_code.t -> unit) ->
   headers:Headers.t list ->
   Method.t ->
   string ->
-  t
+  'context t
 
 val create_with_streaming :
   ?authority:string ->
   ?scheme:string ->
-  body_writer:body_writer ->
-  response_handler:response_handler ->
+  context:'context ->
+  body_writer:'context body_writer ->
+  response_handler:'context response_handler ->
   error_handler:(Error_code.t -> unit) ->
   headers:Headers.t list ->
   Method.t ->
   string ->
-  t
+  'context t
 
 val handle :
-  response_writer:(unit -> Response.t) ->
+  context:'context ->
+  response_writer:(unit -> 'context Response.t) ->
   error_handler:(Error_code.t -> unit) ->
-  on_data:body_reader ->
-  body_reader * (unit -> Response.t) * (Error_code.t -> unit)
+  on_data:'context body_reader ->
+  'context body_reader
+  * (unit -> 'context Response.t)
+  * (Error_code.t -> unit)
+  * 'context
