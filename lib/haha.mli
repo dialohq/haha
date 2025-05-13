@@ -9,6 +9,7 @@ module Server = Server
 module Settings = Settings
 module Client = Client
 module Types = Types
+module Runtime = Runtime
 
 (* module Settings : sig *)
 (*   type t = { *)

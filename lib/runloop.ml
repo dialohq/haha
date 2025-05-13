@@ -10,11 +10,10 @@ let start :
     user_functions_handlers:
       (('a, 'b) State.t -> (unit -> ('a, 'b) State.t -> ('a, 'b) State.t) list) ->
     debug:bool ->
-    (* error_handler:(Error.connection_error -> unit) -> *)
     _ ->
-    _ =
+    ('a, 'b) Runtime.step * (('a, 'b) State.t -> ('a, 'b) Runtime.step) =
  fun ~initial_state_result ~frame_handler ~receive_buffer ~pp_hum_state:_
-     ~user_functions_handlers ~debug (* ~error_handler *) socket ->
+     ~user_functions_handlers ~debug socket ->
   let read_loop off =
     let read_bytes =
       try
@@ -49,6 +48,20 @@ let start :
           | other -> other)
   in
 
+  let flush_write : ('a, 'b) State.t -> ('a, 'b) Runtime.step =
+   fun state ->
+    match Writer.write state.State.writer socket with
+    | Ok () ->
+        if state.shutdown && Streams.all_closed state.streams then (
+          Faraday.close (State.do_flush state).writer.faraday;
+          Runtime.End)
+        else NextState (State.do_flush state)
+    | Error err ->
+        Runtime.handle_connection_error ~state err;
+        Faraday.close state.writer.faraday;
+        ConnectionError err
+  in
+
   let operations state =
     let base_op () = read_loop state.State.read_off in
 
@@ -56,7 +69,7 @@ let start :
       user_functions_handlers state
       |> List.map (fun f () ->
              let handler = f () in
-             fun state -> Runtime.NextState (handler state))
+             fun state -> flush_write (handler state))
     in
 
     base_op :: opt_functions
@@ -69,46 +82,32 @@ let start :
     | other -> other
   in
 
-  let rec state_loop state : (unit, Error.connection_error) result =
+  let state_to_step : ('a, 'b) State.t -> ('a, 'b) Runtime.step =
+   fun state ->
     let close_faraday () = Faraday.close state.State.writer.faraday in
 
     match (Fiber.any ~combine (operations state)) state with
-    | ConnectionError err ->
+    | (ConnectionError _ as res) | (End as res) ->
         close_faraday ();
-        Error err
-    | End ->
-        close_faraday ();
-        Ok ()
-    | NextState new_state -> (
-        match Writer.write state.State.writer socket with
-        | Ok () ->
-            if new_state.shutdown && Streams.all_closed new_state.streams then (
-              Faraday.close (State.do_flush new_state).writer.faraday;
-              Ok ())
-            else (state_loop [@tailcall]) (State.do_flush new_state)
-        | Error err ->
-            Runtime.handle_connection_error ~state err;
-            (* error_handler err; *)
-            close_faraday ();
-            Error err)
+        res
+    | step -> step
   in
 
-  match initial_state_result with
-  | Error err ->
-      Runtime.handle_connection_error err;
-      (* error_handler err *)
-      Error err
-  | Ok (initial_state, rest_to_parse) ->
-      if Cstruct.length rest_to_parse > 0 then
-        match
-          Runtime.read_io ~debug ~frame_handler initial_state rest_to_parse
-        with
-        | consumed, NextState next_state ->
-            state_loop
-              {
-                next_state with
-                read_off = rest_to_parse.Cstruct.len - consumed;
-              }
-        | _, End -> Ok ()
-        | _, ConnectionError err -> Error err
-      else state_loop initial_state
+  ( (match initial_state_result with
+    | Error err ->
+        Runtime.handle_connection_error err;
+        ConnectionError err
+    | Ok (initial_state, rest_to_parse) ->
+        if Cstruct.length rest_to_parse > 0 then
+          match
+            Runtime.read_io ~debug ~frame_handler initial_state rest_to_parse
+          with
+          | _, (End as res) | _, (ConnectionError _ as res) -> res
+          | consumed, NextState next_state ->
+              NextState
+                {
+                  next_state with
+                  read_off = rest_to_parse.Cstruct.len - consumed;
+                }
+        else state_to_step initial_state),
+    state_to_step )

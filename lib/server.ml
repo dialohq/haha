@@ -302,6 +302,17 @@ let connection_handler :
                 rest_to_parse ))
   in
 
-  Runloop.start ~receive_buffer ~frame_handler ~initial_state_result
-    ~pp_hum_state ~debug ~user_functions_handlers socket
-  |> Result.iter_error error_handler
+  let initial_step, state_to_step =
+    Runloop.start ~receive_buffer ~frame_handler ~initial_state_result
+      ~pp_hum_state ~debug ~user_functions_handlers socket
+  in
+
+  let rec loop : ('a, 'b) Runtime.step -> unit =
+   fun step ->
+    match step with
+    | End -> ()
+    | ConnectionError err -> error_handler err
+    | NextState state -> loop (state_to_step state)
+  in
+
+  loop initial_step
