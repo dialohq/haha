@@ -317,7 +317,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
           "Unexpected ACK flag in SETTINGS frame."
   in
 
-  let process_rst_stream_frame { Frame.stream_id; _ } _error_code =
+  let process_rst_stream_frame { Frame.stream_id; _ } error_code =
     match Streams.state_of_id state.streams stream_id with
     | Idle ->
         connection_error Error_code.ProtocolError
@@ -325,9 +325,10 @@ let frame_handler ~process_complete_headers ~process_data_frame
     | Closed ->
         connection_error Error_code.StreamClosed
           "RST_STREAM received on a closed stream!"
-    | _ -> (
-        (* TODO: handler per stream *)
-        (* error_handler (Error.StreamError (stream_id, error_code)); *)
+    | Open { error_handler; _ }
+    | HalfClosed (Remote { error_handler; _ } | Local { error_handler; _ })
+    | Reserved (Remote { error_handler; _ } | Local { error_handler; _ }) -> (
+        error_handler error_code;
         let streams =
           Streams.stream_transition state.streams stream_id Closed
         in
@@ -359,7 +360,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
         { state with flow = Flow_control.incr_out_flow state.flow increment }
     else
       match Streams.state_of_id state.streams stream_id with
-      | Open _ | Reserved Local | HalfClosed _ ->
+      | Open _ | Reserved (Local _) | HalfClosed _ ->
           next_step
             {
               state with

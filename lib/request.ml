@@ -10,7 +10,7 @@ type t = {
   headers : Headers.t list;
   body_writer : body_writer option;
   response_handler : response_handler option;
-  error_handler : Error.stream_error -> unit;
+  error_handler : Error_code.t -> unit;
 }
 
 type request_writer = unit -> t option

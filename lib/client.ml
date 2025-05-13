@@ -288,7 +288,7 @@ let run :
     | true -> get_body_writers state
   in
 
-  (* TODO: we could create so scoped function here for the initial writer to be sure it is freed *)
+  (* NOTE: we could create so scoped function here for the initial writer to be sure it is freed *)
   let initial_writer = create Settings.default.max_frame_size in
   let receive_buffer = Cstruct.create (9 + config.max_frame_size) in
   let user_settings = config in

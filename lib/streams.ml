@@ -28,7 +28,7 @@ let pp_hum_server_reader fmt (_ : server_reader) =
   Format.fprintf fmt "BodyStream <body_reader>"
 
 module Stream = struct
-  type error_handler = Error.stream_error -> unit
+  type error_handler = Error_code.t -> unit
 
   type ('readers, 'writers) open_state = {
     readers : 'readers;
@@ -40,7 +40,9 @@ module Stream = struct
     | Remote of { writers : 'writers; error_handler : error_handler }
     | Local of { readers : 'readers; error_handler : error_handler }
 
-  type reserved = Remote | Local
+  type reserved =
+    | Remote of { error_handler : error_handler }
+    | Local of { error_handler : error_handler }
 
   type ('readers, 'writers) state =
     | Idle
@@ -60,8 +62,8 @@ module Stream = struct
     fprintf fmt "state = ";
     (match t.state with
     | Idle -> fprintf fmt "Idle"
-    | Reserved Remote -> fprintf fmt "Reserved Remote"
-    | Reserved Local -> fprintf fmt "Reserved Local"
+    | Reserved (Remote _) -> fprintf fmt "Reserved Remote"
+    | Reserved (Local _) -> fprintf fmt "Reserved Local"
     | Open { readers; writers; _ } ->
         fprintf fmt "@[<hv>Open (@,%a,@,%a)@]"
           (fun fmt _ -> fprintf fmt "<readers>")
@@ -80,8 +82,8 @@ module Stream = struct
     fprintf fmt "state = ";
     (match t.state with
     | Idle -> fprintf fmt "Idle"
-    | Reserved Remote -> fprintf fmt "Reserved Remote"
-    | Reserved Local -> fprintf fmt "Reserved Local"
+    | Reserved (Remote _) -> fprintf fmt "Reserved Remote"
+    | Reserved (Local _) -> fprintf fmt "Reserved Local"
     | Open { readers; writers; _ } ->
         fprintf fmt "@[<hv>Open (@,%a,@,%a)@]" pp_readers readers pp_writers
           writers

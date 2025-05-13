@@ -6,8 +6,7 @@ type stream_state =
   (Streams.server_reader, Streams.server_writers) Streams.Stream.state
 
 type request_handler =
-  Request.t ->
-  body_reader * Response.response_writer * (Error.stream_error -> unit)
+  Request.t -> body_reader * Response.response_writer * (Error_code.t -> unit)
 
 let pp_hum_state =
   State.pp_hum Streams.pp_hum_server_reader Streams.pp_hum_server_writers

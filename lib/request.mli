@@ -14,7 +14,7 @@ type t = {
   headers : Headers.t list;
   body_writer : body_writer option;
   response_handler : response_handler option;
-  error_handler : Error.stream_error -> unit;
+  error_handler : Error_code.t -> unit;
 }
 
 type request_writer = unit -> t option
@@ -29,7 +29,7 @@ val create :
   ?authority:string ->
   ?scheme:string ->
   response_handler:response_handler ->
-  error_handler:(Error.stream_error -> unit) ->
+  error_handler:(Error_code.t -> unit) ->
   headers:Headers.t list ->
   Method.t ->
   string ->
@@ -40,7 +40,7 @@ val create_with_streaming :
   ?scheme:string ->
   body_writer:body_writer ->
   response_handler:response_handler ->
-  error_handler:(Error.stream_error -> unit) ->
+  error_handler:(Error_code.t -> unit) ->
   headers:Headers.t list ->
   Method.t ->
   string ->
@@ -48,6 +48,6 @@ val create_with_streaming :
 
 val handle :
   response_writer:(unit -> Response.t) ->
-  error_handler:(Error.stream_error -> unit) ->
+  error_handler:(Error_code.t -> unit) ->
   on_data:body_reader ->
-  body_reader * (unit -> Response.t) * (Error.stream_error -> unit)
+  body_reader * (unit -> Response.t) * (Error_code.t -> unit)
