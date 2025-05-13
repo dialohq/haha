@@ -1,6 +1,7 @@
 open Writer
 
 type state = (Streams.client_readers, Streams.client_writer) State.t
+type step = (Streams.client_readers, Streams.client_writer) Runtime.step
 
 type stream_state =
   (Streams.client_readers, Streams.client_writer) Streams.Stream.state
@@ -12,11 +13,9 @@ let run :
     ?debug:bool ->
     ?config:Settings.t ->
     request_writer:Request.request_writer ->
-    (* error_handler:(Error.connection_error -> unit) -> *)
     _ Eio.Resource.t ->
-    (unit, Error.connection_error) result =
- fun ?(debug = false) ?(config = Settings.default) ~request_writer
-     (* ~error_handler *) socket ->
+    step * (state -> step) =
+ fun ?(debug = false) ?(config = Settings.default) ~request_writer socket ->
   let process_data_frame (state : state) stream_error connection_error next_step
       { Frame.flags; stream_id; _ } bs =
     let end_stream = Flags.test_end_stream flags in

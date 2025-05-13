@@ -52,8 +52,19 @@ let () =
   in
 
   Eio.Fiber.fork ~sw (fun () ->
-      Client.run ~request_writer ~config:Settings.default socket
-      |> Result.iter_error error_handler);
+      let initial_step, state_to_step =
+        Client.run ~request_writer ~config:Settings.default socket
+      in
+
+      let rec loop : ('a, 'b) Haha.Runtime.step -> unit =
+       fun step ->
+        match step with
+        | End -> ()
+        | ConnectionError err -> error_handler err
+        | NextState state -> (loop [@tailcall]) (state_to_step state)
+      in
+
+      loop initial_step);
 
   Printf.printf "Writing request...\n%!";
   write_req ();
