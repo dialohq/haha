@@ -65,10 +65,10 @@ let () =
         Client.run ~request_writer ~config:Settings.default socket
       in
 
-      let rec loop : ('a, 'b, int) Haha.Runtime.step -> unit =
+      let rec loop : int Client.step -> unit =
        fun step ->
         match step with
-        | End -> ()
+        | End -> Printf.printf "End of connection\n%!"
         | ConnectionError err -> error_handler err
         | NextState state -> (loop [@tailcall]) (state_to_step state)
       in

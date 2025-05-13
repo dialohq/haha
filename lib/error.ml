@@ -7,8 +7,3 @@ let conn_prot_err : Error_code.t -> string -> t =
 
 let stream_prot_err : Stream_identifier.t -> Error_code.t -> t =
  fun stream_id code -> StreamError (stream_id, code)
-
-(* let message = function ConnectionError (_, msg) -> msg | StreamError _ -> "" *)
-(* let connection_error error_code msg = Error (ConnectionError (error_code, msg)) *)
-(* let stream_error stream_id error_code = *)
-(*   Error (StreamError (stream_id, error_code)) *)

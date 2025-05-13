@@ -6,11 +6,7 @@ type 'context state =
     'context )
   State.t
 
-type 'context step =
-  ( 'context Streams.client_readers,
-    'context Streams.client_writer,
-    'context )
-  Runtime.step
+type 'context step = 'context state Types.step
 
 type 'context stream_state =
   ( 'context Streams.client_readers,
@@ -137,7 +133,7 @@ let run :
   let process_complete_headers (state : _ state) stream_error connection_error
       next_step { Frame.flags; stream_id; _ } header_list =
     let end_stream = Flags.test_end_stream flags in
-    let pseudo_validation = Headers.Pseudo.validate_response header_list in
+    let pseudo_validation = Header.Pseudo.validate_response header_list in
 
     let stream_state = Streams.state_of_id state.streams stream_id in
 
@@ -178,7 +174,7 @@ let run :
             connection_error Error_code.StreamClosed
               "HEADERS received on a closed stream")
     | end_stream, Valid pseudo -> (
-        let headers = Headers.filter_pseudo header_list in
+        let headers = Header.filter_pseudo header_list in
         let response : _ Response.t =
           match Status.of_code pseudo.status with
           | #Status.informational as status -> `Interim { status; headers }
@@ -290,7 +286,6 @@ let run :
           writer_request_headers state.writer state.hpack_encoder id request;
           write_window_update state.writer id
             Flow_control.WindowSize.initial_increment;
-          let response_handler = Option.get response_handler in
           let stream_state : _ stream_state =
             match body_writer with
             | Some body_writer ->

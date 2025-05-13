@@ -17,26 +17,28 @@ let () =
 
     let goaway_promise, goaway_resolver = Eio.Promise.create () in
 
-    let error_handler (_error : Error.connection_error) =
-      Printf.printf "Got error in the erro handler\n%!"
+    let error_handler : Error.connection_error -> unit = function
+      | Exn exn -> raise exn
+      | ProtocolError (code, msg) ->
+          Format.printf "Got conn error %a: %s@." Error_code.pp_hum code msg
     in
 
     let goaway_writer () = Eio.Promise.await goaway_promise in
 
-    let request_handler request =
-      let path, meth = (Request.path request, Request.meth request) in
-      let headers = Request.headers request in
+    let request_handler (request : Reqd.t) =
+      let path, meth = (Reqd.path request, Reqd.meth request) in
+      let headers = Reqd.headers request in
       print_endline "Headers:";
       List.iter
-        (fun (header : Headers.t) ->
+        (fun (header : Header.t) ->
           Printf.printf "%s: %s\n%!" header.name header.value)
         headers;
       print_endline "Pseudo-headers:";
       Printf.printf ":method: %s\n%!" @@ Method.to_string meth;
       Printf.printf ":path: %s\n%!" @@ path;
-      Printf.printf ":scheme: %s\n%!" @@ Request.scheme request;
+      Printf.printf ":scheme: %s\n%!" @@ Reqd.scheme request;
       Printf.printf ":authority: %s\n%!"
-      @@ Option.value ~default:"None" (Request.authority request);
+      @@ Option.value ~default:"None" (Reqd.authority request);
       match (meth, path) with
       | GET, "/" | POST, "/stream" ->
           let cs = Cstruct.create 16 in
@@ -71,7 +73,7 @@ let () =
                 (`Data [ cs ], ignore, ())
           in
 
-          Request.handle ~context:() ~error_handler:ignore
+          Reqd.handle ~context:() ~error_handler:ignore
             ~response_writer:(fun () ->
               Printf.printf "response_writer called\n%!";
               match Dynarray.pop_last_opt interim_responses with
@@ -93,12 +95,12 @@ let () =
               | `End _ -> Printf.printf "Peer EOF\n%!")
       | POST, "/" ->
           let body_writer _ ~window_size:_ = (`End (None, []), ignore, ()) in
-          Request.handle ~context:() ~error_handler:ignore
+          Reqd.handle ~context:() ~error_handler:ignore
             ~response_writer:(fun () ->
               `Final (Response.create_with_streaming ~body_writer `OK []))
             ~on_data:(fun _ _ -> ())
       | _ ->
-          Request.handle ~context:() ~error_handler:ignore
+          Reqd.handle ~context:() ~error_handler:ignore
             ~response_writer:(fun () -> `Final (Response.create `Not_found []))
             ~on_data:(fun _ _ -> ())
     in

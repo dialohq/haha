@@ -95,7 +95,7 @@ let write_headers t hpack_encoder frame_info headers =
       (fun header ->
         Hpackv.Encoder.encode_header hpack_encoder t
           {
-            Hpackv.name = header.Headers.name;
+            Hpackv.name = header.Header.name;
             value = header.value;
             sensitive = false;
           })
@@ -108,7 +108,7 @@ let write_headers t hpack_encoder frame_info headers =
         acc
         + Hpackv.Encoder.calculate_length hpack_encoder
             {
-              Hpackv.name = header.Headers.name;
+              Hpackv.name = header.Header.name;
               value = header.value;
               sensitive = false;
             })
@@ -120,7 +120,7 @@ let write_response_headers t hpack_encoder frame_info status headers =
   let headers =
     match status with
     | Some status ->
-        { Headers.name = ":status"; value = Status.to_string status } :: headers
+        { Header.name = ":status"; value = Status.to_string status } :: headers
     | None -> headers
   in
 
@@ -129,7 +129,7 @@ let write_response_headers t hpack_encoder frame_info status headers =
 let write_request_headers ?authority t hpack_encoder frame_info meth path scheme
     headers =
   let headers =
-    { Headers.name = ":method"; value = Method.to_string meth }
+    { Header.name = ":method"; value = Method.to_string meth }
     :: { name = ":path"; value = path }
     :: { name = ":scheme"; value = scheme }
     ::
