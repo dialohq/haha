@@ -1,9 +1,9 @@
 open Writer
 
-type ('a, 'b) step =
+type ('a, 'b, 'c) step =
   | End
   | ConnectionError of Error.connection_error
-  | NextState of ('a, 'b) State.t
+  | NextState of ('a, 'b, 'c) State.t
 
 let handle_connection_error ?state error =
   let error_code, msg =
@@ -26,7 +26,7 @@ let handle_connection_error ?state error =
       let writer = create (9 + 4 + 4 + String.length msg) in
       write_goaway ~debug_data writer last_stream error_code
 
-let handle_stream_error (state : ('a, 'b) State.t) stream_id code =
+let handle_stream_error (state : ('a, 'b, 'c) State.t) stream_id code =
   write_rst_stream state.writer stream_id code;
   {
     state with
@@ -82,11 +82,11 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
   parse_loop 0 0 0 None
 
 let body_writer_handler ?(debug = false)
-    (f : unit -> Types.body_writer_fragment) id =
+    (f : unit -> _ Types.body_writer_fragment) id =
   let _ = debug in
-  let res, on_flush = f () in
+  let res, on_flush, context = f () in
 
-  fun (state : ('a, 'b) State.t) ->
+  fun (state : ('a, 'b, 'c) State.t) ->
     let state =
       { state with flush_thunk = Util.merge_thunks state.flush_thunk on_flush }
     in
@@ -115,7 +115,10 @@ let body_writer_handler ?(debug = false)
             (*   state with *)
             (*   streams = Streams.update_stream_flow state.streams id new_flow; *)
             (* } *)
-            state)
+            {
+              state with
+              streams = Streams.update_context id context state.streams;
+            })
     | `End (Some cs_list, trailers) -> (
         let send_trailers = List.length trailers > 0 in
         let total_len =
@@ -141,17 +144,20 @@ let body_writer_handler ?(debug = false)
               Streams.update_stream_flow state.streams id new_flow
             in
             match Streams.state_of_id updated_streams id with
-            | Open { readers; error_handler; _ } ->
+            | Open { readers; error_handler; context; _ } ->
                 {
                   state with
                   streams =
                     Streams.stream_transition updated_streams id
-                      (HalfClosed (Local { readers; error_handler }));
+                      (HalfClosed (Local { readers; error_handler; context }));
                 }
             | _ ->
                 {
                   state with
-                  streams = Streams.stream_transition updated_streams id Closed;
+                  streams =
+                    Streams.(
+                      stream_transition updated_streams id Closed
+                      |> update_context id context);
                 }))
     | `End (None, trailers) -> (
         let send_trailers = List.length trailers > 0 in
@@ -159,17 +165,22 @@ let body_writer_handler ?(debug = false)
           write_trailers state.writer state.hpack_encoder id trailers
         else write_data ~end_stream:true state.writer id 0 [ Cstruct.empty ];
         match Streams.state_of_id state.streams id with
-        | Open { readers; error_handler; _ } ->
+        | Open { readers; error_handler; context; _ } ->
             {
               state with
               streams =
-                Streams.stream_transition state.streams id
-                  (HalfClosed (Local { readers; error_handler }));
+                Streams.(
+                  stream_transition state.streams id
+                    (HalfClosed (Local { readers; error_handler; context }))
+                  |> update_context id context);
             }
         | _ ->
             {
               state with
-              streams = Streams.stream_transition state.streams id Closed;
+              streams =
+                Streams.(
+                  stream_transition state.streams id Closed
+                  |> update_context id context);
             })
     | `Yield -> Eio.Fiber.await_cancel ()
 
@@ -180,7 +191,7 @@ let user_goaway_handler ~f =
       Error_code.NoError;
     { state with shutdown = true }
 
-let read_io ~debug ~frame_handler (state : ('a, 'b) State.t) cs =
+let read_io ~debug ~frame_handler (state : ('a, 'b, 'c) State.t) cs =
   match Parse.read_frames cs state.parse_state with
   | Ok (consumed, frames, continue_opt) ->
       let _ = debug in
@@ -204,8 +215,7 @@ let read_io ~debug ~frame_handler (state : ('a, 'b) State.t) cs =
           (consumed, NextState (handle_stream_error state stream_id code)))
 
 let frame_handler ~process_complete_headers ~process_data_frame
-    (* ~(error_handler : Error.connection_error -> unit) *) (frame : Frame.t)
-    (state : ('a, 'b) State.t) : ('a, 'b) step =
+    (frame : Frame.t) (state : ('a, 'b, 'c) State.t) : ('a, 'b, 'c) step =
   let connection_error code msg =
     let err = Error.ProtocolError (code, msg) in
     handle_connection_error ~state err;

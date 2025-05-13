@@ -1,18 +1,19 @@
 open Eio
 
 let start :
-    'a 'b.
+    'a 'b 'c.
     initial_state_result:
-      (('a, 'b) State.t * Cstruct.t, Error.connection_error) result ->
-    frame_handler:(Frame.t -> ('a, 'b) State.t -> ('a, 'b) Runtime.step) ->
+      (('a, 'b, 'c) State.t * Cstruct.t, Error.connection_error) result ->
+    frame_handler:(Frame.t -> ('a, 'b, 'c) State.t -> ('a, 'b, 'c) Runtime.step) ->
     receive_buffer:Cstruct.t ->
-    pp_hum_state:(Format.formatter -> ('a, 'b) State.t -> unit) ->
     user_functions_handlers:
-      (('a, 'b) State.t -> (unit -> ('a, 'b) State.t -> ('a, 'b) State.t) list) ->
+      (('a, 'b, 'c) State.t ->
+      (unit -> ('a, 'b, 'c) State.t -> ('a, 'b, 'c) State.t) list) ->
     debug:bool ->
-    _ ->
-    ('a, 'b) Runtime.step * (('a, 'b) State.t -> ('a, 'b) Runtime.step) =
- fun ~initial_state_result ~frame_handler ~receive_buffer ~pp_hum_state:_
+    _ Eio.Resource.t ->
+    ('a, 'b, 'c) Runtime.step
+    * (('a, 'b, 'c) State.t -> ('a, 'b, 'c) Runtime.step) =
+ fun ~initial_state_result ~frame_handler ~receive_buffer
      ~user_functions_handlers ~debug socket ->
   let read_loop off =
     let read_bytes =
@@ -33,7 +34,6 @@ let start :
       | Error exn ->
           let err : Error.connection_error = Exn exn in
           Runtime.handle_connection_error ~state err;
-          (* error_handler err; *)
           Runtime.ConnectionError err
       | Ok read_bytes -> (
           let consumed, next_state =
@@ -48,7 +48,7 @@ let start :
           | other -> other)
   in
 
-  let flush_write : ('a, 'b) State.t -> ('a, 'b) Runtime.step =
+  let flush_write : ('a, 'b, 'c) State.t -> ('a, 'b, 'c) Runtime.step =
    fun state ->
     match Writer.write state.State.writer socket with
     | Ok () ->
@@ -82,7 +82,7 @@ let start :
     | other -> other
   in
 
-  let state_to_step : ('a, 'b) State.t -> ('a, 'b) Runtime.step =
+  let state_to_step : ('a, 'b, 'c) State.t -> ('a, 'b, 'c) Runtime.step =
    fun state ->
     let close_faraday () = Faraday.close state.State.writer.faraday in
 

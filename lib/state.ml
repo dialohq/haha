@@ -1,12 +1,12 @@
 type settings_sync = Syncing of Settings.settings_list | Idle
 type headers_state = Idle | InProgress of Bigstringaf.t * int
 
-type ('readers, 'writers) t = {
+type ('readers, 'writers, 'context) t = {
   peer_settings : Settings.t;
   local_settings : Settings.t;
   settings_status : settings_sync;
   headers_state : headers_state;
-  streams : ('readers, 'writers) Streams.t;
+  streams : ('readers, 'writers, 'context) Streams.t;
   hpack_encoder : Hpackv.Encoder.t;
   hpack_decoder : Hpackv.Decoder.t;
   shutdown : bool;
@@ -44,8 +44,8 @@ let do_flush t =
   t.flush_thunk ();
   { t with flush_thunk = ignore }
 
-let update_state_with_peer_settings (t : ('a, 'b) t) settings_list =
-  let rec loop list (state : ('a, 'b) t) : (('a, 'b) t, string) result =
+let update_state_with_peer_settings (t : ('a, 'b, 'c) t) settings_list =
+  let rec loop list (state : ('a, 'b, 'c) t) : (('a, 'b, 'c) t, string) result =
     match list with
     | [] -> Ok state
     | Settings.HeaderTableSize x :: l -> (
@@ -64,8 +64,8 @@ let update_state_with_peer_settings (t : ('a, 'b) t) settings_list =
   loop settings_list
     { t with peer_settings = Settings.(update_with_list default settings_list) }
 
-let update_state_with_local_settings (t : ('a, 'b) t) settings_list =
-  let rec loop list (state : ('a, 'b) t) : (('a, 'b) t, string) result =
+let update_state_with_local_settings (t : ('a, 'b, 'c) t) settings_list =
+  let rec loop list (state : ('a, 'b, 'c) t) : (('a, 'b, 'c) t, string) result =
     match list with
     | [] -> Ok state
     | Settings.HeaderTableSize x :: l ->
