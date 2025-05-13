@@ -1,15 +1,13 @@
 open Types
 
-type 'context response_handler = 'context Response.t -> 'context body_reader
-
 type 'context t = {
   path : string;
   meth : Method.t;
   authority : string option;
   scheme : string;
-  headers : Headers.t list;
+  headers : Header.t list;
   body_writer : 'context body_writer option;
-  response_handler : 'context response_handler option;
+  response_handler : 'context Response.t -> 'context Response.handler;
   error_handler : Error_code.t -> unit;
   initial_context : 'context;
 }
@@ -23,8 +21,8 @@ let authority t = t.authority
 let headers t = t.headers
 
 let create ?authority ?(scheme = "http") ~context
-    ~(response_handler : 'context response_handler) ~error_handler ~headers meth
-    path =
+    ~(response_handler : 'context Response.t -> 'context Response.handler)
+    ~error_handler ~headers meth path =
   {
     path;
     meth;
@@ -32,14 +30,14 @@ let create ?authority ?(scheme = "http") ~context
     scheme;
     headers;
     body_writer = None;
-    response_handler = Some response_handler;
+    response_handler;
     error_handler;
     initial_context = context;
   }
 
 let create_with_streaming ?authority ?(scheme = "http") ~context ~body_writer
-    ~(response_handler : 'context response_handler) ~error_handler ~headers meth
-    path =
+    ~(response_handler : 'context Response.t -> 'context Response.handler)
+    ~error_handler ~headers meth path =
   {
     path;
     meth;
@@ -47,11 +45,7 @@ let create_with_streaming ?authority ?(scheme = "http") ~context ~body_writer
     scheme;
     headers;
     body_writer = Some body_writer;
-    response_handler = Some response_handler;
+    response_handler;
     error_handler;
     initial_context = context;
   }
-
-let handle ~context ~(response_writer : unit -> 'context Response.t)
-    ~error_handler ~(on_data : _ body_reader) =
-  (on_data, response_writer, error_handler, context)

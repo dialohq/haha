@@ -1,9 +1,5 @@
 open Writer
-
-type ('a, 'b, 'c) step =
-  | End
-  | ConnectionError of Error.connection_error
-  | NextState of ('a, 'b, 'c) State.t
+open Types
 
 let handle_connection_error ?state error =
   let error_code, msg =
@@ -215,7 +211,7 @@ let read_io ~debug ~frame_handler (state : ('a, 'b, 'c) State.t) cs =
           (consumed, NextState (handle_stream_error state stream_id code)))
 
 let frame_handler ~process_complete_headers ~process_data_frame
-    (frame : Frame.t) (state : ('a, 'b, 'c) State.t) : ('a, 'b, 'c) step =
+    (frame : Frame.t) (state : _ State.t) : _ step =
   let connection_error code msg =
     let err = Error.ProtocolError (code, msg) in
     handle_connection_error ~state err;
@@ -249,7 +245,12 @@ let frame_handler ~process_complete_headers ~process_data_frame
             Result.map_error
               (fun _ -> "Decompression error, hpack error")
               result'
-            |> Result.map Headers.of_hpack_list)
+            |> Result.map
+                 (List.map (fun hpack_header ->
+                      {
+                        Header.name = hpack_header.Hpackv.name;
+                        value = hpack_header.value;
+                      })))
   in
 
   let process_headers_frame frame_header bs =

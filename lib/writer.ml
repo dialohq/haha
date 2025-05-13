@@ -72,7 +72,7 @@ let write_headers_response ?padding_length ?(end_header = true) t hpack_encoder
   in
 
   let headers =
-    { Headers.name = "user-agent"; value = "haha/0.0.1" } :: headers
+    { Header.name = "user-agent"; value = "haha/0.0.1" } :: headers
   in
 
   let flags = if end_header then Flags.set_end_header flags else flags in
@@ -101,7 +101,7 @@ let writer_request_headers ?padding_length ?(end_header = true) t hpack_encoder
   in
 
   let headers =
-    { Headers.name = "user-agent"; value = "haha/0.0.1" } :: headers
+    { Header.name = "user-agent"; value = "haha/0.0.1" } :: headers
   in
 
   let end_stream = Option.is_none body_writer in

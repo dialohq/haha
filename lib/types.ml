@@ -1,11 +1,14 @@
-type token = Magic_string | Frame of Frame.t
+type 'state step =
+  | End
+  | ConnectionError of Error.connection_error
+  | NextState of 'state
 
 type body_reader_fragment =
-  [ `Data of Cstruct.t | `End of Cstruct.t option * Headers.t list ]
+  [ `Data of Cstruct.t | `End of Cstruct.t option * Header.t list ]
 
 type 'context body_writer_fragment =
   [ `Data of Cstruct.t list
-  | `End of Cstruct.t list option * Headers.t list
+  | `End of Cstruct.t list option * Header.t list
   | `Yield ]
   * (unit -> unit)
   * 'context

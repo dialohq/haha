@@ -1,18 +1,18 @@
 open Eio
+open State
+open Types
 
 let start :
     'a 'b 'c.
     initial_state_result:
-      (('a, 'b, 'c) State.t * Cstruct.t, Error.connection_error) result ->
-    frame_handler:(Frame.t -> ('a, 'b, 'c) State.t -> ('a, 'b, 'c) Runtime.step) ->
+      (('a, 'b, 'c) t * Cstruct.t, Error.connection_error) result ->
+    frame_handler:(Frame.t -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t step) ->
     receive_buffer:Cstruct.t ->
     user_functions_handlers:
-      (('a, 'b, 'c) State.t ->
-      (unit -> ('a, 'b, 'c) State.t -> ('a, 'b, 'c) State.t) list) ->
+      (('a, 'b, 'c) t -> (unit -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t) list) ->
     debug:bool ->
     _ Eio.Resource.t ->
-    ('a, 'b, 'c) Runtime.step
-    * (('a, 'b, 'c) State.t -> ('a, 'b, 'c) Runtime.step) =
+    ('a, 'b, 'c) t step * (('a, 'b, 'c) t -> ('a, 'b, 'c) t step) =
  fun ~initial_state_result ~frame_handler ~receive_buffer
      ~user_functions_handlers ~debug socket ->
   let read_loop off =
@@ -34,7 +34,7 @@ let start :
       | Error exn ->
           let err : Error.connection_error = Exn exn in
           Runtime.handle_connection_error ~state err;
-          Runtime.ConnectionError err
+          ConnectionError err
       | Ok read_bytes -> (
           let consumed, next_state =
             Runtime.read_io ~debug ~frame_handler state
@@ -48,14 +48,14 @@ let start :
           | other -> other)
   in
 
-  let flush_write : ('a, 'b, 'c) State.t -> ('a, 'b, 'c) Runtime.step =
+  let flush_write : ('a, 'b, 'c) t -> ('a, 'b, 'c) t step =
    fun state ->
-    match Writer.write state.State.writer socket with
+    match Writer.write state.writer socket with
     | Ok () ->
         if state.shutdown && Streams.all_closed state.streams then (
-          Faraday.close (State.do_flush state).writer.faraday;
-          Runtime.End)
-        else NextState (State.do_flush state)
+          Faraday.close (do_flush state).writer.faraday;
+          End)
+        else NextState (do_flush state)
     | Error err ->
         Runtime.handle_connection_error ~state err;
         Faraday.close state.writer.faraday;
@@ -63,7 +63,7 @@ let start :
   in
 
   let operations state =
-    let base_op () = read_loop state.State.read_off in
+    let base_op () = read_loop state.read_off in
 
     let opt_functions =
       user_functions_handlers state
@@ -77,14 +77,12 @@ let start :
 
   let combine x y =
    fun step ->
-    match x step with
-    | Runtime.NextState new_state -> y new_state
-    | other -> other
+    match x step with NextState new_state -> y new_state | other -> other
   in
 
-  let state_to_step : ('a, 'b, 'c) State.t -> ('a, 'b, 'c) Runtime.step =
+  let state_to_step : ('a, 'b, 'c) t -> ('a, 'b, 'c) t step =
    fun state ->
-    let close_faraday () = Faraday.close state.State.writer.faraday in
+    let close_faraday () = Faraday.close state.writer.faraday in
 
     match (Fiber.any ~combine (operations state)) state with
     | (ConnectionError _ as res) | (End as res) ->

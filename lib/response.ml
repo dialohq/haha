@@ -2,18 +2,19 @@ open Types
 
 type 'context final_response = {
   status : Status.t;
-  headers : Headers.t list;
+  headers : Header.t list;
   body_writer : 'context body_writer option;
 }
 
 type 'context interim_response = {
   status : Status.informational;
-  headers : Headers.t list; (* initial_context : 'context; *)
+  headers : Header.t list;
 }
 
 type 'context t =
   [ `Interim of 'context interim_response | `Final of 'context final_response ]
 
+type 'context handler = 'context body_reader
 type 'context response_writer = unit -> 'context t
 
 let status (t : _ t) =
@@ -22,16 +23,16 @@ let status (t : _ t) =
 let headers (t : _ t) =
   match t with `Interim r -> r.headers | `Final r -> r.headers
 
-let create (status : Status.t) (headers : Headers.t list) :
+let create (status : Status.t) (headers : Header.t list) :
     'context final_response =
   { status; headers; body_writer = None }
 
-let create_with_streaming ~(body_writer : 'context body_writer)
-    (status : Status.t) (headers : Headers.t list) : 'context final_response =
-  { status; headers; body_writer = Some body_writer }
-
-let create_interim (status : Status.informational) (headers : Headers.t list) :
+let create_interim (status : Status.informational) (headers : Header.t list) :
     'context interim_response =
   { status; headers }
+
+let create_with_streaming ~(body_writer : 'context body_writer)
+    (status : Status.t) (headers : Header.t list) : 'context final_response =
+  { status; headers; body_writer = Some body_writer }
 
 let handle ~(on_data : _ body_reader) = on_data

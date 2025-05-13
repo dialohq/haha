@@ -1,15 +1,14 @@
 type t = { name : string; value : string }
 
-let of_hpack_list =
-  List.map (fun hpack_header ->
-      { name = hpack_header.Hpackv.name; value = hpack_header.value })
-
 let of_list = List.map (fun header -> { name = fst header; value = snd header })
+let to_list = List.map (fun header -> (header.name, header.value))
 
-let get_string l e =
+let find_opt e l =
   match List.find_opt (fun (h : t) -> h.name = e) l with
   | None -> None
   | Some header -> Some header.value
+
+let filter_pseudo = List.filter (fun header -> String.get header.name 0 <> ':')
 
 module Pseudo = struct
   let request_required = [ ":method"; ":scheme"; ":path" ]
@@ -92,5 +91,4 @@ module Pseudo = struct
     else Invalid
 end
 
-let filter_pseudo = List.filter (fun header -> String.get header.name 0 <> ':')
 (* TODO: should do more validation on normal headers here *)

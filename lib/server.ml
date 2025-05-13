@@ -1,23 +1,16 @@
-open Types
-
 type 'context state =
   ( 'context Streams.server_reader,
     'context Streams.server_writers,
     'context )
   State.t
 
+type 'context step = 'context state Types.step
+
 type 'context stream_state =
   ( 'context Streams.server_reader,
     'context Streams.server_writers,
     'context )
   Streams.Stream.state
-
-type 'context request_handler =
-  'context Request.t ->
-  'context body_reader
-  * 'context Response.response_writer
-  * (Error_code.t -> unit)
-  * 'context
 
 (* TODO: config argument could have some more user-friendly type so there is no need to look into RFC *)
 let connection_handler :
@@ -26,7 +19,7 @@ let connection_handler :
     ?config:Settings.t ->
     ?goaway_writer:(unit -> unit) ->
     error_handler:(Error.connection_error -> unit) ->
-    'c request_handler ->
+    (Reqd.t -> 'c Reqd.handler) ->
     _ Eio.Resource.t ->
     _ =
  fun ?(debug = false) ?(config = Settings.default) ?goaway_writer ~error_handler
@@ -142,7 +135,7 @@ let connection_handler :
   let process_complete_headers (state : _ state) stream_error connection_error
       next_step { Frame.flags; stream_id; _ } header_list =
     let end_stream = Flags.test_end_stream flags in
-    let pseudo_validation = Headers.Pseudo.validate_request header_list in
+    let pseudo_validation = Header.Pseudo.validate_request header_list in
 
     let stream_state = Streams.state_of_id state.streams stream_id in
 
@@ -183,22 +176,18 @@ let connection_handler :
               < Int32.to_int state.local_settings.max_concurrent_streams
             then
               (* TODO: this should be a different type than the exponsed request *)
-              let request =
+              let reqd =
                 {
-                  Request.meth = Method.of_string pseudo.meth;
+                  Reqd.meth = Method.of_string pseudo.meth;
                   path = pseudo.path;
                   authority = pseudo.authority;
                   scheme = pseudo.scheme;
-                  headers = Headers.filter_pseudo header_list;
-                  body_writer = None;
-                  response_handler = None;
-                  error_handler = ignore;
-                  initial_context = Obj.magic ();
+                  headers = Header.filter_pseudo header_list;
                 }
               in
 
               let readers, response_writer, error_handler, initial_context =
-                request_handler request
+                request_handler reqd
               in
 
               let new_stream_state : _ stream_state =
@@ -332,7 +321,7 @@ let connection_handler :
       ~user_functions_handlers socket
   in
 
-  let rec loop : ('a, 'b, 'c) Runtime.step -> unit =
+  let rec loop : _ step -> unit =
    fun step ->
     match step with
     | End -> ()
