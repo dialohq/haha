@@ -11,7 +11,7 @@ let pp_hum_server_writers fmt = function
 
 type 'context client_readers =
   | BodyStream of 'context body_reader
-  | AwaitingResponse of ('context Response.t -> 'context Response.handler)
+  | AwaitingResponse of 'context Response.handler
 
 let pp_hum_client_readers fmt = function
   | BodyStream _ -> Format.fprintf fmt "BodyStream <body_reader>"

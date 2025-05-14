@@ -82,11 +82,9 @@ let start :
 
   let state_to_step : ('a, 'b, 'c) t -> ('a, 'b, 'c) t step =
    fun state ->
-    let close_faraday () = Faraday.close state.writer.faraday in
-
     match (Fiber.any ~combine (operations state)) state with
     | (ConnectionError _ as res) | (End as res) ->
-        close_faraday ();
+        Faraday.close state.writer.faraday;
         res
     | step -> step
   in

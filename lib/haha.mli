@@ -8,6 +8,23 @@ module Error : sig
             from the other side of connection, or an exception. *)
 end
 
+module Header : sig
+  type t = { name : string; value : string }
+  (** The type of header *)
+
+  val of_list : (string * string) list -> t list
+  (** [of_list assoc] is list of header fields defined by a association list
+      [assoc]. *)
+
+  val to_list : t list -> (string * string) list
+  (** [to_list l] is a association list of header fields contained in the list
+      of headers [l]. *)
+
+  val find_opt : string -> t list -> string option
+  (** [find_opt name l] returns the first header from list of headers [l] with
+      name [name], or [None] if no header name is present. *)
+end
+
 module Types : sig
   type 'state step =
     | End
@@ -32,23 +49,6 @@ end
 
 module Method = Method
 module Status = Status
-
-module Header : sig
-  type t = { name : string; value : string }
-  (** The type of header *)
-
-  val of_list : (string * string) list -> t list
-  (** [of_list assoc] is list of header fields defined by a association list
-      [assoc]. *)
-
-  val to_list : t list -> (string * string) list
-  (** [to_list l] is a association list of header fields contained in the list
-      of headers [l]. *)
-
-  val find_opt : string -> t list -> string option
-  (** [find_opt name l] returns the first header from list of headers [l] with
-      name [name], or [None] if no header name is present. *)
-end
 
 module Response : sig
   open Types
@@ -76,7 +76,8 @@ module Response : sig
   (** The type representing all types of responses, meaning [final_response] or
       [interim_response]. *)
 
-  type 'context handler
+  type 'context handler =
+    'context -> 'context t -> 'context body_reader * 'context
   (** The type returned by the [Response.handle]. *)
 
   type 'context response_writer = unit -> 'context t
@@ -95,7 +96,10 @@ module Response : sig
     Header.t list ->
     'context final_response
 
-  val handle : on_data:'context body_reader -> 'context handler
+  val handle :
+    context:'context ->
+    on_data:'context body_reader ->
+    'context body_reader * 'context
 end
 
 module Request : sig
@@ -114,7 +118,7 @@ module Request : sig
     ?authority:string ->
     ?scheme:string ->
     context:'context ->
-    response_handler:('context Response.t -> 'context Response.handler) ->
+    response_handler:'context Response.handler ->
     error_handler:(Error_code.t -> unit) ->
     headers:Header.t list ->
     Method.t ->
@@ -124,9 +128,9 @@ module Request : sig
   val create_with_streaming :
     ?authority:string ->
     ?scheme:string ->
-    context:'context ->
     body_writer:'context body_writer ->
-    response_handler:('context Response.t -> 'context Response.handler) ->
+    context:'context ->
+    response_handler:'context Response.handler ->
     error_handler:(Error_code.t -> unit) ->
     headers:Header.t list ->
     Method.t ->

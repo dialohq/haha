@@ -21,11 +21,11 @@ let () =
     (fst took, snd took, counter + 1)
   in
 
-  let response_handler (response : int Response.t) =
+  let response_handler context (response : int Response.t) =
     let status = Response.status response in
     Printf.printf "Got response of status %s\n%!" @@ Status.to_string status;
 
-    Response.handle ~on_data:(fun counter cs ->
+    Response.handle ~context ~on_data:(fun counter cs ->
         match cs with
         | `Data _cs ->
             (* Cstruct.hexdump cs; *)

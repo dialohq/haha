@@ -80,7 +80,7 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
 let body_writer_handler ?(debug = false)
     (f : unit -> _ Types.body_writer_fragment) id =
   let _ = debug in
-  let res, on_flush, context = f () in
+  let res, on_flush, new_context = f () in
 
   fun (state : ('a, 'b, 'c) State.t) ->
     let state =
@@ -113,7 +113,7 @@ let body_writer_handler ?(debug = false)
             (* } *)
             {
               state with
-              streams = Streams.update_context id context state.streams;
+              streams = Streams.update_context id new_context state.streams;
             })
     | `End (Some cs_list, trailers) -> (
         let send_trailers = List.length trailers > 0 in
@@ -140,20 +140,20 @@ let body_writer_handler ?(debug = false)
               Streams.update_stream_flow state.streams id new_flow
             in
             match Streams.state_of_id updated_streams id with
-            | Open { readers; error_handler; context; _ } ->
+            | Open { readers; error_handler; _ } ->
                 {
                   state with
                   streams =
                     Streams.stream_transition updated_streams id
-                      (HalfClosed (Local { readers; error_handler; context }));
+                      (HalfClosed
+                         (Local
+                            { readers; error_handler; context = new_context }));
                 }
             | _ ->
                 {
                   state with
                   streams =
-                    Streams.(
-                      stream_transition updated_streams id Closed
-                      |> update_context id context);
+                    Streams.(stream_transition updated_streams id Closed);
                 }))
     | `End (None, trailers) -> (
         let send_trailers = List.length trailers > 0 in
@@ -161,22 +161,19 @@ let body_writer_handler ?(debug = false)
           write_trailers state.writer state.hpack_encoder id trailers
         else write_data ~end_stream:true state.writer id 0 [ Cstruct.empty ];
         match Streams.state_of_id state.streams id with
-        | Open { readers; error_handler; context; _ } ->
+        | Open { readers; error_handler; _ } ->
             {
               state with
               streams =
                 Streams.(
                   stream_transition state.streams id
-                    (HalfClosed (Local { readers; error_handler; context }))
-                  |> update_context id context);
+                    (HalfClosed
+                       (Local { readers; error_handler; context = new_context })));
             }
         | _ ->
             {
               state with
-              streams =
-                Streams.(
-                  stream_transition state.streams id Closed
-                  |> update_context id context);
+              streams = Streams.(stream_transition state.streams id Closed);
             })
     | `Yield -> Eio.Fiber.await_cancel ()
 
