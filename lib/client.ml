@@ -181,12 +181,18 @@ let run :
           | status -> `Final { status; headers; body_writer = None }
         in
         match (stream_state, response) with
-        | Open { readers = AwaitingResponse response_handler; _ }, `Interim _
-        | ( HalfClosed (Local { readers = AwaitingResponse response_handler; _ }),
+        | ( Open { readers = AwaitingResponse response_handler; context; _ },
+            `Interim _ )
+        | ( HalfClosed
+              (Local { readers = AwaitingResponse response_handler; context; _ }),
             `Interim _ ) ->
-            let _body_reader = response_handler response in
+            let _body_reader, context = response_handler context response in
 
-            next_step state
+            let streams =
+              Streams.update_context stream_id context state.streams
+            in
+
+            next_step { state with streams }
         | ( Open
               {
                 readers = AwaitingResponse response_handler;
@@ -195,7 +201,7 @@ let run :
                 context;
               },
             `Final _ ) ->
-            let body_reader = response_handler response in
+            let body_reader, context = response_handler context response in
 
             let new_stream_state : _ stream_state =
               if end_stream then
@@ -226,7 +232,7 @@ let run :
                    context;
                  }),
             `Final _ ) ->
-            let body_reader = response_handler response in
+            let body_reader, context = response_handler context response in
 
             let new_stream_state : _ stream_state =
               if end_stream then Closed

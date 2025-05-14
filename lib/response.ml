@@ -14,7 +14,9 @@ type 'context interim_response = {
 type 'context t =
   [ `Interim of 'context interim_response | `Final of 'context final_response ]
 
-type 'context handler = 'context body_reader
+type 'context handler =
+  'context -> 'context t -> 'context body_reader * 'context
+
 type 'context response_writer = unit -> 'context t
 
 let status (t : _ t) =
@@ -35,4 +37,4 @@ let create_with_streaming ~(body_writer : 'context body_writer)
     (status : Status.t) (headers : Header.t list) : 'context final_response =
   { status; headers; body_writer = Some body_writer }
 
-let handle ~(on_data : _ body_reader) = on_data
+let handle ~context ~(on_data : _ body_reader) = (on_data, context)
