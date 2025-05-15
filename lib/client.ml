@@ -350,5 +350,5 @@ let run :
                 rest_to_parse ))
   in
 
-  Runloop.start ~frame_handler ~receive_buffer ~initial_state_result ~debug
+  Runtime.start ~frame_handler ~receive_buffer ~initial_state_result ~debug
     ~user_functions_handlers socket

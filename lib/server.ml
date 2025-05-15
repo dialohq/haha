@@ -317,7 +317,7 @@ let connection_handler :
   in
 
   let initial_step, state_to_step =
-    Runloop.start ~receive_buffer ~frame_handler ~initial_state_result ~debug
+    Runtime.start ~receive_buffer ~frame_handler ~initial_state_result ~debug
       ~user_functions_handlers socket
   in
 

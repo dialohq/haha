@@ -28,34 +28,34 @@ let pp_hum_server_reader fmt (_ : _ server_reader) =
   Format.fprintf fmt "BodyStream <body_reader>"
 
 module Stream = struct
-  type error_handler = Error_code.t -> unit
+  type 'context error_handler = 'context -> Error_code.t -> 'context
 
   type ('readers, 'writers, 'context) open_state = {
     readers : 'readers;
     writers : 'writers;
-    error_handler : error_handler;
+    error_handler : 'context error_handler;
     context : 'context;
   }
 
   type ('readers, 'writers, 'context) half_closed =
     | Remote of {
         writers : 'writers;
-        error_handler : error_handler;
+        error_handler : 'context error_handler;
         context : 'context;
       }
     | Local of {
         readers : 'readers;
-        error_handler : error_handler;
+        error_handler : 'context error_handler;
         context : 'context;
       }
 
-  type reserved =
-    | Remote of { error_handler : error_handler }
-    | Local of { error_handler : error_handler }
+  type 'context reserved =
+    | Remote of { error_handler : 'context error_handler; context : 'context }
+    | Local of { error_handler : 'context error_handler; context : 'context }
 
   type ('readers, 'writers, 'context) state =
     | Idle
-    | Reserved of reserved
+    | Reserved of 'context reserved
     | Open of ('readers, 'writers, 'context) open_state
     | HalfClosed of ('readers, 'writers, 'context) half_closed
     | Closed

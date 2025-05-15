@@ -8,7 +8,7 @@ type 'context t = {
   headers : Header.t list;
   body_writer : 'context body_writer option;
   response_handler : 'context Response.handler;
-  error_handler : Error_code.t -> unit;
+  error_handler : 'context -> Error_code.t -> 'context;
   initial_context : 'context;
 }
 

@@ -73,7 +73,8 @@ let () =
                 (`Data [ cs ], ignore, ())
           in
 
-          Reqd.handle ~context:() ~error_handler:ignore
+          Reqd.handle ~context:()
+            ~error_handler:(fun c _ -> c)
             ~response_writer:(fun () ->
               Printf.printf "response_writer called\n%!";
               match Dynarray.pop_last_opt interim_responses with
@@ -95,12 +96,14 @@ let () =
               | `End _ -> Printf.printf "Peer EOF\n%!")
       | POST, "/" ->
           let body_writer _ ~window_size:_ = (`End (None, []), ignore, ()) in
-          Reqd.handle ~context:() ~error_handler:ignore
+          Reqd.handle ~context:()
+            ~error_handler:(fun c _ -> c)
             ~response_writer:(fun () ->
               `Final (Response.create_with_streaming ~body_writer `OK []))
             ~on_data:(fun _ _ -> ())
       | _ ->
-          Reqd.handle ~context:() ~error_handler:ignore
+          Reqd.handle ~context:()
+            ~error_handler:(fun c _ -> c)
             ~response_writer:(fun () -> `Final (Response.create `Not_found []))
             ~on_data:(fun _ _ -> ())
     in
