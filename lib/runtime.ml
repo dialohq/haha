@@ -1,7 +1,7 @@
 open Writer
 open State
 
-type ('r, 'w, 'context) internal_step =
+type ('r, 'w, 'context) step =
   | End of 'context final_contexts
   | ConnectionError of (Error.connection_error * 'context final_contexts)
   | NextState of ('r, 'w, 'context) t
@@ -216,7 +216,7 @@ let read_io ~debug ~frame_handler (state : ('a, 'b, 'c) State.t) cs =
           (consumed, NextState (handle_stream_error state stream_id code)))
 
 let frame_handler ~process_complete_headers ~process_data_frame
-    (frame : Frame.t) (state : _ State.t) : _ internal_step =
+    (frame : Frame.t) (state : _ State.t) : _ step =
   let connection_error code msg =
     let err = Error.ProtocolError (code, msg) in
     handle_connection_error ~state err;
@@ -427,14 +427,13 @@ let start :
     'a 'b 'c.
     initial_state_result:
       (('a, 'b, 'c) t * Cstruct.t, Error.connection_error) result ->
-    frame_handler:(Frame.t -> ('a, 'b, 'c) t -> ('a, 'b, 'c) internal_step) ->
+    frame_handler:(Frame.t -> ('a, 'b, 'c) t -> ('a, 'b, 'c) step) ->
     receive_buffer:Cstruct.t ->
     user_functions_handlers:
       (('a, 'b, 'c) t -> (unit -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t) list) ->
     debug:bool ->
     _ Eio.Resource.t ->
-    (* ('a, 'b, 'c) internal_step * (('a, 'b, 'c) t -> ('a, 'b, 'c) internal_step) *)
-    'c Types.step =
+    'c Types.iteration =
  fun ~initial_state_result ~frame_handler ~receive_buffer
      ~user_functions_handlers ~debug socket ->
   let read_loop off =
@@ -470,7 +469,7 @@ let start :
           | other -> other)
   in
 
-  let flush_write : ('a, 'b, 'c) t -> ('a, 'b, 'c) internal_step =
+  let flush_write : ('a, 'b, 'c) t -> ('a, 'b, 'c) step =
    fun state ->
     match Writer.write state.writer socket with
     | Ok () ->
@@ -484,7 +483,7 @@ let start :
         ConnectionError (err, state.final_contexts)
   in
 
-  let operations state =
+  let make_events state =
     let base_op () = read_loop state.read_off in
 
     let opt_functions =
@@ -502,40 +501,51 @@ let start :
     match x step with NextState new_state -> y new_state | other -> other
   in
 
-  let rec state_to_step : ('a, 'b, 'c) t -> 'c Types.step =
+  let rec process_events : ('a, 'b, 'c) t -> 'c Types.iteration =
    fun state ->
-    match (Fiber.any ~combine (operations state)) state with
-    | ConnectionError e ->
+    match (Fiber.any ~combine (make_events state)) state with
+    | ConnectionError (err, closed_ctxs) ->
         Faraday.close state.writer.faraday;
-        Error e
-    | End ctxs ->
+        { closed_ctxs; state = Error err }
+    | End closed_ctxs ->
         Faraday.close state.writer.faraday;
-        End ctxs
+        { closed_ctxs; state = End }
     | NextState next_state ->
-        let ctxs, next_state = extract_contexts next_state in
-        Next ((fun () -> state_to_step next_state), ctxs)
+        let closed_ctxs, next_state = extract_contexts next_state in
+        {
+          closed_ctxs;
+          state = InProgress (fun () -> process_events next_state);
+        }
   in
 
-  let init_state : _ Types.step =
+  let init_state : _ Types.iteration =
     match initial_state_result with
     | Error err ->
         handle_connection_error err;
-        Error (err, [])
+        { closed_ctxs = []; state = Error err }
     | Ok (initial_state, rest_to_parse) ->
         if Cstruct.length rest_to_parse > 0 then
           match read_io ~debug ~frame_handler initial_state rest_to_parse with
-          | _, End ctxs -> End ctxs
-          | _, ConnectionError e -> Error e
+          | _, End closed_ctxs -> { closed_ctxs; state = End }
+          | _, ConnectionError (err, closed_ctxs) ->
+              { closed_ctxs; state = Error err }
           | consumed, NextState next_state ->
-              Next
-                ( (fun () ->
-                    state_to_step
-                      {
-                        next_state with
-                        read_off = rest_to_parse.Cstruct.len - consumed;
-                      }),
-                  [] )
-        else Next ((fun () -> state_to_step initial_state), [])
+              {
+                closed_ctxs = [];
+                state =
+                  InProgress
+                    (fun () ->
+                      process_events
+                        {
+                          next_state with
+                          read_off = rest_to_parse.Cstruct.len - consumed;
+                        });
+              }
+        else
+          {
+            closed_ctxs = [];
+            state = InProgress (fun () -> process_events initial_state);
+          }
   in
 
   init_state

@@ -26,10 +26,15 @@ module Header : sig
 end
 
 module Types : sig
-  type 'context step =
-    | Next of ((unit -> 'context step) * (int32 * 'context) list)
-    | End of (int32 * 'context) list
-    | Error of (Error.connection_error * (int32 * 'context) list)
+  type 'context state =
+    | InProgress of (unit -> 'context iteration)
+    | End
+    | Error of Error.connection_error
+
+  and 'context iteration = {
+    state : 'context state;
+    closed_ctxs : (int32 * 'context) list;
+  }
 
   type body_reader_fragment =
     [ `Data of Cstruct.t | `End of Cstruct.t option * Header.t list ]
@@ -176,7 +181,7 @@ end
 module Settings = Settings
 
 module Client : sig
-  type 'context step = 'context Types.step
+  type 'context iteration = 'context Types.iteration
 
   val run :
     'context.
@@ -184,5 +189,5 @@ module Client : sig
     ?config:Settings.t ->
     request_writer:'context Request.request_writer ->
     [> `Flow | `R | `W ] Eio.Resource.t ->
-    'context step
+    'context iteration
 end

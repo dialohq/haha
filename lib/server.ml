@@ -4,7 +4,7 @@ type 'context state =
     'context )
   State.t
 
-type 'context step = 'context Types.step
+type 'context interation = 'context Types.iteration
 
 type 'context stream_state =
   ( 'context Streams.server_reader,
@@ -325,12 +325,12 @@ let connection_handler :
       ~user_functions_handlers socket
   in
 
-  let rec loop : _ step -> unit =
+  let rec loop : _ interation -> unit =
    fun step ->
     match step with
-    | End _ -> ()
-    | Error (err, _) -> error_handler err
-    | Next (next, _) -> loop (next ())
+    | { state = End; _ } -> ()
+    | { state = Error err; _ } -> error_handler err
+    | { state = InProgress next; _ } -> loop (next ())
   in
 
   loop initial_step

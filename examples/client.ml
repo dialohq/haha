@@ -66,14 +66,12 @@ let () =
         Client.run ~request_writer ~config:Settings.default socket
       in
 
-      let rec loop : int Client.step -> unit =
+      let rec loop : int Client.iteration -> unit =
        fun step ->
         match step with
-        | End _ -> Printf.printf "End of connection\n%!"
-        | Error _ ->
-            let _ = error_handler in
-            ()
-        | Next (next, _) -> (loop [@tailcall]) (next ())
+        | { state = End; _ } -> Printf.printf "End of connection\n%!"
+        | { state = Error err; _ } -> error_handler err
+        | { state = InProgress next; _ } -> (loop [@tailcall]) (next ())
       in
 
       loop initial_step);

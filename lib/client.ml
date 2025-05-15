@@ -6,7 +6,7 @@ type 'context state =
     'context )
   State.t
 
-type 'context step = 'context Types.step
+type 'context iteration = 'context Types.iteration
 
 type 'context stream_state =
   ( 'context Streams.client_readers,
@@ -20,7 +20,7 @@ let run :
     ?config:Settings.t ->
     request_writer:'c Request.request_writer ->
     _ Eio.Resource.t ->
-    'c step =
+    'c iteration =
  fun ?(debug = false) ?(config = Settings.default) ~request_writer socket ->
   let process_data_frame (state : _ state) stream_error connection_error
       next_step { Frame.flags; stream_id; _ } bs =
