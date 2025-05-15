@@ -211,7 +211,7 @@ let read_io ~debug ~frame_handler (state : ('a, 'b, 'c) State.t) cs =
       match err with
       | _, Error.ConnectionError err ->
           handle_connection_error ~state err;
-          (0, ConnectionError (err, state.final_contexts))
+          (0, ConnectionError (err, extract_all_context state))
       | consumed, StreamError (stream_id, code) ->
           (consumed, NextState (handle_stream_error state stream_id code)))
 
@@ -220,16 +220,15 @@ let frame_handler ~process_complete_headers ~process_data_frame
   let connection_error code msg =
     let err = Error.ProtocolError (code, msg) in
     handle_connection_error ~state err;
-    ConnectionError (err, state.final_contexts)
+    ConnectionError (err, extract_all_context state)
   in
   let stream_error id code = NextState (handle_stream_error state id code) in
-  let next_step next_state = NextState next_state in
 
   let process_complete_headers =
-    process_complete_headers state stream_error connection_error next_step
+    process_complete_headers state stream_error connection_error
   in
   let process_data_frame =
-    process_data_frame state stream_error connection_error next_step
+    process_data_frame state stream_error connection_error
   in
   let decompress_headers_block bs ~len hpack_decoder =
     let hpack_parser = Hpackv.Decoder.decode_headers hpack_decoder in
@@ -265,7 +264,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
       let len = Bigstringaf.length bs in
       Bigstringaf.blit bs ~src_off:0 headers_buffer ~dst_off:0 ~len;
 
-      next_step { state with headers_state = InProgress (headers_buffer, len) })
+      NextState { state with headers_state = InProgress (headers_buffer, len) })
     else
       match
         decompress_headers_block bs ~len:(Bigstringaf.length bs)
@@ -299,7 +298,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
         in
 
         if not (Flags.test_end_header flags) then
-          next_step
+          NextState
             { state with headers_state = InProgress (new_buffer, new_len) }
         else
           match
@@ -316,7 +315,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
         | Error msg -> connection_error Error_code.InternalError msg
         | Ok new_state ->
             write_settings_ack state.writer;
-            next_step new_state)
+            NextState new_state)
     | Syncing new_settings, true ->
         let new_state =
           {
@@ -327,7 +326,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
           }
         in
 
-        next_step new_state
+        NextState new_state
     | Idle, true ->
         connection_error Error_code.ProtocolError
           "Unexpected ACK flag in SETTINGS frame."
@@ -355,7 +354,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
         match (state.shutdown, Streams.all_closed streams) with
         | true, true -> End ((stream_id, new_context) :: state.final_contexts)
         | _ ->
-            next_step
+            NextState
               {
                 state with
                 streams;
@@ -373,22 +372,22 @@ let frame_handler ~process_complete_headers ~process_data_frame
         match Streams.all_closed state.streams with
         | false ->
             let new_state = { state with shutdown = true } in
-            next_step new_state
+            NextState new_state
         | true -> End state.final_contexts)
     | _ ->
         let err = Error.ProtocolError (code, Bigstringaf.to_string msg) in
         (* error_handler err; *)
-        ConnectionError (err, state.final_contexts)
+        ConnectionError (err, extract_all_context state)
   in
 
   let process_window_update_frame { Frame.stream_id; _ } increment =
     if Stream_identifier.is_connection stream_id then
-      next_step
+      NextState
         { state with flow = Flow_control.incr_out_flow state.flow increment }
     else
       match Streams.state_of_id state.streams stream_id with
       | Open _ | Reserved (Local _) | HalfClosed _ ->
-          next_step
+          NextState
             {
               state with
               streams =
@@ -406,7 +405,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
       | Settings payload -> process_settings_frame frame_header payload
       | Ping bs ->
           write_ping state.writer bs ~ack:true;
-          next_step state
+          NextState state
       | Headers payload -> process_headers_frame frame_header payload
       | Continuation payload -> process_continuation_frame frame_header payload
       | RSTStream payload -> process_rst_stream_frame frame_header payload
@@ -414,8 +413,8 @@ let frame_handler ~process_complete_headers ~process_data_frame
           connection_error Error_code.ProtocolError "client cannot push"
       | GoAway payload -> process_goaway_frame payload
       | WindowUpdate payload -> process_window_update_frame frame_header payload
-      | Unknown _ -> next_step state
-      | Priority -> next_step state)
+      | Unknown _ -> NextState state
+      | Priority -> NextState state)
   | InProgress _, _ ->
       connection_error Error_code.ProtocolError
         "unexpected frame other than CONTINUATION in the middle of headers \
@@ -455,7 +454,7 @@ let start :
       | Error exn ->
           let err : Error.connection_error = Exn exn in
           handle_connection_error ~state err;
-          ConnectionError (err, state.final_contexts)
+          ConnectionError (err, extract_all_context state)
       | Ok read_bytes -> (
           let consumed, next_state =
             read_io ~debug ~frame_handler state
@@ -480,7 +479,7 @@ let start :
     | Error err ->
         handle_connection_error ~state err;
         Faraday.close state.writer.faraday;
-        ConnectionError (err, state.final_contexts)
+        ConnectionError (err, extract_all_context state)
   in
 
   let make_events state =
@@ -511,10 +510,10 @@ let start :
         Faraday.close state.writer.faraday;
         { closed_ctxs; state = End }
     | NextState next_state ->
-        let closed_ctxs, next_state = extract_contexts next_state in
+        let closed_ctxs, next_state = get_final_contexts next_state in
         {
           closed_ctxs;
-          state = InProgress (fun () -> process_events next_state);
+          state = InProgress (fun () -> (process_events [@tailcall]) next_state);
         }
   in
 

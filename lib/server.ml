@@ -25,7 +25,7 @@ let connection_handler :
  fun ?(debug = false) ?(config = Settings.default) ?goaway_writer ~error_handler
      request_handler socket _ ->
   let process_data_frame (state : _ state) stream_error connection_error
-      next_step { Frame.stream_id; flags; _ } bs =
+      { Frame.stream_id; flags; _ } bs : _ Runtime.step =
     let open Writer in
     let end_stream = Flags.test_end_stream flags in
     match (Streams.state_of_id state.streams stream_id, end_stream) with
@@ -41,7 +41,7 @@ let connection_handler :
         let new_context =
           readers context (`End (Some (Cstruct.of_bigarray bs), []))
         in
-        next_step
+        NextState
           {
             state with
             streams =
@@ -72,7 +72,7 @@ let connection_handler :
                (Bigstringaf.length bs |> Int32.of_int)
           |> Streams.update_context stream_id new_context
         in
-        next_step
+        NextState
           {
             state with
             streams;
@@ -95,7 +95,7 @@ let connection_handler :
                  stream_id
                  (Bigstringaf.length bs |> Int32.of_int))
         in
-        next_step
+        NextState
           {
             state with
             streams;
@@ -119,7 +119,7 @@ let connection_handler :
                (Bigstringaf.length bs |> Int32.of_int)
           |> Streams.update_context stream_id new_context
         in
-        next_step
+        NextState
           {
             state with
             streams;
@@ -133,7 +133,7 @@ let connection_handler :
   in
 
   let process_complete_headers (state : _ state) stream_error connection_error
-      next_step { Frame.flags; stream_id; _ } header_list =
+      { Frame.flags; stream_id; _ } header_list : _ Runtime.step =
     let end_stream = Flags.test_end_stream flags in
     let pseudo_validation = Header.Pseudo.validate_request header_list in
 
@@ -146,7 +146,7 @@ let connection_handler :
         match stream_state with
         | Open { readers; writers; error_handler; context } ->
             let new_context = readers context (`End (None, header_list)) in
-            next_step
+            NextState
               {
                 state with
                 streams =
@@ -159,7 +159,7 @@ let connection_handler :
             let streams =
               Streams.(stream_transition state.streams stream_id Closed)
             in
-            next_step
+            NextState
               {
                 state with
                 streams;
@@ -213,7 +213,7 @@ let connection_handler :
                     }
               in
 
-              next_step
+              NextState
                 {
                   state with
                   streams =

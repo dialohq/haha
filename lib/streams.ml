@@ -154,6 +154,16 @@ let get_next_id t = function
       if Stream_identifier.is_connection t.last_local_stream then 2l
       else Int32.add t.last_local_stream 2l
 
+let extract_contexts t =
+  StreamMap.bindings t.map
+  |> List.filter_map (fun (stream_id, stream) ->
+         match stream.Stream.state with
+         | Open { context; _ }
+         | HalfClosed (Remote { context; _ } | Local { context; _ })
+         | Reserved (Remote { context; _ } | Local { context; _ }) ->
+             Some (stream_id, context)
+         | _ -> None)
+
 let change_writer (t : (_ server_reader, _ server_writers, _) t) id body_writer
     =
   let map =

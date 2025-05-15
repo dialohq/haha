@@ -23,7 +23,7 @@ let run :
     'c iteration =
  fun ?(debug = false) ?(config = Settings.default) ~request_writer socket ->
   let process_data_frame (state : _ state) stream_error connection_error
-      next_step { Frame.flags; stream_id; _ } bs =
+      { Frame.flags; stream_id; _ } bs : _ Runtime.step =
     let end_stream = Flags.test_end_stream flags in
     match (Streams.state_of_id state.streams stream_id, end_stream) with
     | Reserved _, _ ->
@@ -41,7 +41,7 @@ let run :
           reader context (`End (Some (Cstruct.of_bigarray bs), []))
         in
 
-        next_step
+        NextState
           {
             state with
             streams =
@@ -72,7 +72,7 @@ let run :
                (Bigstringaf.length bs |> Int32.of_int)
           |> Streams.update_context stream_id new_context
         in
-        next_step
+        NextState
           {
             state with
             streams;
@@ -95,7 +95,7 @@ let run :
                  stream_id
                  (Bigstringaf.length bs |> Int32.of_int))
         in
-        next_step
+        NextState
           {
             state with
             streams;
@@ -118,7 +118,7 @@ let run :
                (Bigstringaf.length bs |> Int32.of_int)
           |> Streams.update_context stream_id new_context
         in
-        next_step
+        NextState
           {
             state with
             streams;
@@ -131,7 +131,7 @@ let run :
   in
 
   let process_complete_headers (state : _ state) stream_error connection_error
-      next_step { Frame.flags; stream_id; _ } header_list =
+      { Frame.flags; stream_id; _ } header_list : _ Runtime.step =
     let end_stream = Flags.test_end_stream flags in
     let pseudo_validation = Header.Pseudo.validate_response header_list in
 
@@ -145,7 +145,7 @@ let run :
         | Open { readers = BodyStream reader; writers; error_handler; context }
           ->
             let new_context = reader context (`End (None, header_list)) in
-            next_step
+            NextState
               {
                 state with
                 streams =
@@ -159,7 +159,7 @@ let run :
             let streams =
               Streams.(stream_transition state.streams stream_id Closed)
             in
-            next_step
+            NextState
               {
                 state with
                 streams;
@@ -196,7 +196,7 @@ let run :
               Streams.update_context stream_id context state.streams
             in
 
-            next_step { state with streams }
+            NextState { state with streams }
         | ( Open
               {
                 readers = AwaitingResponse response_handler;
@@ -221,7 +221,7 @@ let run :
                   }
             in
 
-            next_step
+            NextState
               {
                 state with
                 streams =
@@ -252,7 +252,7 @@ let run :
             let streams =
               Streams.stream_transition state.streams stream_id new_stream_state
             in
-            next_step { state with streams }
+            NextState { state with streams }
         | Open { readers = BodyStream _; _ }, _
         | HalfClosed (Local { readers = BodyStream _; _ }), _ ->
             connection_error Error_code.ProtocolError
