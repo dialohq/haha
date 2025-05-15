@@ -1,7 +1,7 @@
-type 'state step =
-  | End
-  | ConnectionError of Error.connection_error
-  | NextState of 'state
+type 'context step =
+  | Next of ((unit -> 'context step) * (int32 * 'context) list)
+  | End of (int32 * 'context) list
+  | Error of (Error.connection_error * (int32 * 'context) list)
 
 type body_reader_fragment =
   [ `Data of Cstruct.t | `End of Cstruct.t option * Header.t list ]

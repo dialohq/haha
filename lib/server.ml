@@ -4,7 +4,7 @@ type 'context state =
     'context )
   State.t
 
-type 'context step = 'context state Types.step
+type 'context step = 'context Types.step
 
 type 'context stream_state =
   ( 'context Streams.server_reader,
@@ -94,7 +94,6 @@ let connection_handler :
                  ~send_update:(write_window_update state.writer stream_id)
                  stream_id
                  (Bigstringaf.length bs |> Int32.of_int))
-          |> Streams.update_context stream_id new_context
         in
         next_step
           {
@@ -106,6 +105,7 @@ let connection_handler :
                   (write_window_update state.writer Stream_identifier.connection)
                 state.flow
                 (Bigstringaf.length bs |> Int32.of_int);
+            final_contexts = (stream_id, new_context) :: state.final_contexts;
           }
     | HalfClosed (Local { readers; context; _ }), false ->
         let new_context = readers context (`Data (Cstruct.of_bigarray bs)) in
@@ -157,11 +157,15 @@ let connection_handler :
         | HalfClosed (Local { readers; context; _ }) ->
             let new_context = readers context (`End (None, header_list)) in
             let streams =
-              Streams.(
-                stream_transition state.streams stream_id Closed
-                |> update_context stream_id new_context)
+              Streams.(stream_transition state.streams stream_id Closed)
             in
-            next_step { state with streams }
+            next_step
+              {
+                state with
+                streams;
+                final_contexts =
+                  (stream_id, new_context) :: state.final_contexts;
+              }
         | Reserved _ -> stream_error stream_id Error_code.StreamClosed
         | Idle -> stream_error stream_id Error_code.ProtocolError
         | Closed | HalfClosed (Remote _) ->
@@ -316,7 +320,7 @@ let connection_handler :
                 rest_to_parse ))
   in
 
-  let initial_step, state_to_step =
+  let initial_step =
     Runtime.start ~receive_buffer ~frame_handler ~initial_state_result ~debug
       ~user_functions_handlers socket
   in
@@ -324,9 +328,9 @@ let connection_handler :
   let rec loop : _ step -> unit =
    fun step ->
     match step with
-    | End -> ()
-    | ConnectionError err -> error_handler err
-    | NextState state -> loop (state_to_step state)
+    | End _ -> ()
+    | Error (err, _) -> error_handler err
+    | Next (next, _) -> loop (next ())
   in
 
   loop initial_step

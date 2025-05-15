@@ -1,5 +1,10 @@
 open Writer
-open Types
+open State
+
+type ('r, 'w, 'context) internal_step =
+  | End of 'context final_contexts
+  | ConnectionError of (Error.connection_error * 'context final_contexts)
+  | NextState of ('r, 'w, 'context) t
 
 let handle_connection_error ?state error =
   let error_code, msg =
@@ -24,6 +29,7 @@ let handle_connection_error ?state error =
 
 let handle_stream_error (state : ('a, 'b, 'c) State.t) stream_id code =
   write_rst_stream state.writer stream_id code;
+  (* FIXME: handler stream error on "protocol errors" with user error handler and pass the context to final contexts here *)
   {
     state with
     streams = Streams.stream_transition state.streams stream_id Closed;
@@ -43,7 +49,7 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
         continue_opt
     with
     | `Fail _ ->
-        Error
+        Stdlib.Error
           (Error.ProtocolError
              (Error_code.ProtocolError, "invalid client preface"))
     | `Partial (consumed, continue) ->
@@ -154,6 +160,7 @@ let body_writer_handler ?(debug = false)
                   state with
                   streams =
                     Streams.(stream_transition updated_streams id Closed);
+                  final_contexts = (id, new_context) :: state.final_contexts;
                 }))
     | `End (None, trailers) -> (
         let send_trailers = List.length trailers > 0 in
@@ -174,6 +181,7 @@ let body_writer_handler ?(debug = false)
             {
               state with
               streams = Streams.(stream_transition state.streams id Closed);
+              final_contexts = (id, new_context) :: state.final_contexts;
             })
     | `Yield -> Eio.Fiber.await_cancel ()
 
@@ -203,16 +211,16 @@ let read_io ~debug ~frame_handler (state : ('a, 'b, 'c) State.t) cs =
       match err with
       | _, Error.ConnectionError err ->
           handle_connection_error ~state err;
-          (0, ConnectionError err)
+          (0, ConnectionError (err, state.final_contexts))
       | consumed, StreamError (stream_id, code) ->
           (consumed, NextState (handle_stream_error state stream_id code)))
 
 let frame_handler ~process_complete_headers ~process_data_frame
-    (frame : Frame.t) (state : _ State.t) : _ step =
+    (frame : Frame.t) (state : _ State.t) : _ internal_step =
   let connection_error code msg =
     let err = Error.ProtocolError (code, msg) in
     handle_connection_error ~state err;
-    ConnectionError err
+    ConnectionError (err, state.final_contexts)
   in
   let stream_error id code = NextState (handle_stream_error state id code) in
   let next_step next_state = NextState next_state in
@@ -226,7 +234,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
   let decompress_headers_block bs ~len hpack_decoder =
     let hpack_parser = Hpackv.Decoder.decode_headers hpack_decoder in
     let error' ?msg () =
-      Error
+      Stdlib.Error
         (match msg with
         | None -> "Decompression error"
         | Some msg -> Format.sprintf "Decompression error: %s" msg)
@@ -340,13 +348,20 @@ let frame_handler ~process_complete_headers ~process_data_frame
     | Reserved
         ( Remote { error_handler; context; _ }
         | Local { error_handler; context; _ } ) -> (
-        let _new_context = error_handler context error_code in
+        let new_context = error_handler context error_code in
         let streams =
           Streams.stream_transition state.streams stream_id Closed
         in
         match (state.shutdown, Streams.all_closed streams) with
-        | true, true -> End
-        | _ -> next_step { state with streams })
+        | true, true -> End ((stream_id, new_context) :: state.final_contexts)
+        | _ ->
+            next_step
+              {
+                state with
+                streams;
+                final_contexts =
+                  (stream_id, new_context) :: state.final_contexts;
+              })
   in
 
   let process_goaway_frame payload =
@@ -359,11 +374,11 @@ let frame_handler ~process_complete_headers ~process_data_frame
         | false ->
             let new_state = { state with shutdown = true } in
             next_step new_state
-        | true -> End)
+        | true -> End state.final_contexts)
     | _ ->
         let err = Error.ProtocolError (code, Bigstringaf.to_string msg) in
         (* error_handler err; *)
-        ConnectionError err
+        ConnectionError (err, state.final_contexts)
   in
 
   let process_window_update_frame { Frame.stream_id; _ } increment =
@@ -407,20 +422,19 @@ let frame_handler ~process_complete_headers ~process_data_frame
          block"
 
 open Eio
-open State
-open Types
 
 let start :
     'a 'b 'c.
     initial_state_result:
       (('a, 'b, 'c) t * Cstruct.t, Error.connection_error) result ->
-    frame_handler:(Frame.t -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t step) ->
+    frame_handler:(Frame.t -> ('a, 'b, 'c) t -> ('a, 'b, 'c) internal_step) ->
     receive_buffer:Cstruct.t ->
     user_functions_handlers:
       (('a, 'b, 'c) t -> (unit -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t) list) ->
     debug:bool ->
     _ Eio.Resource.t ->
-    ('a, 'b, 'c) t step * (('a, 'b, 'c) t -> ('a, 'b, 'c) t step) =
+    (* ('a, 'b, 'c) internal_step * (('a, 'b, 'c) t -> ('a, 'b, 'c) internal_step) *)
+    'c Types.step =
  fun ~initial_state_result ~frame_handler ~receive_buffer
      ~user_functions_handlers ~debug socket ->
   let read_loop off =
@@ -442,7 +456,7 @@ let start :
       | Error exn ->
           let err : Error.connection_error = Exn exn in
           handle_connection_error ~state err;
-          ConnectionError err
+          ConnectionError (err, state.final_contexts)
       | Ok read_bytes -> (
           let consumed, next_state =
             read_io ~debug ~frame_handler state
@@ -456,18 +470,18 @@ let start :
           | other -> other)
   in
 
-  let flush_write : ('a, 'b, 'c) t -> ('a, 'b, 'c) t step =
+  let flush_write : ('a, 'b, 'c) t -> ('a, 'b, 'c) internal_step =
    fun state ->
     match Writer.write state.writer socket with
     | Ok () ->
         if state.shutdown && Streams.all_closed state.streams then (
           Faraday.close (do_flush state).writer.faraday;
-          End)
+          End state.final_contexts)
         else NextState (do_flush state)
     | Error err ->
         handle_connection_error ~state err;
         Faraday.close state.writer.faraday;
-        ConnectionError err
+        ConnectionError (err, state.final_contexts)
   in
 
   let operations state =
@@ -488,28 +502,40 @@ let start :
     match x step with NextState new_state -> y new_state | other -> other
   in
 
-  let state_to_step : ('a, 'b, 'c) t -> ('a, 'b, 'c) t step =
+  let rec state_to_step : ('a, 'b, 'c) t -> 'c Types.step =
    fun state ->
     match (Fiber.any ~combine (operations state)) state with
-    | (ConnectionError _ as res) | (End as res) ->
+    | ConnectionError e ->
         Faraday.close state.writer.faraday;
-        res
-    | step -> step
+        Error e
+    | End ctxs ->
+        Faraday.close state.writer.faraday;
+        End ctxs
+    | NextState next_state ->
+        let ctxs, next_state = extract_contexts next_state in
+        Next ((fun () -> state_to_step next_state), ctxs)
   in
 
-  ( (match initial_state_result with
+  let init_state : _ Types.step =
+    match initial_state_result with
     | Error err ->
         handle_connection_error err;
-        ConnectionError err
+        Error (err, [])
     | Ok (initial_state, rest_to_parse) ->
         if Cstruct.length rest_to_parse > 0 then
           match read_io ~debug ~frame_handler initial_state rest_to_parse with
-          | _, (End as res) | _, (ConnectionError _ as res) -> res
+          | _, End ctxs -> End ctxs
+          | _, ConnectionError e -> Error e
           | consumed, NextState next_state ->
-              NextState
-                {
-                  next_state with
-                  read_off = rest_to_parse.Cstruct.len - consumed;
-                }
-        else state_to_step initial_state),
-    state_to_step )
+              Next
+                ( (fun () ->
+                    state_to_step
+                      {
+                        next_state with
+                        read_off = rest_to_parse.Cstruct.len - consumed;
+                      }),
+                  [] )
+        else Next ((fun () -> state_to_step initial_state), [])
+  in
+
+  init_state

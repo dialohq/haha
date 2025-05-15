@@ -62,16 +62,18 @@ let () =
   in
 
   Eio.Fiber.fork ~sw (fun () ->
-      let initial_step, state_to_step =
+      let initial_step =
         Client.run ~request_writer ~config:Settings.default socket
       in
 
       let rec loop : int Client.step -> unit =
        fun step ->
         match step with
-        | End -> Printf.printf "End of connection\n%!"
-        | ConnectionError err -> error_handler err
-        | NextState state -> (loop [@tailcall]) (state_to_step state)
+        | End _ -> Printf.printf "End of connection\n%!"
+        | Error _ ->
+            let _ = error_handler in
+            ()
+        | Next (next, _) -> (loop [@tailcall]) (next ())
       in
 
       loop initial_step);
