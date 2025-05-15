@@ -1,5 +1,6 @@
 type settings_sync = Syncing of Settings.settings_list | Idle
 type headers_state = Idle | InProgress of Bigstringaf.t * int
+type 'context final_contexts = (Stream_identifier.t * 'context) list
 
 type ('readers, 'writers, 'context) t = {
   peer_settings : Settings.t;
@@ -15,6 +16,7 @@ type ('readers, 'writers, 'context) t = {
   flow : Flow_control.t;
   read_off : int;
   flush_thunk : unit -> unit;
+  final_contexts : 'context final_contexts;
 }
 
 let initial ~writer ~peer_settings ~user_settings =
@@ -38,7 +40,10 @@ let initial ~writer ~peer_settings ~user_settings =
     flow = Flow_control.initial;
     read_off = 0;
     flush_thunk = ignore;
+    final_contexts = [];
   }
+
+let extract_contexts t = (t.final_contexts, { t with final_contexts = [] })
 
 let do_flush t =
   t.flush_thunk ();

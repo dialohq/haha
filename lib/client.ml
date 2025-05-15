@@ -6,7 +6,7 @@ type 'context state =
     'context )
   State.t
 
-type 'context step = 'context state Types.step
+type 'context step = 'context Types.step
 
 type 'context stream_state =
   ( 'context Streams.client_readers,
@@ -20,7 +20,7 @@ let run :
     ?config:Settings.t ->
     request_writer:'c Request.request_writer ->
     _ Eio.Resource.t ->
-    'c step * ('c state -> 'c step) =
+    'c step =
  fun ?(debug = false) ?(config = Settings.default) ~request_writer socket ->
   let process_data_frame (state : _ state) stream_error connection_error
       next_step { Frame.flags; stream_id; _ } bs =
@@ -93,8 +93,7 @@ let run :
             |> update_flow_on_data
                  ~send_update:(write_window_update state.writer stream_id)
                  stream_id
-                 (Bigstringaf.length bs |> Int32.of_int)
-            |> update_context stream_id new_context)
+                 (Bigstringaf.length bs |> Int32.of_int))
         in
         next_step
           {
@@ -105,6 +104,7 @@ let run :
                 ~send_update:
                   (write_window_update state.writer Stream_identifier.connection)
                 (Bigstringaf.length bs |> Int32.of_int);
+            final_contexts = (stream_id, new_context) :: state.final_contexts;
           }
     | HalfClosed (Local { readers = BodyStream reader; context; _ }), false ->
         let new_context = reader context (`Data (Cstruct.of_bigarray bs)) in
@@ -157,11 +157,15 @@ let run :
             let new_context = reader context (`End (None, header_list)) in
 
             let streams =
-              Streams.(
-                stream_transition state.streams stream_id Closed
-                |> update_context stream_id new_context)
+              Streams.(stream_transition state.streams stream_id Closed)
             in
-            next_step { state with streams }
+            next_step
+              {
+                state with
+                streams;
+                final_contexts =
+                  (stream_id, new_context) :: state.final_contexts;
+              }
         | Open { readers = AwaitingResponse _; _ }
         | HalfClosed (Local { readers = AwaitingResponse _; _ }) ->
             connection_error Error_code.ProtocolError
