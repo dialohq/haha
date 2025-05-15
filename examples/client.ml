@@ -41,8 +41,9 @@ let () =
   in
 
   let sample_request =
-    Request.create_with_streaming ~context:0 ~error_handler:ignore ~body_writer
-      ~response_handler ~headers:[] POST "/stream"
+    Request.create_with_streaming ~context:0
+      ~error_handler:(fun c _ -> c)
+      ~body_writer ~response_handler ~headers:[] POST "/stream"
   in
   (* let requests = Dynarray.of_list [ sample_request ] in *)
   let req_stream = Eio.Stream.create 0 in

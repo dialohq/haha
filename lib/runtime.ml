@@ -333,10 +333,14 @@ let frame_handler ~process_complete_headers ~process_data_frame
     | Closed ->
         connection_error Error_code.StreamClosed
           "RST_STREAM received on a closed stream!"
-    | Open { error_handler; _ }
-    | HalfClosed (Remote { error_handler; _ } | Local { error_handler; _ })
-    | Reserved (Remote { error_handler; _ } | Local { error_handler; _ }) -> (
-        error_handler error_code;
+    | Open { error_handler; context; _ }
+    | HalfClosed
+        ( Remote { error_handler; context; _ }
+        | Local { error_handler; context; _ } )
+    | Reserved
+        ( Remote { error_handler; context; _ }
+        | Local { error_handler; context; _ } ) -> (
+        let _new_context = error_handler context error_code in
         let streams =
           Streams.stream_transition state.streams stream_id Closed
         in
@@ -401,3 +405,111 @@ let frame_handler ~process_complete_headers ~process_data_frame
       connection_error Error_code.ProtocolError
         "unexpected frame other than CONTINUATION in the middle of headers \
          block"
+
+open Eio
+open State
+open Types
+
+let start :
+    'a 'b 'c.
+    initial_state_result:
+      (('a, 'b, 'c) t * Cstruct.t, Error.connection_error) result ->
+    frame_handler:(Frame.t -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t step) ->
+    receive_buffer:Cstruct.t ->
+    user_functions_handlers:
+      (('a, 'b, 'c) t -> (unit -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t) list) ->
+    debug:bool ->
+    _ Eio.Resource.t ->
+    ('a, 'b, 'c) t step * (('a, 'b, 'c) t -> ('a, 'b, 'c) t step) =
+ fun ~initial_state_result ~frame_handler ~receive_buffer
+     ~user_functions_handlers ~debug socket ->
+  let read_loop off =
+    let read_bytes =
+      try
+        Ok
+          (Flow.single_read socket
+             (Cstruct.sub receive_buffer off
+                (Cstruct.length receive_buffer - off)))
+      with
+      (* NOTE: we might want to do other error handling for specific exceptions *)
+      | Eio.Cancel.Cancelled _ as e -> raise e
+      | End_of_file as exn -> Error exn
+      | Eio.Io (Eio.Net.(E (Connection_reset _)), _) as exn -> Error exn
+      | exn -> Error exn
+    in
+    fun state ->
+      match read_bytes with
+      | Error exn ->
+          let err : Error.connection_error = Exn exn in
+          handle_connection_error ~state err;
+          ConnectionError err
+      | Ok read_bytes -> (
+          let consumed, next_state =
+            read_io ~debug ~frame_handler state
+              (Cstruct.sub receive_buffer 0 (read_bytes + off))
+          in
+          let unconsumed = read_bytes + off - consumed in
+          Cstruct.blit receive_buffer consumed receive_buffer 0 unconsumed;
+          match next_state with
+          | NextState next_state ->
+              NextState { next_state with read_off = unconsumed }
+          | other -> other)
+  in
+
+  let flush_write : ('a, 'b, 'c) t -> ('a, 'b, 'c) t step =
+   fun state ->
+    match Writer.write state.writer socket with
+    | Ok () ->
+        if state.shutdown && Streams.all_closed state.streams then (
+          Faraday.close (do_flush state).writer.faraday;
+          End)
+        else NextState (do_flush state)
+    | Error err ->
+        handle_connection_error ~state err;
+        Faraday.close state.writer.faraday;
+        ConnectionError err
+  in
+
+  let operations state =
+    let base_op () = read_loop state.read_off in
+
+    let opt_functions =
+      user_functions_handlers state
+      |> List.map (fun f () ->
+             let handler = f () in
+             fun state -> flush_write (handler state))
+    in
+
+    base_op :: opt_functions
+  in
+
+  let combine x y =
+   fun step ->
+    match x step with NextState new_state -> y new_state | other -> other
+  in
+
+  let state_to_step : ('a, 'b, 'c) t -> ('a, 'b, 'c) t step =
+   fun state ->
+    match (Fiber.any ~combine (operations state)) state with
+    | (ConnectionError _ as res) | (End as res) ->
+        Faraday.close state.writer.faraday;
+        res
+    | step -> step
+  in
+
+  ( (match initial_state_result with
+    | Error err ->
+        handle_connection_error err;
+        ConnectionError err
+    | Ok (initial_state, rest_to_parse) ->
+        if Cstruct.length rest_to_parse > 0 then
+          match read_io ~debug ~frame_handler initial_state rest_to_parse with
+          | _, (End as res) | _, (ConnectionError _ as res) -> res
+          | consumed, NextState next_state ->
+              NextState
+                {
+                  next_state with
+                  read_off = rest_to_parse.Cstruct.len - consumed;
+                }
+        else state_to_step initial_state),
+    state_to_step )

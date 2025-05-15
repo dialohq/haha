@@ -11,7 +11,7 @@ type t = {
 type 'context handler =
   'context body_reader
   * 'context Response.response_writer
-  * (Error_code.t -> unit)
+  * ('context -> Error_code.t -> 'context)
   * 'context
 
 let path t = t.path
