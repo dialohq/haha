@@ -450,13 +450,13 @@ let start :
     frame_handler:(Frame.t -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t step) ->
     receive_buffer:Cstruct.t ->
     user_functions_handlers:
-      (('a, 'b, 'c) t -> (unit -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t) list) ->
+      (('a, 'b, 'c) t -> (unit -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t step) list) ->
     debug:bool ->
     _ Eio.Resource.t ->
     'c Types.iteration =
  fun ~initial_state_result ~frame_handler ~receive_buffer
      ~user_functions_handlers ~debug socket ->
-  let read_loop off =
+  let read_loop off () =
     let read_bytes =
       try
         Ok
@@ -505,23 +505,12 @@ let start :
         { closed_ctxs; state = InProgress (fun () -> continue state) }
   in
 
-  let make_events state =
-    let base_op () = read_loop state.read_off in
-
-    let opt_functions =
-      user_functions_handlers state
-      |> List.map (fun f () ->
-             let handler = f () in
-             fun state -> step InProgress (handler state))
-    in
-
-    base_op :: opt_functions
-  in
-
   let rec process_events : ('a, 'b, 'c) t -> 'c Types.iteration =
    fun state ->
+    let events = read_loop state.read_off :: user_functions_handlers state in
+
     step_to_iteration process_events
-    @@ (Fiber.any ~combine:combine_steps (make_events state)) state
+    @@ (Fiber.any ~combine:combine_steps events) state
   in
 
   match initial_state_result with

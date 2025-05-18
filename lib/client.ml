@@ -333,9 +333,12 @@ let run :
   in
 
   let user_functions_handlers state =
-    match state.State.shutdown with
+    (match state.State.shutdown with
     | false -> request_writer_handler :: get_body_writers state
-    | true -> get_body_writers state
+    | true -> get_body_writers state)
+    |> List.map (fun f () ->
+           let handler = f () in
+           fun state -> step InProgress (handler state))
   in
 
   (* NOTE: we could create so scoped function here for the initial writer to be sure it is freed *)
