@@ -1,31 +1,28 @@
 open Writer
 open State
 
-type ('r, 'w, 'context) step =
-  | End of 'context final_contexts
-  | ConnectionError of (Error.connection_error * 'context final_contexts)
-  | NextState of ('r, 'w, 'context) t
+type 'state step =
+  | End of 'state
+  | ConnectionError of ('state * Error.connection_error)
+  | NextState of 'state
 
-let handle_connection_error ?state error =
-  let error_code, msg =
+let handle_connection_error ?(last_peer_stream = Int32.zero) ~writer error =
+  let codemsg_opt =
     match error with
-    | Error.ProtocolError err -> err
+    | Error.ProtocolViolation err -> Some err
     | Exn exn ->
-        ( Error_code.InternalError,
-          Format.sprintf "internal exception: %s" (Printexc.to_string exn) )
+        Some
+          ( InternalError,
+            Format.sprintf "internal exception: %s" (Printexc.to_string exn) )
+    | _ -> None
   in
 
-  let last_stream =
-    match state with
-    | None -> Int32.zero
-    | Some state -> state.State.streams.last_peer_stream
-  in
-  let debug_data = Bigstringaf.of_string ~off:0 ~len:(String.length msg) msg in
-  match state with
-  | Some { writer; _ } -> write_goaway ~debug_data writer last_stream error_code
-  | None ->
-      let writer = create (9 + 4 + 4 + String.length msg) in
-      write_goaway ~debug_data writer last_stream error_code
+  codemsg_opt
+  |> Option.iter @@ fun (code, msg) ->
+     let debug_data =
+       Bigstringaf.of_string ~off:0 ~len:(String.length msg) msg
+     in
+     write_goaway ~debug_data writer last_peer_stream code
 
 let handle_stream_error (state : ('a, 'b, 'c) State.t) stream_id code =
   write_rst_stream state.writer stream_id code;
@@ -50,8 +47,7 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
     with
     | `Fail _ ->
         Stdlib.Error
-          (Error.ProtocolError
-             (Error_code.ProtocolError, "invalid client preface"))
+          (Error.ProtocolViolation (ProtocolError, "invalid client preface"))
     | `Partial (consumed, continue) ->
         parse_loop consumed
           (total_consumed + consumed)
@@ -69,6 +65,7 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
         write_window_update writer Stream_identifier.connection
           Flow_control.WindowSize.initial_increment;
         write writer socket
+        |> Result.map_error (fun exn -> Error.Exn exn)
         |> Result.map (fun () ->
                let rest_off = read_off + total_consumed + consumed in
                let rest_len = total_read + read_len - rest_off in
@@ -77,9 +74,7 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
                  Cstruct.sub receive_buffer rest_off rest_len,
                  writer ))
     | `Complete (_, _) ->
-        Error
-          (Error.ProtocolError
-             (Error_code.ProtocolError, "invalid client preface"))
+        Error (ProtocolViolation (ProtocolError, "invalid client preface"))
   in
   parse_loop 0 0 0 None
 
@@ -209,18 +204,14 @@ let read_io ~debug ~frame_handler (state : ('a, 'b, 'c) State.t) cs =
       (consumed, next_step)
   | Error err -> (
       match err with
-      | _, Error.ConnectionError err ->
-          handle_connection_error ~state err;
-          (0, ConnectionError (err, extract_all_context state))
+      | _, Error.ConnectionError err -> (0, ConnectionError (state, err))
       | consumed, StreamError (stream_id, code) ->
           (consumed, NextState (handle_stream_error state stream_id code)))
 
 let frame_handler ~process_complete_headers ~process_data_frame
     (frame : Frame.t) (state : _ State.t) : _ step =
   let connection_error code msg =
-    let err = Error.ProtocolError (code, msg) in
-    handle_connection_error ~state err;
-    ConnectionError (err, extract_all_context state)
+    ConnectionError (state, ProtocolViolation (code, msg))
   in
   let stream_error id code = NextState (handle_stream_error state id code) in
 
@@ -352,7 +343,13 @@ let frame_handler ~process_complete_headers ~process_data_frame
           Streams.stream_transition state.streams stream_id Closed
         in
         match (state.shutdown, Streams.all_closed streams) with
-        | true, true -> End ((stream_id, new_context) :: state.final_contexts)
+        | true, true ->
+            End
+              {
+                state with
+                final_contexts =
+                  (stream_id, new_context) :: state.final_contexts;
+              }
         | _ ->
             NextState
               {
@@ -373,11 +370,8 @@ let frame_handler ~process_complete_headers ~process_data_frame
         | false ->
             let new_state = { state with shutdown = true } in
             NextState new_state
-        | true -> End state.final_contexts)
-    | _ ->
-        let err = Error.ProtocolError (code, Bigstringaf.to_string msg) in
-        (* error_handler err; *)
-        ConnectionError (err, extract_all_context state)
+        | true -> End state)
+    | _ -> ConnectionError (state, PeerError (code, Bigstringaf.to_string msg))
   in
 
   let process_window_update_frame { Frame.stream_id; _ } increment =
@@ -426,7 +420,7 @@ let start :
     'a 'b 'c.
     initial_state_result:
       (('a, 'b, 'c) t * Cstruct.t, Error.connection_error) result ->
-    frame_handler:(Frame.t -> ('a, 'b, 'c) t -> ('a, 'b, 'c) step) ->
+    frame_handler:(Frame.t -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t step) ->
     receive_buffer:Cstruct.t ->
     user_functions_handlers:
       (('a, 'b, 'c) t -> (unit -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t) list) ->
@@ -443,18 +437,12 @@ let start :
              (Cstruct.sub receive_buffer off
                 (Cstruct.length receive_buffer - off)))
       with
-      (* NOTE: we might want to do other error handling for specific exceptions *)
       | Eio.Cancel.Cancelled _ as e -> raise e
-      | End_of_file as exn -> Error exn
-      | Eio.Io (Eio.Net.(E (Connection_reset _)), _) as exn -> Error exn
       | exn -> Error exn
     in
     fun state ->
       match read_bytes with
-      | Error exn ->
-          let err : Error.connection_error = Exn exn in
-          handle_connection_error ~state err;
-          ConnectionError (err, extract_all_context state)
+      | Error exn -> ConnectionError (state, Exn exn)
       | Ok read_bytes -> (
           let consumed, next_state =
             read_io ~debug ~frame_handler state
@@ -468,18 +456,38 @@ let start :
           | other -> other)
   in
 
-  let flush_write : ('a, 'b, 'c) t -> ('a, 'b, 'c) step =
-   fun state ->
-    match Writer.write state.writer socket with
-    | Ok () ->
-        if state.shutdown && Streams.all_closed state.streams then (
-          Faraday.close (do_flush state).writer.faraday;
-          End state.final_contexts)
-        else NextState (do_flush state)
-    | Error err ->
-        handle_connection_error ~state err;
-        Faraday.close state.writer.faraday;
-        ConnectionError (err, extract_all_context state)
+  let step_to_iteration :
+      (_ State.t -> _ Types.iteration) -> _ step -> _ Types.iteration =
+   fun continue -> function
+     | ConnectionError (state, err) ->
+         handle_connection_error
+           ~last_peer_stream:state.streams.last_peer_stream ~writer:state.writer
+           err;
+         write state.writer socket |> ignore;
+         let state = do_flush state in
+         let closed_ctxs = extract_all_context state in
+         { Types.closed_ctxs; state = Error err }
+     | End state -> (
+         let closed_ctxs = extract_all_context state in
+         match write state.writer socket with
+         | Ok () ->
+             do_flush state |> ignore;
+             { closed_ctxs; state = End }
+         | Error exn ->
+             do_flush state |> ignore;
+             { closed_ctxs; state = Error (Exn exn) })
+     | NextState state -> (
+         let closed_ctxs, new_state = get_final_contexts state in
+         match write state.writer socket with
+         | Error exn ->
+             do_flush state |> ignore;
+             { closed_ctxs; state = Error (Exn exn) }
+         | Ok () when state.shutdown && Streams.all_closed state.streams ->
+             do_flush state |> ignore;
+             { closed_ctxs; state = End }
+         | Ok () ->
+             let new_state = do_flush new_state in
+             { closed_ctxs; state = InProgress (fun () -> continue new_state) })
   in
 
   let make_events state =
@@ -489,7 +497,7 @@ let start :
       user_functions_handlers state
       |> List.map (fun f () ->
              let handler = f () in
-             fun state -> flush_write (handler state))
+             fun state -> NextState (handler state))
     in
 
     base_op :: opt_functions
@@ -502,44 +510,30 @@ let start :
 
   let rec process_events : ('a, 'b, 'c) t -> 'c Types.iteration =
    fun state ->
-    match (Fiber.any ~combine (make_events state)) state with
-    | ConnectionError (err, closed_ctxs) ->
-        Faraday.close state.writer.faraday;
-        { closed_ctxs; state = Error err }
-    | End closed_ctxs ->
-        Faraday.close state.writer.faraday;
-        { closed_ctxs; state = End }
-    | NextState next_state ->
-        let closed_ctxs, next_state = get_final_contexts next_state in
-        {
-          closed_ctxs;
-          state = InProgress (fun () -> (process_events [@tailcall]) next_state);
-        }
+    step_to_iteration process_events
+    @@ (Fiber.any ~combine (make_events state)) state
   in
 
   let init_state : _ Types.iteration =
     match initial_state_result with
     | Error err ->
-        handle_connection_error err;
+        let writer = create Settings.default.max_frame_size in
+        handle_connection_error ~writer err;
+        write writer socket |> ignore;
         { closed_ctxs = []; state = Error err }
     | Ok (initial_state, rest_to_parse) ->
         if Cstruct.length rest_to_parse > 0 then
-          match read_io ~debug ~frame_handler initial_state rest_to_parse with
-          | _, End closed_ctxs -> { closed_ctxs; state = End }
-          | _, ConnectionError (err, closed_ctxs) ->
-              { closed_ctxs; state = Error err }
-          | consumed, NextState next_state ->
-              {
-                closed_ctxs = [];
-                state =
-                  InProgress
-                    (fun () ->
-                      process_events
-                        {
-                          next_state with
-                          read_off = rest_to_parse.Cstruct.len - consumed;
-                        });
-              }
+          let step =
+            match read_io ~debug ~frame_handler initial_state rest_to_parse with
+            | consumed, NextState next_state ->
+                NextState
+                  {
+                    next_state with
+                    read_off = rest_to_parse.Cstruct.len - consumed;
+                  }
+            | _, step -> step
+          in
+          step_to_iteration process_events step
         else
           {
             closed_ctxs = [];

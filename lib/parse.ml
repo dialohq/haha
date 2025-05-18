@@ -9,7 +9,7 @@ type continue =
 
 let magic_parse bs ~off ~len =
   let parsing_error msg =
-    Error (Error.ProtocolError (Error_code.ProtocolError, msg))
+    Error (Error.ProtocolViolation (Error_code.ProtocolError, msg))
   in
   let parser = AU.parse Parsers.connection_preface in
   match parser with

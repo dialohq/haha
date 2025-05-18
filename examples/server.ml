@@ -19,8 +19,11 @@ let () =
 
     let error_handler : Error.connection_error -> unit = function
       | Exn exn -> raise exn
-      | ProtocolError (code, msg) ->
+      | PeerError (code, msg) ->
           Format.printf "Got conn error %a: %s@." Error_code.pp_hum code msg
+      | ProtocolViolation (code, msg) ->
+          Format.printf "Error, protocol violated, %a: %s@." Error_code.pp_hum
+            code msg
     in
 
     let goaway_writer () = Eio.Promise.await goaway_promise in

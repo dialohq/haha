@@ -345,13 +345,15 @@ let run :
   write_settings initial_writer user_settings;
 
   let initial_state_result =
-    Result.bind (write initial_writer socket) (fun () ->
+    match write initial_writer socket with
+    | Ok () -> (
         match Runtime.process_preface_settings ~socket ~receive_buffer () with
         | Error _ as err -> err
         | Ok (peer_settings, rest_to_parse, writer) ->
             Ok
               ( State.initial ~user_settings ~peer_settings ~writer,
                 rest_to_parse ))
+    | Error exn -> Error (Exn exn)
   in
 
   Runtime.start ~frame_handler ~receive_buffer ~initial_state_result ~debug

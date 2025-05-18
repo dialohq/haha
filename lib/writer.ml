@@ -26,7 +26,7 @@ let write t socket =
 
         Faraday.shift t.faraday written;
         Ok ()
-      with exn -> Error (Error.Exn exn))
+      with exn -> Error exn)
 
 let write_settings t settings =
   let frame_info = create_frame_info Stream_identifier.connection in

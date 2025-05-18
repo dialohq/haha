@@ -54,11 +54,12 @@ let () =
   let _write_end () = Eio.Stream.add req_stream None in
 
   let error_handler = function
-    | Haha.Error.ProtocolError (_, msg) ->
-        Printf.printf "Received connection error: %s\n%!" msg
+    | Haha.Error.ProtocolViolation (_, msg) ->
+        Printf.printf "Error, server violated protocol: %s\n%!" msg
     | Exn exn ->
-        Printf.printf "Received connection error exn: %s\n%!"
-        @@ Printexc.to_string exn
+        Printf.printf "Local exception: %s\n%!" @@ Printexc.to_string exn
+    | PeerError (_, msg) ->
+        Printf.printf "Received connection error: %s\n%!" msg
   in
 
   Eio.Fiber.fork ~sw (fun () ->
