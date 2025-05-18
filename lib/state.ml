@@ -43,10 +43,10 @@ let initial ~writer ~peer_settings ~user_settings =
     final_contexts = [];
   }
 
-let get_final_contexts t = (t.final_contexts, { t with final_contexts = [] })
-
-let extract_all_context t =
-  List.concat [ Streams.extract_contexts t.streams; t.final_contexts ]
+let extract_context t =
+  ( List.concat [ Streams.extract_contexts t.streams; t.final_contexts ],
+    t.final_contexts,
+    { t with final_contexts = [] } )
 
 let do_flush t =
   t.flush_thunk ();

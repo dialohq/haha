@@ -1,4 +1,4 @@
-open Writer
+open Runtime
 
 type 'context state =
   ( 'context Streams.client_readers,
@@ -23,7 +23,8 @@ let run :
     'c iteration =
  fun ?(debug = false) ?(config = Settings.default) ~request_writer socket ->
   let process_data_frame (state : _ state) stream_error connection_error
-      { Frame.flags; stream_id; _ } bs : _ Runtime.step =
+      { Frame.flags; stream_id; _ } bs : _ step =
+    let open Writer in
     let end_stream = Flags.test_end_stream flags in
     match (Streams.state_of_id state.streams stream_id, end_stream) with
     | Reserved _, _ ->
@@ -41,7 +42,7 @@ let run :
           reader context (`End (Some (Cstruct.of_bigarray bs), []))
         in
 
-        NextState
+        step InProgress
           {
             state with
             streams =
@@ -72,7 +73,7 @@ let run :
                (Bigstringaf.length bs |> Int32.of_int)
           |> Streams.update_context stream_id new_context
         in
-        NextState
+        step InProgress
           {
             state with
             streams;
@@ -95,7 +96,7 @@ let run :
                  stream_id
                  (Bigstringaf.length bs |> Int32.of_int))
         in
-        NextState
+        step InProgress
           {
             state with
             streams;
@@ -118,7 +119,7 @@ let run :
                (Bigstringaf.length bs |> Int32.of_int)
           |> Streams.update_context stream_id new_context
         in
-        NextState
+        step InProgress
           {
             state with
             streams;
@@ -131,7 +132,7 @@ let run :
   in
 
   let process_complete_headers (state : _ state) stream_error connection_error
-      { Frame.flags; stream_id; _ } header_list : _ Runtime.step =
+      { Frame.flags; stream_id; _ } header_list : _ step =
     let end_stream = Flags.test_end_stream flags in
     let pseudo_validation = Header.Pseudo.validate_response header_list in
 
@@ -145,7 +146,7 @@ let run :
         | Open { readers = BodyStream reader; writers; error_handler; context }
           ->
             let new_context = reader context (`End (None, header_list)) in
-            NextState
+            step InProgress
               {
                 state with
                 streams =
@@ -159,7 +160,7 @@ let run :
             let streams =
               Streams.(stream_transition state.streams stream_id Closed)
             in
-            NextState
+            step InProgress
               {
                 state with
                 streams;
@@ -196,7 +197,7 @@ let run :
               Streams.update_context stream_id context state.streams
             in
 
-            NextState { state with streams }
+            step InProgress { state with streams }
         | ( Open
               {
                 readers = AwaitingResponse response_handler;
@@ -221,7 +222,7 @@ let run :
                   }
             in
 
-            NextState
+            step InProgress
               {
                 state with
                 streams =
@@ -252,7 +253,7 @@ let run :
             let streams =
               Streams.stream_transition state.streams stream_id new_stream_state
             in
-            NextState { state with streams }
+            step InProgress { state with streams }
         | Open { readers = BodyStream _; _ }, _
         | HalfClosed (Local { readers = BodyStream _; _ }), _ ->
             connection_error Error_code.ProtocolError
@@ -271,7 +272,7 @@ let run :
   in
 
   let frame_handler =
-    Runtime.frame_handler ~process_complete_headers ~process_data_frame
+    frame_handler ~process_complete_headers ~process_data_frame
   in
 
   let request_writer_handler () =
@@ -280,7 +281,7 @@ let run :
     fun (state : _ state) ->
       match req_opt with
       | None ->
-          write_goaway state.writer state.streams.last_peer_stream
+          Writer.write_goaway state.writer state.streams.last_peer_stream
             Error_code.NoError;
           let new_state = { state with shutdown = true } in
           new_state
@@ -293,8 +294,9 @@ let run :
              _;
            } as request) ->
           let id = Streams.get_next_id state.streams `Client in
-          writer_request_headers state.writer state.hpack_encoder id request;
-          write_window_update state.writer id
+          Writer.writer_request_headers state.writer state.hpack_encoder id
+            request;
+          Writer.write_window_update state.writer id
             Flow_control.WindowSize.initial_increment;
           let stream_state : _ stream_state =
             match body_writer with
@@ -326,7 +328,7 @@ let run :
   let get_body_writers state =
     Streams.body_writers (`Client state.State.streams)
     |> List.map (fun (f, id) () ->
-           let handler = Runtime.body_writer_handler ~debug f id in
+           let handler = body_writer_handler ~debug f id in
            fun state -> handler state)
   in
 
@@ -337,17 +339,17 @@ let run :
   in
 
   (* NOTE: we could create so scoped function here for the initial writer to be sure it is freed *)
-  let initial_writer = create Settings.default.max_frame_size in
+  let initial_writer = Writer.create Settings.default.max_frame_size in
   let receive_buffer = Cstruct.create (9 + config.max_frame_size) in
   let user_settings = config in
 
-  write_connection_preface initial_writer;
-  write_settings initial_writer user_settings;
+  Writer.write_connection_preface initial_writer;
+  Writer.write_settings initial_writer user_settings;
 
   let initial_state_result =
-    match write initial_writer socket with
+    match Writer.write initial_writer socket with
     | Ok () -> (
-        match Runtime.process_preface_settings ~socket ~receive_buffer () with
+        match process_preface_settings ~socket ~receive_buffer () with
         | Error _ as err -> err
         | Ok (peer_settings, rest_to_parse, writer) ->
             Ok
@@ -356,5 +358,5 @@ let run :
     | Error exn -> Error (Exn exn)
   in
 
-  Runtime.start ~frame_handler ~receive_buffer ~initial_state_result ~debug
+  start ~frame_handler ~receive_buffer ~initial_state_result ~debug
     ~user_functions_handlers socket

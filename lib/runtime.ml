@@ -1,10 +1,19 @@
 open Writer
 open State
 
-type 'state step =
-  | End of 'state
-  | ConnectionError of ('state * Error.connection_error)
-  | NextState of 'state
+(* type 'state step = *)
+(*   | End of 'state *)
+(*   | ConnectionError of ('state * Error.connection_error) *)
+(*   | NextState of 'state *)
+
+type iteration_result =
+  | End
+  | InProgress
+  | ConnectionError of Error.connection_error
+
+type 'state step = { iter_result : iteration_result; state : 'state }
+
+let step iter_result state = { iter_result; state }
 
 let handle_connection_error ?(last_peer_stream = Int32.zero) ~writer error =
   let codemsg_opt =
@@ -194,26 +203,34 @@ let read_io ~debug ~frame_handler (state : ('a, 'b, 'c) State.t) cs =
       let state_with_parse = { state with parse_state = continue_opt } in
       let next_step =
         List.fold_left
-          (fun state frame ->
-            match state with
-            | NextState state -> frame_handler frame state
+          (fun step frame ->
+            match step with
+            | { iter_result = InProgress; state } -> frame_handler frame state
             | other -> other)
-          (NextState state_with_parse) frames
+          { iter_result = InProgress; state = state_with_parse }
+          frames
       in
 
       (consumed, next_step)
   | Error err -> (
       match err with
-      | _, Error.ConnectionError err -> (0, ConnectionError (state, err))
+      | _, Error.ConnectionError err ->
+          (0, { iter_result = ConnectionError err; state })
       | consumed, StreamError (stream_id, code) ->
-          (consumed, NextState (handle_stream_error state stream_id code)))
+          ( consumed,
+            {
+              iter_result = InProgress;
+              state = handle_stream_error state stream_id code;
+            } ))
 
 let frame_handler ~process_complete_headers ~process_data_frame
     (frame : Frame.t) (state : _ State.t) : _ step =
   let connection_error code msg =
-    ConnectionError (state, ProtocolViolation (code, msg))
+    { iter_result = ConnectionError (ProtocolViolation (code, msg)); state }
   in
-  let stream_error id code = NextState (handle_stream_error state id code) in
+  let stream_error id code =
+    { iter_result = InProgress; state = handle_stream_error state id code }
+  in
 
   let process_complete_headers =
     process_complete_headers state stream_error connection_error
@@ -255,7 +272,8 @@ let frame_handler ~process_complete_headers ~process_data_frame
       let len = Bigstringaf.length bs in
       Bigstringaf.blit bs ~src_off:0 headers_buffer ~dst_off:0 ~len;
 
-      NextState { state with headers_state = InProgress (headers_buffer, len) })
+      step InProgress
+        { state with headers_state = InProgress (headers_buffer, len) })
     else
       match
         decompress_headers_block bs ~len:(Bigstringaf.length bs)
@@ -289,7 +307,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
         in
 
         if not (Flags.test_end_header flags) then
-          NextState
+          step InProgress
             { state with headers_state = InProgress (new_buffer, new_len) }
         else
           match
@@ -306,7 +324,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
         | Error msg -> connection_error Error_code.InternalError msg
         | Ok new_state ->
             write_settings_ack state.writer;
-            NextState new_state)
+            step InProgress new_state)
     | Syncing new_settings, true ->
         let new_state =
           {
@@ -317,7 +335,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
           }
         in
 
-        NextState new_state
+        step InProgress new_state
     | Idle, true ->
         connection_error Error_code.ProtocolError
           "Unexpected ACK flag in SETTINGS frame."
@@ -344,14 +362,14 @@ let frame_handler ~process_complete_headers ~process_data_frame
         in
         match (state.shutdown, Streams.all_closed streams) with
         | true, true ->
-            End
+            step End
               {
                 state with
                 final_contexts =
                   (stream_id, new_context) :: state.final_contexts;
               }
         | _ ->
-            NextState
+            step InProgress
               {
                 state with
                 streams;
@@ -369,19 +387,22 @@ let frame_handler ~process_complete_headers ~process_data_frame
         match Streams.all_closed state.streams with
         | false ->
             let new_state = { state with shutdown = true } in
-            NextState new_state
-        | true -> End state)
-    | _ -> ConnectionError (state, PeerError (code, Bigstringaf.to_string msg))
+            step InProgress new_state
+        | true -> step End state)
+    | _ ->
+        step
+          (ConnectionError (PeerError (code, Bigstringaf.to_string msg)))
+          state
   in
 
   let process_window_update_frame { Frame.stream_id; _ } increment =
     if Stream_identifier.is_connection stream_id then
-      NextState
+      step InProgress
         { state with flow = Flow_control.incr_out_flow state.flow increment }
     else
       match Streams.state_of_id state.streams stream_id with
       | Open _ | Reserved (Local _) | HalfClosed _ ->
-          NextState
+          step InProgress
             {
               state with
               streams =
@@ -399,7 +420,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
       | Settings payload -> process_settings_frame frame_header payload
       | Ping bs ->
           write_ping state.writer bs ~ack:true;
-          NextState state
+          step InProgress state
       | Headers payload -> process_headers_frame frame_header payload
       | Continuation payload -> process_continuation_frame frame_header payload
       | RSTStream payload -> process_rst_stream_frame frame_header payload
@@ -407,12 +428,18 @@ let frame_handler ~process_complete_headers ~process_data_frame
           connection_error Error_code.ProtocolError "client cannot push"
       | GoAway payload -> process_goaway_frame payload
       | WindowUpdate payload -> process_window_update_frame frame_header payload
-      | Unknown _ -> NextState state
-      | Priority -> NextState state)
+      | Unknown _ -> step InProgress state
+      | Priority -> step InProgress state)
   | InProgress _, _ ->
       connection_error Error_code.ProtocolError
         "unexpected frame other than CONTINUATION in the middle of headers \
          block"
+
+let combine_steps x y =
+ fun step ->
+  match x step with
+  | { iter_result = InProgress; state = new_state } -> y new_state
+  | other -> other
 
 open Eio
 
@@ -442,52 +469,40 @@ let start :
     in
     fun state ->
       match read_bytes with
-      | Error exn -> ConnectionError (state, Exn exn)
+      | Error exn -> step (ConnectionError (Exn exn)) state
       | Ok read_bytes -> (
-          let consumed, next_state =
+          let consumed, next_step =
             read_io ~debug ~frame_handler state
               (Cstruct.sub receive_buffer 0 (read_bytes + off))
           in
           let unconsumed = read_bytes + off - consumed in
           Cstruct.blit receive_buffer consumed receive_buffer 0 unconsumed;
-          match next_state with
-          | NextState next_state ->
-              NextState { next_state with read_off = unconsumed }
+          match next_step with
+          | { iter_result = InProgress; state = next_state } ->
+              step InProgress { next_state with read_off = unconsumed }
           | other -> other)
   in
 
   let step_to_iteration :
       (_ State.t -> _ Types.iteration) -> _ step -> _ Types.iteration =
-   fun continue -> function
-     | ConnectionError (state, err) ->
-         handle_connection_error
-           ~last_peer_stream:state.streams.last_peer_stream ~writer:state.writer
-           err;
-         write state.writer socket |> ignore;
-         let state = do_flush state in
-         let closed_ctxs = extract_all_context state in
-         { Types.closed_ctxs; state = Error err }
-     | End state -> (
-         let closed_ctxs = extract_all_context state in
-         match write state.writer socket with
-         | Ok () ->
-             do_flush state |> ignore;
-             { closed_ctxs; state = End }
-         | Error exn ->
-             do_flush state |> ignore;
-             { closed_ctxs; state = Error (Exn exn) })
-     | NextState state -> (
-         let closed_ctxs, new_state = get_final_contexts state in
-         match write state.writer socket with
-         | Error exn ->
-             do_flush state |> ignore;
-             { closed_ctxs; state = Error (Exn exn) }
-         | Ok () when state.shutdown && Streams.all_closed state.streams ->
-             do_flush state |> ignore;
-             { closed_ctxs; state = End }
-         | Ok () ->
-             let new_state = do_flush new_state in
-             { closed_ctxs; state = InProgress (fun () -> continue new_state) })
+   fun continue { iter_result; state } ->
+    (match iter_result with
+    | ConnectionError err ->
+        handle_connection_error ~last_peer_stream:state.streams.last_peer_stream
+          ~writer:state.writer err
+    | _ -> ());
+    let write_result = write state.writer socket in
+    let all_ctxs, closed_ctxs, state = do_flush state |> extract_context in
+
+    match (iter_result, write_result) with
+    | ConnectionError err, _ -> { closed_ctxs = all_ctxs; state = Error err }
+    | End, Ok () -> { closed_ctxs; state = End }
+    | InProgress, Ok () when state.shutdown && Streams.all_closed state.streams
+      ->
+        { closed_ctxs; state = End }
+    | (End | InProgress), Error exn -> { closed_ctxs; state = Error (Exn exn) }
+    | InProgress, Ok () ->
+        { closed_ctxs; state = InProgress (fun () -> continue state) }
   in
 
   let make_events state =
@@ -497,48 +512,39 @@ let start :
       user_functions_handlers state
       |> List.map (fun f () ->
              let handler = f () in
-             fun state -> NextState (handler state))
+             fun state -> step InProgress (handler state))
     in
 
     base_op :: opt_functions
   in
 
-  let combine x y =
-   fun step ->
-    match x step with NextState new_state -> y new_state | other -> other
-  in
-
   let rec process_events : ('a, 'b, 'c) t -> 'c Types.iteration =
    fun state ->
     step_to_iteration process_events
-    @@ (Fiber.any ~combine (make_events state)) state
+    @@ (Fiber.any ~combine:combine_steps (make_events state)) state
   in
 
-  let init_state : _ Types.iteration =
-    match initial_state_result with
-    | Error err ->
-        let writer = create Settings.default.max_frame_size in
-        handle_connection_error ~writer err;
-        write writer socket |> ignore;
-        { closed_ctxs = []; state = Error err }
-    | Ok (initial_state, rest_to_parse) ->
-        if Cstruct.length rest_to_parse > 0 then
-          let step =
-            match read_io ~debug ~frame_handler initial_state rest_to_parse with
-            | consumed, NextState next_state ->
-                NextState
-                  {
-                    next_state with
-                    read_off = rest_to_parse.Cstruct.len - consumed;
-                  }
-            | _, step -> step
-          in
-          step_to_iteration process_events step
-        else
-          {
-            closed_ctxs = [];
-            state = InProgress (fun () -> process_events initial_state);
-          }
-  in
-
-  init_state
+  match initial_state_result with
+  | Error err ->
+      let writer = create Settings.default.max_frame_size in
+      handle_connection_error ~writer err;
+      write writer socket |> ignore;
+      { closed_ctxs = []; state = Error err }
+  | Ok (initial_state, rest_to_parse) ->
+      if Cstruct.length rest_to_parse > 0 then
+        let step =
+          match read_io ~debug ~frame_handler initial_state rest_to_parse with
+          | consumed, { iter_result = InProgress; state = next_state } ->
+              step InProgress
+                {
+                  next_state with
+                  read_off = rest_to_parse.Cstruct.len - consumed;
+                }
+          | _, step -> step
+        in
+        step_to_iteration process_events step
+      else
+        {
+          closed_ctxs = [];
+          state = InProgress (fun () -> process_events initial_state);
+        }
