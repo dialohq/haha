@@ -14,7 +14,253 @@ type 'context stream_state =
     'context )
   Streams.Stream.state
 
-let run :
+let process_data_frame (state : _ state) { Frame.flags; stream_id; _ } bs :
+    _ step =
+  let open Writer in
+  let connection_error = step_connection_error state in
+  let stream_error = step_stream_error state in
+  let end_stream = Flags.test_end_stream flags in
+
+  match (Streams.state_of_id state.streams stream_id, end_stream) with
+  | Reserved _, _ ->
+      connection_error Error_code.ProtocolError
+        "DATA frame received on reserved stream"
+  | Closed, _ | Idle, _ | HalfClosed (Remote _), _ ->
+      connection_error Error_code.StreamClosed
+        "DATA frame received on closed stream!"
+  | Open { readers = AwaitingResponse _; _ }, _
+  | HalfClosed (Local { readers = AwaitingResponse _; _ }), _ ->
+      stream_error stream_id Error_code.ProtocolError
+  | Open { readers = BodyStream reader; writers; error_handler; context }, true
+    ->
+      let new_context =
+        reader context (`End (Some (Cstruct.of_bigarray bs), []))
+      in
+
+      step InProgress
+        {
+          state with
+          streams =
+            Streams.(
+              stream_transition state.streams stream_id
+                (HalfClosed
+                   (Remote { writers; error_handler; context = new_context }))
+              |> update_flow_on_data
+                   ~send_update:(write_window_update state.writer stream_id)
+                   stream_id
+                   (Bigstringaf.length bs |> Int32.of_int));
+          flow =
+            Flow_control.receive_data
+              ~send_update:
+                (write_window_update state.writer Stream_identifier.connection)
+              state.flow
+              (Bigstringaf.length bs |> Int32.of_int);
+        }
+  | Open { readers = BodyStream reader; context; _ }, false ->
+      let new_context = reader context (`Data (Cstruct.of_bigarray bs)) in
+
+      let streams =
+        (if Stream_identifier.is_client stream_id then state.streams
+         else Streams.update_last_peer_stream state.streams stream_id)
+        |> Streams.update_flow_on_data
+             ~send_update:(write_window_update state.writer stream_id)
+             stream_id
+             (Bigstringaf.length bs |> Int32.of_int)
+        |> Streams.update_context stream_id new_context
+      in
+      step InProgress
+        {
+          state with
+          streams;
+          flow =
+            Flow_control.receive_data state.flow
+              ~send_update:
+                (write_window_update state.writer Stream_identifier.connection)
+              (Bigstringaf.length bs |> Int32.of_int);
+        }
+  | HalfClosed (Local { readers = BodyStream reader; context; _ }), true ->
+      let new_context =
+        reader context (`End (Some (Cstruct.of_bigarray bs), []))
+      in
+
+      let streams =
+        Streams.(
+          stream_transition state.streams stream_id Closed
+          |> update_flow_on_data
+               ~send_update:(write_window_update state.writer stream_id)
+               stream_id
+               (Bigstringaf.length bs |> Int32.of_int))
+      in
+      step InProgress
+        {
+          state with
+          streams;
+          flow =
+            Flow_control.receive_data state.flow
+              ~send_update:
+                (write_window_update state.writer Stream_identifier.connection)
+              (Bigstringaf.length bs |> Int32.of_int);
+          final_contexts = (stream_id, new_context) :: state.final_contexts;
+        }
+  | HalfClosed (Local { readers = BodyStream reader; context; _ }), false ->
+      let new_context = reader context (`Data (Cstruct.of_bigarray bs)) in
+
+      let streams =
+        (if Stream_identifier.is_client stream_id then state.streams
+         else Streams.update_last_peer_stream state.streams stream_id)
+        |> Streams.update_flow_on_data
+             ~send_update:(write_window_update state.writer stream_id)
+             stream_id
+             (Bigstringaf.length bs |> Int32.of_int)
+        |> Streams.update_context stream_id new_context
+      in
+      step InProgress
+        {
+          state with
+          streams;
+          flow =
+            Flow_control.receive_data state.flow
+              ~send_update:
+                (write_window_update state.writer Stream_identifier.connection)
+              (Bigstringaf.length bs |> Int32.of_int);
+        }
+
+let process_complete_headers (state : _ state) { Frame.flags; stream_id; _ }
+    header_list : _ step =
+  let connection_error = step_connection_error state in
+  let stream_error = step_stream_error state in
+  let end_stream = Flags.test_end_stream flags in
+  let pseudo_validation = Header.Pseudo.validate_response header_list in
+
+  let stream_state = Streams.state_of_id state.streams stream_id in
+
+  match (end_stream, pseudo_validation) with
+  | _, Invalid | false, No_pseudo ->
+      stream_error stream_id Error_code.ProtocolError
+  | true, No_pseudo -> (
+      match stream_state with
+      | Open { readers = BodyStream reader; writers; error_handler; context } ->
+          let new_context = reader context (`End (None, header_list)) in
+          step InProgress
+            {
+              state with
+              streams =
+                Streams.stream_transition state.streams stream_id
+                  (HalfClosed
+                     (Remote { writers; error_handler; context = new_context }));
+            }
+      | HalfClosed (Local { readers = BodyStream reader; context; _ }) ->
+          let new_context = reader context (`End (None, header_list)) in
+
+          let streams =
+            Streams.(stream_transition state.streams stream_id Closed)
+          in
+          step InProgress
+            {
+              state with
+              streams;
+              final_contexts = (stream_id, new_context) :: state.final_contexts;
+            }
+      | Open { readers = AwaitingResponse _; _ }
+      | HalfClosed (Local { readers = AwaitingResponse _; _ }) ->
+          connection_error Error_code.ProtocolError
+            (Format.sprintf
+               "received first HEADERS in stream %li with no pseudo-headers"
+               stream_id)
+      | Reserved _ -> stream_error stream_id Error_code.StreamClosed
+      | Idle -> stream_error stream_id Error_code.ProtocolError
+      | Closed | HalfClosed (Remote _) ->
+          connection_error Error_code.StreamClosed
+            "HEADERS received on a closed stream")
+  | end_stream, Valid pseudo -> (
+      let headers = Header.filter_pseudo header_list in
+      let response : _ Response.t =
+        match Status.of_code pseudo.status with
+        | #Status.informational as status -> `Interim { status; headers }
+        | status -> `Final { status; headers; body_writer = None }
+      in
+      match (stream_state, response) with
+      | ( Open { readers = AwaitingResponse response_handler; context; _ },
+          `Interim _ )
+      | ( HalfClosed
+            (Local { readers = AwaitingResponse response_handler; context; _ }),
+          `Interim _ ) ->
+          let _body_reader, context = response_handler context response in
+
+          let streams =
+            Streams.update_context stream_id context state.streams
+          in
+
+          step InProgress { state with streams }
+      | ( Open
+            {
+              readers = AwaitingResponse response_handler;
+              writers = body_writer;
+              error_handler;
+              context;
+            },
+          `Final _ ) ->
+          let body_reader, context = response_handler context response in
+
+          let new_stream_state : _ stream_state =
+            if end_stream then
+              HalfClosed
+                (Remote { writers = body_writer; error_handler; context })
+            else
+              Open
+                {
+                  readers = BodyStream body_reader;
+                  writers = body_writer;
+                  error_handler;
+                  context;
+                }
+          in
+
+          step InProgress
+            {
+              state with
+              streams =
+                Streams.stream_transition state.streams stream_id
+                  new_stream_state;
+            }
+      | ( HalfClosed
+            (Local
+               {
+                 readers = AwaitingResponse response_handler;
+                 error_handler;
+                 context;
+               }),
+          `Final _ ) ->
+          let body_reader, context = response_handler context response in
+
+          let new_stream_state : _ stream_state =
+            if end_stream then Closed
+            else
+              HalfClosed
+                (Local
+                   { readers = BodyStream body_reader; error_handler; context })
+          in
+          let streams =
+            Streams.stream_transition state.streams stream_id new_stream_state
+          in
+          step InProgress { state with streams }
+      | Open { readers = BodyStream _; _ }, _
+      | HalfClosed (Local { readers = BodyStream _; _ }), _ ->
+          connection_error Error_code.ProtocolError
+            (Format.sprintf
+               "unexpected multiple non-informational HEADERS on stream %li"
+               stream_id)
+      | Idle, _ ->
+          connection_error Error_code.ProtocolError
+            "unexpected HEADERS response on idle stream"
+      | Reserved _, _ ->
+          connection_error Error_code.ProtocolError
+            "HEADERS received on reserved stream"
+      | HalfClosed (Remote _), _ | Closed, _ ->
+          connection_error Error_code.StreamClosed
+            "HEADERS received on closed stream")
+
+let connect :
     'c.
     ?debug:bool ->
     ?config:Settings.t ->
@@ -22,255 +268,6 @@ let run :
     _ Eio.Resource.t ->
     'c iteration =
  fun ?(debug = false) ?(config = Settings.default) ~request_writer socket ->
-  let process_data_frame (state : _ state) stream_error connection_error
-      { Frame.flags; stream_id; _ } bs : _ step =
-    let open Writer in
-    let end_stream = Flags.test_end_stream flags in
-    match (Streams.state_of_id state.streams stream_id, end_stream) with
-    | Reserved _, _ ->
-        connection_error Error_code.ProtocolError
-          "DATA frame received on reserved stream"
-    | Closed, _ | Idle, _ | HalfClosed (Remote _), _ ->
-        connection_error Error_code.StreamClosed
-          "DATA frame received on closed stream!"
-    | Open { readers = AwaitingResponse _; _ }, _
-    | HalfClosed (Local { readers = AwaitingResponse _; _ }), _ ->
-        stream_error stream_id Error_code.ProtocolError
-    | ( Open { readers = BodyStream reader; writers; error_handler; context },
-        true ) ->
-        let new_context =
-          reader context (`End (Some (Cstruct.of_bigarray bs), []))
-        in
-
-        step InProgress
-          {
-            state with
-            streams =
-              Streams.(
-                stream_transition state.streams stream_id
-                  (HalfClosed
-                     (Remote { writers; error_handler; context = new_context }))
-                |> update_flow_on_data
-                     ~send_update:(write_window_update state.writer stream_id)
-                     stream_id
-                     (Bigstringaf.length bs |> Int32.of_int));
-            flow =
-              Flow_control.receive_data
-                ~send_update:
-                  (write_window_update state.writer Stream_identifier.connection)
-                state.flow
-                (Bigstringaf.length bs |> Int32.of_int);
-          }
-    | Open { readers = BodyStream reader; context; _ }, false ->
-        let new_context = reader context (`Data (Cstruct.of_bigarray bs)) in
-
-        let streams =
-          (if Stream_identifier.is_client stream_id then state.streams
-           else Streams.update_last_peer_stream state.streams stream_id)
-          |> Streams.update_flow_on_data
-               ~send_update:(write_window_update state.writer stream_id)
-               stream_id
-               (Bigstringaf.length bs |> Int32.of_int)
-          |> Streams.update_context stream_id new_context
-        in
-        step InProgress
-          {
-            state with
-            streams;
-            flow =
-              Flow_control.receive_data state.flow
-                ~send_update:
-                  (write_window_update state.writer Stream_identifier.connection)
-                (Bigstringaf.length bs |> Int32.of_int);
-          }
-    | HalfClosed (Local { readers = BodyStream reader; context; _ }), true ->
-        let new_context =
-          reader context (`End (Some (Cstruct.of_bigarray bs), []))
-        in
-
-        let streams =
-          Streams.(
-            stream_transition state.streams stream_id Closed
-            |> update_flow_on_data
-                 ~send_update:(write_window_update state.writer stream_id)
-                 stream_id
-                 (Bigstringaf.length bs |> Int32.of_int))
-        in
-        step InProgress
-          {
-            state with
-            streams;
-            flow =
-              Flow_control.receive_data state.flow
-                ~send_update:
-                  (write_window_update state.writer Stream_identifier.connection)
-                (Bigstringaf.length bs |> Int32.of_int);
-            final_contexts = (stream_id, new_context) :: state.final_contexts;
-          }
-    | HalfClosed (Local { readers = BodyStream reader; context; _ }), false ->
-        let new_context = reader context (`Data (Cstruct.of_bigarray bs)) in
-
-        let streams =
-          (if Stream_identifier.is_client stream_id then state.streams
-           else Streams.update_last_peer_stream state.streams stream_id)
-          |> Streams.update_flow_on_data
-               ~send_update:(write_window_update state.writer stream_id)
-               stream_id
-               (Bigstringaf.length bs |> Int32.of_int)
-          |> Streams.update_context stream_id new_context
-        in
-        step InProgress
-          {
-            state with
-            streams;
-            flow =
-              Flow_control.receive_data state.flow
-                ~send_update:
-                  (write_window_update state.writer Stream_identifier.connection)
-                (Bigstringaf.length bs |> Int32.of_int);
-          }
-  in
-
-  let process_complete_headers (state : _ state) stream_error connection_error
-      { Frame.flags; stream_id; _ } header_list : _ step =
-    let end_stream = Flags.test_end_stream flags in
-    let pseudo_validation = Header.Pseudo.validate_response header_list in
-
-    let stream_state = Streams.state_of_id state.streams stream_id in
-
-    match (end_stream, pseudo_validation) with
-    | _, Invalid | false, No_pseudo ->
-        stream_error stream_id Error_code.ProtocolError
-    | true, No_pseudo -> (
-        match stream_state with
-        | Open { readers = BodyStream reader; writers; error_handler; context }
-          ->
-            let new_context = reader context (`End (None, header_list)) in
-            step InProgress
-              {
-                state with
-                streams =
-                  Streams.stream_transition state.streams stream_id
-                    (HalfClosed
-                       (Remote { writers; error_handler; context = new_context }));
-              }
-        | HalfClosed (Local { readers = BodyStream reader; context; _ }) ->
-            let new_context = reader context (`End (None, header_list)) in
-
-            let streams =
-              Streams.(stream_transition state.streams stream_id Closed)
-            in
-            step InProgress
-              {
-                state with
-                streams;
-                final_contexts =
-                  (stream_id, new_context) :: state.final_contexts;
-              }
-        | Open { readers = AwaitingResponse _; _ }
-        | HalfClosed (Local { readers = AwaitingResponse _; _ }) ->
-            connection_error Error_code.ProtocolError
-              (Format.sprintf
-                 "received first HEADERS in stream %li with no pseudo-headers"
-                 stream_id)
-        | Reserved _ -> stream_error stream_id Error_code.StreamClosed
-        | Idle -> stream_error stream_id Error_code.ProtocolError
-        | Closed | HalfClosed (Remote _) ->
-            connection_error Error_code.StreamClosed
-              "HEADERS received on a closed stream")
-    | end_stream, Valid pseudo -> (
-        let headers = Header.filter_pseudo header_list in
-        let response : _ Response.t =
-          match Status.of_code pseudo.status with
-          | #Status.informational as status -> `Interim { status; headers }
-          | status -> `Final { status; headers; body_writer = None }
-        in
-        match (stream_state, response) with
-        | ( Open { readers = AwaitingResponse response_handler; context; _ },
-            `Interim _ )
-        | ( HalfClosed
-              (Local { readers = AwaitingResponse response_handler; context; _ }),
-            `Interim _ ) ->
-            let _body_reader, context = response_handler context response in
-
-            let streams =
-              Streams.update_context stream_id context state.streams
-            in
-
-            step InProgress { state with streams }
-        | ( Open
-              {
-                readers = AwaitingResponse response_handler;
-                writers = body_writer;
-                error_handler;
-                context;
-              },
-            `Final _ ) ->
-            let body_reader, context = response_handler context response in
-
-            let new_stream_state : _ stream_state =
-              if end_stream then
-                HalfClosed
-                  (Remote { writers = body_writer; error_handler; context })
-              else
-                Open
-                  {
-                    readers = BodyStream body_reader;
-                    writers = body_writer;
-                    error_handler;
-                    context;
-                  }
-            in
-
-            step InProgress
-              {
-                state with
-                streams =
-                  Streams.stream_transition state.streams stream_id
-                    new_stream_state;
-              }
-        | ( HalfClosed
-              (Local
-                 {
-                   readers = AwaitingResponse response_handler;
-                   error_handler;
-                   context;
-                 }),
-            `Final _ ) ->
-            let body_reader, context = response_handler context response in
-
-            let new_stream_state : _ stream_state =
-              if end_stream then Closed
-              else
-                HalfClosed
-                  (Local
-                     {
-                       readers = BodyStream body_reader;
-                       error_handler;
-                       context;
-                     })
-            in
-            let streams =
-              Streams.stream_transition state.streams stream_id new_stream_state
-            in
-            step InProgress { state with streams }
-        | Open { readers = BodyStream _; _ }, _
-        | HalfClosed (Local { readers = BodyStream _; _ }), _ ->
-            connection_error Error_code.ProtocolError
-              (Format.sprintf
-                 "unexpected multiple non-informational HEADERS on stream %li"
-                 stream_id)
-        | Idle, _ ->
-            connection_error Error_code.ProtocolError
-              "unexpected HEADERS response on idle stream"
-        | Reserved _, _ ->
-            connection_error Error_code.ProtocolError
-              "HEADERS received on reserved stream"
-        | HalfClosed (Remote _), _ | Closed, _ ->
-            connection_error Error_code.StreamClosed
-              "HEADERS received on closed stream")
-  in
-
   let frame_handler =
     frame_handler ~process_complete_headers ~process_data_frame
   in
@@ -341,7 +338,6 @@ let run :
            fun state -> step InProgress (handler state))
   in
 
-  (* NOTE: we could create so scoped function here for the initial writer to be sure it is freed *)
   let initial_writer = Writer.create Settings.default.max_frame_size in
   let receive_buffer = Cstruct.create (9 + config.max_frame_size) in
   let user_settings = config in

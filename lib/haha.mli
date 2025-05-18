@@ -184,7 +184,7 @@ module Settings = Settings
 module Client : sig
   type 'context iteration = 'context Types.iteration
 
-  val run :
+  val connect :
     'context.
     ?debug:bool ->
     ?config:Settings.t ->

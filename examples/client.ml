@@ -64,7 +64,7 @@ let () =
 
   Eio.Fiber.fork ~sw (fun () ->
       let initial_step =
-        Client.run ~request_writer ~config:Settings.default socket
+        Client.connect ~request_writer ~config:Settings.default socket
       in
 
       let rec loop : int Client.iteration -> unit =
