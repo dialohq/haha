@@ -2,7 +2,8 @@ module Error_code = Error_code
 
 module Error : sig
   type connection_error =
-    | ProtocolError of (Error_code.t * string)
+    | ProtocolViolation of (Error_code.t * string)
+    | PeerError of (Error_code.t * string)
     | Exn of exn
         (** The type of connection error. Caused by a valiation of the protocol
             from the other side of connection, or an exception. *)
