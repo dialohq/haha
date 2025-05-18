@@ -291,13 +291,16 @@ let connection_handler :
     let writers =
       List.concat [ get_response_writers state; get_body_writers state ]
     in
-    match (state.shutdown, goaway_writer) with
+    (match (state.shutdown, goaway_writer) with
     | true, _ | _, None -> writers
     | false, Some f ->
         (fun () ->
           let handler = user_goaway_handler ~f in
           fun state -> handler state)
-        :: writers
+        :: writers)
+    |> List.map (fun f () ->
+           let handler = f () in
+           fun state -> step InProgress (handler state))
   in
 
   let receive_buffer = Cstruct.create (9 + config.max_frame_size) in
