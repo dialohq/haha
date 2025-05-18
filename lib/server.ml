@@ -1,3 +1,5 @@
+open Runtime
+
 type 'context state =
   ( 'context Streams.server_reader,
     'context Streams.server_writers,
@@ -25,7 +27,7 @@ let connection_handler :
  fun ?(debug = false) ?(config = Settings.default) ?goaway_writer ~error_handler
      request_handler socket _ ->
   let process_data_frame (state : _ state) stream_error connection_error
-      { Frame.stream_id; flags; _ } bs : _ Runtime.step =
+      { Frame.stream_id; flags; _ } bs : _ step =
     let open Writer in
     let end_stream = Flags.test_end_stream flags in
     match (Streams.state_of_id state.streams stream_id, end_stream) with
@@ -41,7 +43,7 @@ let connection_handler :
         let new_context =
           readers context (`End (Some (Cstruct.of_bigarray bs), []))
         in
-        NextState
+        step InProgress
           {
             state with
             streams =
@@ -72,7 +74,7 @@ let connection_handler :
                (Bigstringaf.length bs |> Int32.of_int)
           |> Streams.update_context stream_id new_context
         in
-        NextState
+        step InProgress
           {
             state with
             streams;
@@ -95,7 +97,7 @@ let connection_handler :
                  stream_id
                  (Bigstringaf.length bs |> Int32.of_int))
         in
-        NextState
+        step InProgress
           {
             state with
             streams;
@@ -119,7 +121,7 @@ let connection_handler :
                (Bigstringaf.length bs |> Int32.of_int)
           |> Streams.update_context stream_id new_context
         in
-        NextState
+        step InProgress
           {
             state with
             streams;
@@ -133,7 +135,7 @@ let connection_handler :
   in
 
   let process_complete_headers (state : _ state) stream_error connection_error
-      { Frame.flags; stream_id; _ } header_list : _ Runtime.step =
+      { Frame.flags; stream_id; _ } header_list : _ step =
     let end_stream = Flags.test_end_stream flags in
     let pseudo_validation = Header.Pseudo.validate_request header_list in
 
@@ -146,7 +148,7 @@ let connection_handler :
         match stream_state with
         | Open { readers; writers; error_handler; context } ->
             let new_context = readers context (`End (None, header_list)) in
-            NextState
+            step InProgress
               {
                 state with
                 streams =
@@ -159,7 +161,7 @@ let connection_handler :
             let streams =
               Streams.(stream_transition state.streams stream_id Closed)
             in
-            NextState
+            step InProgress
               {
                 state with
                 streams;
@@ -213,7 +215,7 @@ let connection_handler :
                     }
               in
 
-              NextState
+              step InProgress
                 {
                   state with
                   streams =
@@ -234,7 +236,7 @@ let connection_handler :
   in
 
   let frame_handler =
-    Runtime.frame_handler ~process_complete_headers ~process_data_frame
+    frame_handler ~process_complete_headers ~process_data_frame
   in
 
   let response_writer_handler response_writer reader_opt id error_handler
@@ -281,7 +283,7 @@ let connection_handler :
   let get_body_writers state =
     Streams.body_writers (`Server state.State.streams)
     |> List.map (fun (f, id) () ->
-           let handler = Runtime.body_writer_handler f id in
+           let handler = body_writer_handler f id in
            fun state -> handler state)
   in
 
@@ -293,7 +295,7 @@ let connection_handler :
     | true, _ | _, None -> writers
     | false, Some f ->
         (fun () ->
-          let handler = Runtime.user_goaway_handler ~f in
+          let handler = user_goaway_handler ~f in
           fun state -> handler state)
         :: writers
   in
@@ -310,8 +312,7 @@ let connection_handler :
     | Error _ as err -> err
     | Ok _ -> (
         match
-          Runtime.process_preface_settings ~socket ~receive_buffer
-            ~user_settings ()
+          process_preface_settings ~socket ~receive_buffer ~user_settings ()
         with
         | Error _ as err -> err
         | Ok (peer_settings, rest_to_parse, writer) ->
@@ -321,7 +322,7 @@ let connection_handler :
   in
 
   let initial_step =
-    Runtime.start ~receive_buffer ~frame_handler ~initial_state_result ~debug
+    start ~receive_buffer ~frame_handler ~initial_state_result ~debug
       ~user_functions_handlers socket
   in
 
