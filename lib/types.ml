@@ -18,7 +18,13 @@ type 'context body_writer_fragment =
   * (unit -> unit)
   * 'context
 
-type 'context body_reader = 'context -> body_reader_fragment -> 'context
+type 'context body_reader_result = {
+  action : [ `Continue | `Reset ];
+  context : 'context;
+}
+
+type 'context body_reader =
+  'context -> body_reader_fragment -> 'context body_reader_result
 
 type 'context body_writer =
   'context -> window_size:int32 -> 'context body_writer_fragment

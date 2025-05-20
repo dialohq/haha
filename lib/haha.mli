@@ -47,7 +47,13 @@ module Types : sig
     * (unit -> unit)
     * 'context
 
-  type 'context body_reader = 'context -> body_reader_fragment -> 'context
+  type 'context body_reader_result = {
+    action : [ `Continue | `Reset ];
+    context : 'context;
+  }
+
+  type 'context body_reader =
+    'context -> body_reader_fragment -> 'context body_reader_result
 
   type 'context body_writer =
     'context -> window_size:int32 -> 'context body_writer_fragment
@@ -83,8 +89,7 @@ module Response : sig
       [interim_response]. *)
 
   type 'context handler =
-    'context -> 'context t -> 'context body_reader * 'context
-  (** The type returned by the [Response.handle]. *)
+    'context -> 'context t -> 'context body_reader option * 'context
 
   type 'context response_writer = unit -> 'context t
   (** The type of the callback function for writing response [t]. *)
@@ -101,11 +106,6 @@ module Response : sig
     Status.t ->
     Header.t list ->
     'context final_response
-
-  val handle :
-    context:'context ->
-    on_data:'context body_reader ->
-    'context body_reader * 'context
 end
 
 module Request : sig

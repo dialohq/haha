@@ -22,6 +22,7 @@ let process_data_frame (state : _ state) { Frame.stream_id; flags; _ } bs :
   let end_stream = Flags.test_end_stream flags in
   match (Streams.state_of_id state.streams stream_id, end_stream) with
   | Idle, _ | HalfClosed (Remote _), _ ->
+      Printf.printf "Sending StreamClosed on stream %li\n%!" stream_id;
       stream_error stream_id Error_code.StreamClosed
   | Reserved _, _ ->
       connection_error Error_code.ProtocolError
@@ -29,54 +30,54 @@ let process_data_frame (state : _ state) { Frame.stream_id; flags; _ } bs :
   | Closed, _ ->
       connection_error Error_code.StreamClosed
         "DATA frame received on closed stream!"
-  | Open { readers; writers; error_handler; context }, true ->
-      let new_context =
+  | Open { readers; writers; error_handler; context }, true -> (
+      let { Types.action; context = new_context } =
         readers context (`End (Some (Cstruct.of_bigarray bs), []))
       in
-      step InProgress
-        {
-          state with
-          streams =
-            Streams.(
-              stream_transition state.streams stream_id
-                (HalfClosed
-                   (Remote { writers; error_handler; context = new_context }))
-              |> update_flow_on_data
-                   ~send_update:(write_window_update state.writer stream_id)
-                   stream_id
-                   (Bigstringaf.length bs |> Int32.of_int));
-          flow =
-            Flow_control.receive_data
-              ~send_update:
-                (write_window_update state.writer Stream_identifier.connection)
-              state.flow
-              (Bigstringaf.length bs |> Int32.of_int);
-        }
-  | Open { readers; context; _ }, false ->
-      let new_context = readers context (`Data (Cstruct.of_bigarray bs)) in
-
-      let streams =
-        (if Stream_identifier.is_server stream_id then state.streams
-         else Streams.update_last_peer_stream state.streams stream_id)
-        |> Streams.update_flow_on_data
-             ~send_update:(write_window_update state.writer stream_id)
-             stream_id
-             (Bigstringaf.length bs |> Int32.of_int)
-        |> Streams.update_context stream_id new_context
-      in
-      step InProgress
-        {
-          state with
-          streams;
-          flow =
-            Flow_control.receive_data
-              ~send_update:
-                (write_window_update state.writer Stream_identifier.connection)
-              state.flow
-              (Bigstringaf.length bs |> Int32.of_int);
-        }
+      match action with
+      | `Continue ->
+          step InProgress
+            {
+              state with
+              streams =
+                Streams.(
+                  stream_transition state.streams stream_id
+                    (HalfClosed
+                       (Remote { writers; error_handler; context = new_context }))
+                  |> update_flow_on_data
+                       ~send_update:(write_window_update state.writer stream_id)
+                       stream_id
+                       (Bigstringaf.length bs |> Int32.of_int));
+              flow =
+                Flow_control.receive_data
+                  ~send_update:
+                    (write_window_update state.writer
+                       Stream_identifier.connection)
+                  state.flow
+                  (Bigstringaf.length bs |> Int32.of_int);
+            }
+      | `Reset ->
+          Writer.write_rst_stream state.writer stream_id NoError;
+          let streams =
+            if Stream_identifier.is_server stream_id then
+              Streams.update_last_local_stream stream_id state.streams
+            else Streams.update_last_peer_stream state.streams stream_id
+          in
+          step InProgress
+            {
+              state with
+              streams = Streams.(stream_transition streams stream_id Closed);
+              flow =
+                Flow_control.receive_data
+                  ~send_update:
+                    (write_window_update state.writer
+                       Stream_identifier.connection)
+                  state.flow
+                  (Bigstringaf.length bs |> Int32.of_int);
+              final_contexts = (stream_id, new_context) :: state.final_contexts;
+            })
   | HalfClosed (Local { readers; context; _ }), true ->
-      let new_context =
+      let { Types.context = new_context; _ } =
         readers context (`End (Some (Cstruct.of_bigarray bs), []))
       in
       let streams =
@@ -99,29 +100,49 @@ let process_data_frame (state : _ state) { Frame.stream_id; flags; _ } bs :
               (Bigstringaf.length bs |> Int32.of_int);
           final_contexts = (stream_id, new_context) :: state.final_contexts;
         }
-  | HalfClosed (Local { readers; context; _ }), false ->
-      let new_context = readers context (`Data (Cstruct.of_bigarray bs)) in
-
+  | ( (Open { readers; context; _ } | HalfClosed (Local { readers; context; _ })),
+      false ) -> (
       let streams =
-        (if Stream_identifier.is_server stream_id then state.streams
+        (if Stream_identifier.is_server stream_id then
+           Streams.update_last_local_stream stream_id state.streams
          else Streams.update_last_peer_stream state.streams stream_id)
         |> Streams.update_flow_on_data
              ~send_update:(write_window_update state.writer stream_id)
              stream_id
              (Bigstringaf.length bs |> Int32.of_int)
-        |> Streams.update_context stream_id new_context
       in
-      step InProgress
-        {
-          state with
-          streams;
-          flow =
-            Flow_control.receive_data
-              ~send_update:
-                (write_window_update state.writer Stream_identifier.connection)
-              state.flow
-              (Bigstringaf.length bs |> Int32.of_int);
-        }
+      let { Types.action; context = new_context } =
+        readers context (`Data (Cstruct.of_bigarray bs))
+      in
+      match action with
+      | `Continue ->
+          step InProgress
+            {
+              state with
+              streams = Streams.update_context stream_id new_context streams;
+              flow =
+                Flow_control.receive_data
+                  ~send_update:
+                    (write_window_update state.writer
+                       Stream_identifier.connection)
+                  state.flow
+                  (Bigstringaf.length bs |> Int32.of_int);
+            }
+      | `Reset ->
+          Writer.write_rst_stream state.writer stream_id NoError;
+          step InProgress
+            {
+              state with
+              streams = Streams.stream_transition streams stream_id Closed;
+              flow =
+                Flow_control.receive_data
+                  ~send_update:
+                    (write_window_update state.writer
+                       Stream_identifier.connection)
+                  state.flow
+                  (Bigstringaf.length bs |> Int32.of_int);
+              final_contexts = (stream_id, new_context) :: state.final_contexts;
+            })
 
 let process_complete_headers request_handler (state : _ state)
     { Frame.flags; stream_id; _ } header_list : _ step =
@@ -137,18 +158,35 @@ let process_complete_headers request_handler (state : _ state)
       stream_error stream_id Error_code.ProtocolError
   | true, No_pseudo -> (
       match stream_state with
-      | Open { readers; writers; error_handler; context } ->
-          let new_context = readers context (`End (None, header_list)) in
-          step InProgress
-            {
-              state with
-              streams =
-                Streams.stream_transition state.streams stream_id
-                  (HalfClosed
-                     (Remote { writers; error_handler; context = new_context }));
-            }
+      | Open { readers; writers; error_handler; context } -> (
+          let { Types.action; context = new_context } =
+            readers context (`End (None, header_list))
+          in
+          match action with
+          | `Continue ->
+              step InProgress
+                {
+                  state with
+                  streams =
+                    Streams.stream_transition state.streams stream_id
+                      (HalfClosed
+                         (Remote
+                            { writers; error_handler; context = new_context }));
+                }
+          | `Reset ->
+              Writer.write_rst_stream state.writer stream_id NoError;
+              step InProgress
+                {
+                  state with
+                  streams =
+                    Streams.stream_transition state.streams stream_id Closed;
+                  final_contexts =
+                    (stream_id, new_context) :: state.final_contexts;
+                })
       | HalfClosed (Local { readers; context; _ }) ->
-          let new_context = readers context (`End (None, header_list)) in
+          let { Types.context = new_context; _ } =
+            readers context (`End (None, header_list))
+          in
           let streams =
             Streams.(stream_transition state.streams stream_id Closed)
           in

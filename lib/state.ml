@@ -17,6 +17,7 @@ type ('readers, 'writers, 'context) t = {
   read_off : int;
   flush_thunk : unit -> unit;
   final_contexts : 'context final_contexts;
+  prev_iter_ignore : Stream_identifier.t list;
 }
 
 let initial ~writer ~peer_settings ~user_settings =
@@ -41,12 +42,17 @@ let initial ~writer ~peer_settings ~user_settings =
     read_off = 0;
     flush_thunk = ignore;
     final_contexts = [];
+    prev_iter_ignore = [];
   }
 
 let extract_context t =
   ( List.concat [ Streams.extract_contexts t.streams; t.final_contexts ],
     t.final_contexts,
-    { t with final_contexts = [] } )
+    {
+      t with
+      prev_iter_ignore = List.map (fun (id, _) -> id) t.final_contexts;
+      final_contexts = [];
+    } )
 
 let do_flush t =
   t.flush_thunk ();

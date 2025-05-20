@@ -284,7 +284,9 @@ let flow_of_id t stream_id =
 
 let state_of_id t stream_id =
   match StreamMap.find_opt stream_id t.map with
-  | None when stream_id > t.last_local_stream -> Stream.Idle
+  | None when stream_id > t.last_local_stream && stream_id > t.last_peer_stream
+    ->
+      Stream.Idle
   | None -> Closed
   | Some stream -> stream.state
 
