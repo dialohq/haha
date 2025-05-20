@@ -25,19 +25,24 @@ let () =
     let status = Response.status response in
     Printf.printf "Got response of status %s\n%!" @@ Status.to_string status;
 
-    Response.handle ~context ~on_data:(fun counter cs ->
-        match cs with
-        | `Data _cs ->
-            (* Cstruct.hexdump cs; *)
-            Printf.printf "Data receiving, counting %i\n%!" @@ (counter + 1);
-            counter + 1
-        | `End (Some _cs, _) ->
-            (* Cstruct.hexdump cs; *)
-            Printf.printf "Peer EOF, counted %i\n%!" counter;
-            counter
-        | `End _ ->
-            Printf.printf "Peer EOF, counted %i\n%!" counter;
-            counter)
+    match response with
+    | _ ->
+        ( Some
+            (fun counter cs ->
+              match cs with
+              | `Data _cs ->
+                  let new_count = counter + 1 in
+                  Printf.printf "Data receiving, counting %i\n%!" new_count;
+                  { Types.action = `Continue; context = new_count }
+              | `End (Some _cs, _) ->
+                  (* Cstruct.hexdump cs; *)
+                  Printf.printf "Peer EOF, counted %i\n%!" counter;
+                  { Types.action = `Continue; context = counter }
+              | `End _ ->
+                  Printf.printf "Peer EOF, counted %i\n%!" counter;
+                  { Types.action = `Continue; context = counter }),
+          context )
+    (* | `Final _ -> (None, context) *)
   in
 
   let sample_request =

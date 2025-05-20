@@ -269,27 +269,39 @@ let frame_handler ~process_complete_headers ~process_data_frame
   in
 
   let { Frame.frame_payload; frame_header } = frame in
-  match (state.headers_state, frame_payload) with
-  | InProgress _, Continuation _ | Idle, _ -> (
-      match frame_payload with
-      | Data payload -> process_data_frame frame_header payload
-      | Settings payload -> process_settings_frame frame_header payload
-      | Ping bs ->
-          write_ping state.writer bs ~ack:true;
-          step InProgress state
-      | Headers payload -> process_headers_frame frame_header payload
-      | Continuation payload -> process_continuation_frame frame_header payload
-      | RSTStream payload -> process_rst_stream_frame frame_header payload
-      | PushPromise _ ->
-          connection_error Error_code.ProtocolError "client cannot push"
-      | GoAway payload -> process_goaway_frame payload
-      | WindowUpdate payload -> process_window_update_frame frame_header payload
-      | Unknown _ -> step InProgress state
-      | Priority -> step InProgress state)
-  | InProgress _, _ ->
-      connection_error Error_code.ProtocolError
-        "unexpected frame other than CONTINUATION in the middle of headers \
-         block"
+
+  if
+    List.exists
+      (fun (stream_id, _) -> stream_id = frame_header.stream_id)
+      state.final_contexts
+    || List.exists
+         (fun stream_id -> stream_id = frame_header.stream_id)
+         state.prev_iter_ignore
+  then step InProgress state
+  else
+    match (state.headers_state, frame_payload) with
+    | InProgress _, Continuation _ | Idle, _ -> (
+        match frame_payload with
+        | Data payload -> process_data_frame frame_header payload
+        | Settings payload -> process_settings_frame frame_header payload
+        | Ping bs ->
+            write_ping state.writer bs ~ack:true;
+            step InProgress state
+        | Headers payload -> process_headers_frame frame_header payload
+        | Continuation payload ->
+            process_continuation_frame frame_header payload
+        | RSTStream payload -> process_rst_stream_frame frame_header payload
+        | PushPromise _ ->
+            connection_error Error_code.ProtocolError "client cannot push"
+        | GoAway payload -> process_goaway_frame payload
+        | WindowUpdate payload ->
+            process_window_update_frame frame_header payload
+        | Unknown _ -> step InProgress state
+        | Priority -> step InProgress state)
+    | InProgress _, _ ->
+        connection_error Error_code.ProtocolError
+          "unexpected frame other than CONTINUATION in the middle of headers \
+           block"
 
 let body_writer_handler ?(debug = false)
     (f : unit -> _ Types.body_writer_fragment) id =

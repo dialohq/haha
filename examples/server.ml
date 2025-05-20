@@ -77,7 +77,9 @@ let () =
           in
 
           Reqd.handle ~context:()
-            ~error_handler:(fun c _ -> c)
+            ~error_handler:(fun c code ->
+              Format.printf "Stream error, %a@." Error_code.pp_hum code;
+              c)
             ~response_writer:(fun () ->
               Printf.printf "response_writer called\n%!";
               match Dynarray.pop_last_opt interim_responses with
@@ -91,24 +93,26 @@ let () =
               match data with
               | `Data cs ->
                   Printf.printf "Received %i bytes\n%!" cs.Cstruct.len;
-                  put_data cs
+                  { action = `Continue; context = put_data cs }
               | `End (Some cs, _) ->
                   Cstruct.hexdump cs;
-                  put_data cs;
-                  Printf.printf "Peer EOF\n%!"
-              | `End _ -> Printf.printf "Peer EOF\n%!")
+                  Printf.printf "Peer EOF\n%!";
+                  { action = `Continue; context = put_data cs }
+              | `End _ ->
+                  Printf.printf "Peer EOF\n%!";
+                  { action = `Continue; context = () })
       | POST, "/" ->
           let body_writer _ ~window_size:_ = (`End (None, []), ignore, ()) in
           Reqd.handle ~context:()
             ~error_handler:(fun c _ -> c)
             ~response_writer:(fun () ->
               `Final (Response.create_with_streaming ~body_writer `OK []))
-            ~on_data:(fun _ _ -> ())
+            ~on_data:(fun _ _ -> { action = `Continue; context = () })
       | _ ->
           Reqd.handle ~context:()
             ~error_handler:(fun c _ -> c)
             ~response_writer:(fun () -> `Final (Response.create `Not_found []))
-            ~on_data:(fun _ _ -> ())
+            ~on_data:(fun _ _ -> { action = `Continue; context = () })
     in
 
     Server.connection_handler ~goaway_writer ~error_handler
