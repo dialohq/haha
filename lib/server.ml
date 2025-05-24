@@ -22,7 +22,6 @@ let process_data_frame (state : _ state) { Frame.stream_id; flags; _ } bs :
   let end_stream = Flags.test_end_stream flags in
   match (Streams.state_of_id state.streams stream_id, end_stream) with
   | Idle, _ | HalfClosed (Remote _), _ ->
-      Printf.printf "Sending StreamClosed on stream %li\n%!" stream_id;
       stream_error stream_id Error_code.StreamClosed
   | Reserved _, _ ->
       connection_error Error_code.ProtocolError
@@ -262,72 +261,68 @@ let process_complete_headers request_handler (state : _ state)
           connection_error Error_code.StreamClosed
             "HEADERS received on closed stream")
 
+let response_writer_handler response_writer reader_opt id error_handler context
+    =
+  let open Writer in
+  let response = response_writer () in
+
+  fun (state : _ state) ->
+    write_headers_response state.writer state.hpack_encoder id response;
+    match response with
+    | `Final { body_writer = Some body_writer; _ } ->
+        write_window_update state.writer id
+          Flow_control.WindowSize.initial_increment;
+        {
+          state with
+          streams = Streams.change_writer state.streams id body_writer;
+        }
+    | `Final { body_writer = None; _ } ->
+        write_window_update state.writer id
+          Flow_control.WindowSize.initial_increment;
+        let new_stream_state =
+          match reader_opt with
+          | None -> Streams.Stream.Closed
+          | Some readers ->
+              HalfClosed (Local { readers; error_handler; context })
+        in
+        {
+          state with
+          streams = Streams.stream_transition state.streams id new_stream_state;
+        }
+    | `Interim _ -> state
+
+let get_response_writers state =
+  let response_writers = Streams.response_writers state.State.streams in
+
+  List.map
+    (fun (response_writer, reader_opt, id, error_handler, context) () state ->
+      response_writer_handler response_writer reader_opt id error_handler
+        context state)
+    response_writers
+
+let get_body_writers state =
+  Streams.body_writers (`Server state.State.streams)
+  |> List.map (fun (f, id) () ->
+         let handler = body_writer_handler f id in
+         fun state -> handler state)
+
 let connection_handler :
     'c.
-    ?debug:bool ->
     ?config:Settings.t ->
     ?goaway_writer:(unit -> unit) ->
     error_handler:(Error.connection_error -> unit) ->
     (Reqd.t -> 'c Reqd.handler) ->
     _ Eio.Resource.t ->
     _ =
- fun ?(debug = false) ?(config = Settings.default) ?goaway_writer ~error_handler
-     request_handler socket _ ->
+ fun ?(config = Settings.default) ?goaway_writer ~error_handler request_handler
+     socket _ ->
   let frame_handler =
     frame_handler
       ~process_complete_headers:(process_complete_headers request_handler)
       ~process_data_frame
   in
 
-  let response_writer_handler response_writer reader_opt id error_handler
-      context =
-    let open Writer in
-    let response = response_writer () in
-
-    fun (state : _ state) ->
-      write_headers_response state.writer state.hpack_encoder id response;
-      match response with
-      | `Final { body_writer = Some body_writer; _ } ->
-          write_window_update state.writer id
-            Flow_control.WindowSize.initial_increment;
-          {
-            state with
-            streams = Streams.change_writer state.streams id body_writer;
-          }
-      | `Final { body_writer = None; _ } ->
-          write_window_update state.writer id
-            Flow_control.WindowSize.initial_increment;
-          let new_stream_state =
-            match reader_opt with
-            | None -> Streams.Stream.Closed
-            | Some readers ->
-                HalfClosed (Local { readers; error_handler; context })
-          in
-          {
-            state with
-            streams =
-              Streams.stream_transition state.streams id new_stream_state;
-          }
-      | `Interim _ -> state
-  in
-  let get_response_writers state =
-    let response_writers = Streams.response_writers state.State.streams in
-
-    List.map
-      (fun (response_writer, reader_opt, id, error_handler, context) () state ->
-        response_writer_handler response_writer reader_opt id error_handler
-          context state)
-      response_writers
-  in
-
-  let get_body_writers state =
-    Streams.body_writers (`Server state.State.streams)
-    |> List.map (fun (f, id) () ->
-           let handler = body_writer_handler f id in
-           fun state -> handler state)
-  in
-
-  let user_functions_handlers state =
+  let user_events_handlers state =
     let writers =
       List.concat [ get_response_writers state; get_body_writers state ]
     in
@@ -365,8 +360,8 @@ let connection_handler :
   in
 
   let initial_step =
-    start ~receive_buffer ~frame_handler ~initial_state_result ~debug
-      ~user_functions_handlers socket
+    start ~receive_buffer ~frame_handler ~initial_state_result
+      ~user_events_handlers socket
   in
 
   let rec loop : _ interation -> unit =

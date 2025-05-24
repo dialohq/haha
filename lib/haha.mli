@@ -168,7 +168,6 @@ end
 module Server : sig
   val connection_handler :
     'context.
-    ?debug:bool ->
     ?config:Settings.t ->
     ?goaway_writer:(unit -> unit) ->
     error_handler:(Error.connection_error -> unit) ->
@@ -186,7 +185,6 @@ module Client : sig
 
   val connect :
     'context.
-    ?debug:bool ->
     ?config:Settings.t ->
     request_writer:'context Request.request_writer ->
     [> `Flow | `R | `W ] Eio.Resource.t ->

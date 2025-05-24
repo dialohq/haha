@@ -303,9 +303,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
           "unexpected frame other than CONTINUATION in the middle of headers \
            block"
 
-let body_writer_handler ?(debug = false)
-    (f : unit -> _ Types.body_writer_fragment) id =
-  let _ = debug in
+let body_writer_handler (f : unit -> _ Types.body_writer_fragment) id =
   let res, on_flush, new_context = f () in
 
   fun (state : ('a, 'b, 'c) State.t) ->
@@ -499,18 +497,17 @@ let start :
       (('a, 'b, 'c) t * Cstruct.t, Error.connection_error) result ->
     frame_handler:(Frame.t -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t step) ->
     receive_buffer:Cstruct.t ->
-    user_functions_handlers:
+    user_events_handlers:
       (('a, 'b, 'c) t -> (unit -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t step) list) ->
-    debug:bool ->
     _ Eio.Resource.t ->
     'c Types.iteration =
- fun ~initial_state_result ~frame_handler ~receive_buffer
-     ~user_functions_handlers ~debug:_ socket ->
+ fun ~initial_state_result ~frame_handler ~receive_buffer ~user_events_handlers
+     socket ->
   let rec process_events : ('a, 'b, 'c) t -> 'c Types.iteration =
    fun state ->
     let events =
       read_loop ~receive_buffer ~socket ~frame_handler state.read_off
-      :: user_functions_handlers state
+      :: user_events_handlers state
     in
 
     finalize_iteration socket process_events
