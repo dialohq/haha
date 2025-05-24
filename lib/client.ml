@@ -318,77 +318,76 @@ let process_complete_headers (state : _ state) { Frame.flags; stream_id; _ }
           connection_error Error_code.StreamClosed
             "HEADERS received on closed stream")
 
+let request_writer_handler request_writer =
+ fun () ->
+  let req_opt = request_writer () in
+
+  fun (state : _ state) ->
+    match req_opt with
+    | None ->
+        Writer.write_goaway state.writer state.streams.last_peer_stream
+          Error_code.NoError;
+        let new_state = { state with shutdown = true } in
+        new_state
+    | Some
+        ({
+           Request.response_handler;
+           body_writer;
+           error_handler;
+           initial_context;
+           _;
+         } as request) ->
+        let id = Streams.get_next_id state.streams `Client in
+        Writer.writer_request_headers state.writer state.hpack_encoder id
+          request;
+        Writer.write_window_update state.writer id
+          Flow_control.WindowSize.initial_increment;
+        let stream_state : _ stream_state =
+          match body_writer with
+          | Some body_writer ->
+              Streams.Stream.Open
+                {
+                  readers = AwaitingResponse response_handler;
+                  writers = body_writer;
+                  error_handler;
+                  context = initial_context;
+                }
+          | None ->
+              HalfClosed
+                (Local
+                   {
+                     readers = AwaitingResponse response_handler;
+                     error_handler;
+                     context = initial_context;
+                   })
+        in
+        {
+          state with
+          streams =
+            Streams.stream_transition state.streams id stream_state
+            |> Streams.update_last_local_stream id;
+        }
+
+let get_body_writers state =
+  Streams.body_writers (`Client state.State.streams)
+  |> List.map (fun (f, id) () ->
+         let handler = body_writer_handler f id in
+         fun state -> handler state)
+
 let connect :
     'c.
-    ?debug:bool ->
     ?config:Settings.t ->
     request_writer:'c Request.request_writer ->
     _ Eio.Resource.t ->
     'c iteration =
- fun ?(debug = false) ?(config = Settings.default) ~request_writer socket ->
+ fun ?(config = Settings.default) ~request_writer socket ->
   let frame_handler =
     frame_handler ~process_complete_headers ~process_data_frame
   in
-  let request_writer_handler () =
-    let req_opt = request_writer () in
 
-    fun (state : _ state) ->
-      match req_opt with
-      | None ->
-          Writer.write_goaway state.writer state.streams.last_peer_stream
-            Error_code.NoError;
-          let new_state = { state with shutdown = true } in
-          new_state
-      | Some
-          ({
-             Request.response_handler;
-             body_writer;
-             error_handler;
-             initial_context;
-             _;
-           } as request) ->
-          let id = Streams.get_next_id state.streams `Client in
-          Writer.writer_request_headers state.writer state.hpack_encoder id
-            request;
-          Writer.write_window_update state.writer id
-            Flow_control.WindowSize.initial_increment;
-          let stream_state : _ stream_state =
-            match body_writer with
-            | Some body_writer ->
-                Streams.Stream.Open
-                  {
-                    readers = AwaitingResponse response_handler;
-                    writers = body_writer;
-                    error_handler;
-                    context = initial_context;
-                  }
-            | None ->
-                HalfClosed
-                  (Local
-                     {
-                       readers = AwaitingResponse response_handler;
-                       error_handler;
-                       context = initial_context;
-                     })
-          in
-          {
-            state with
-            streams =
-              Streams.stream_transition state.streams id stream_state
-              |> Streams.update_last_local_stream id;
-          }
-  in
-
-  let get_body_writers state =
-    Streams.body_writers (`Client state.State.streams)
-    |> List.map (fun (f, id) () ->
-           let handler = body_writer_handler ~debug f id in
-           fun state -> handler state)
-  in
-
-  let user_functions_handlers state =
+  let user_events_handlers state =
     (match state.State.shutdown with
-    | false -> request_writer_handler :: get_body_writers state
+    | false -> request_writer_handler request_writer :: get_body_writers state
     | true -> get_body_writers state)
     |> List.map (fun f () ->
            let handler = f () in
@@ -414,5 +413,5 @@ let connect :
     | Error exn -> Error (Exn exn)
   in
 
-  start ~frame_handler ~receive_buffer ~initial_state_result ~debug
-    ~user_functions_handlers socket
+  start ~frame_handler ~receive_buffer ~initial_state_result
+    ~user_events_handlers socket
