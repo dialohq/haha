@@ -66,53 +66,66 @@ let () =
               incr iterations)
           in
 
-          let body_writer _ ~window_size:_ =
+          let body_writer _ ~window_size:_ : _ Types.body_writer_result =
             match take_data () with
-            | None -> (`End (None, []), ignore, ())
+            | None ->
+                { payload = `End (None, []); on_flush = ignore; context = () }
             | Some data ->
                 Cstruct.LE.set_uint64 cs 8
                   (Eio.Time.now env#clock |> Int64.bits_of_float);
                 Cstruct.blit data 0 cs 0 8;
-                (`Data [ cs ], ignore, ())
+                { payload = `Data [ cs ]; on_flush = ignore; context = () }
           in
 
-          Reqd.handle ~context:()
-            ~error_handler:(fun c code ->
-              Format.printf "Stream error, %a@." Error_code.pp_hum code;
-              c)
-            ~response_writer:(fun () ->
-              Printf.printf "response_writer called\n%!";
-              match Dynarray.pop_last_opt interim_responses with
-              | Some response -> `Interim response
-              | None ->
-                  let response =
-                    Response.create_with_streaming ~body_writer `OK []
-                  in
-                  `Final response)
-            ~on_data:(fun _ data ->
-              match data with
-              | `Data cs ->
-                  Printf.printf "Received %i bytes\n%!" cs.Cstruct.len;
-                  { action = `Continue; context = put_data cs }
-              | `End (Some cs, _) ->
-                  Cstruct.hexdump cs;
-                  Printf.printf "Peer EOF\n%!";
-                  { action = `Continue; context = put_data cs }
-              | `End _ ->
-                  Printf.printf "Peer EOF\n%!";
-                  { action = `Continue; context = () })
+          {
+            Reqd.initial_context = ();
+            error_handler =
+              (fun c code ->
+                Format.printf "Stream error, %a@." Error_code.pp_hum code;
+                c);
+            response_writer =
+              (fun () ->
+                Printf.printf "response_writer called\n%!";
+                match Dynarray.pop_last_opt interim_responses with
+                | Some response -> `Interim response
+                | None ->
+                    let response =
+                      Response.create_with_streaming ~body_writer `OK []
+                    in
+                    `Final response);
+            on_data =
+              (fun _ data ->
+                match data with
+                | `Data cs ->
+                    Printf.printf "Received %i bytes\n%!" cs.Cstruct.len;
+                    { action = `Continue; context = put_data cs }
+                | `End (Some cs, _) ->
+                    Cstruct.hexdump cs;
+                    Printf.printf "Peer EOF\n%!";
+                    { action = `Continue; context = put_data cs }
+                | `End _ ->
+                    Printf.printf "Peer EOF\n%!";
+                    { action = `Continue; context = () });
+          }
       | POST, "/" ->
-          let body_writer _ ~window_size:_ = (`End (None, []), ignore, ()) in
-          Reqd.handle ~context:()
-            ~error_handler:(fun c _ -> c)
-            ~response_writer:(fun () ->
-              `Final (Response.create_with_streaming ~body_writer `OK []))
-            ~on_data:(fun _ _ -> { action = `Continue; context = () })
+          let body_writer _ ~window_size:_ =
+            { Types.payload = `End (None, []); on_flush = ignore; context = () }
+          in
+          {
+            initial_context = ();
+            error_handler = (fun c _ -> c);
+            response_writer =
+              (fun () ->
+                `Final (Response.create_with_streaming ~body_writer `OK []));
+            on_data = (fun _ _ -> { action = `Continue; context = () });
+          }
       | _ ->
-          Reqd.handle ~context:()
-            ~error_handler:(fun c _ -> c)
-            ~response_writer:(fun () -> `Final (Response.create `Not_found []))
-            ~on_data:(fun _ _ -> { action = `Continue; context = () })
+          {
+            initial_context = ();
+            error_handler = (fun c _ -> c);
+            response_writer = (fun () -> `Final (Response.create `Not_found []));
+            on_data = (fun _ _ -> { action = `Continue; context = () });
+          }
     in
 
     Server.connection_handler ~goaway_writer ~error_handler

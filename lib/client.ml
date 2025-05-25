@@ -75,7 +75,7 @@ let process_data_frame (state : _ state) { Frame.flags; stream_id; _ } bs :
               final_contexts = (stream_id, new_context) :: state.final_contexts;
             })
   | HalfClosed (Local { readers = BodyStream reader; context; _ }), true ->
-      let { Types.context = new_context; _ } =
+      let { Types.context = new_context; _ } : _ Types.body_reader_result =
         reader context (`End (Some (Cstruct.of_bigarray bs), []))
       in
 
@@ -182,7 +182,7 @@ let process_complete_headers (state : _ state) { Frame.flags; stream_id; _ }
                     (stream_id, new_context) :: state.final_contexts;
                 })
       | HalfClosed (Local { readers = BodyStream reader; context; _ }) ->
-          let { Types.context = new_context; _ } =
+          let { Types.context = new_context; _ } : _ Types.body_reader_result =
             reader context (`End (None, header_list))
           in
 
