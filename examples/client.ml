@@ -16,9 +16,9 @@ let () =
     Eio.Promise.await p
   in
 
-  let body_writer counter ~window_size:_ =
-    let took = Eio.Stream.take data_stream in
-    (fst took, snd took, counter + 1)
+  let body_writer counter ~window_size:_ : _ Types.body_writer_result =
+    let payload, on_flush = Eio.Stream.take data_stream in
+    { payload; on_flush; context = counter + 1 }
   in
 
   let response_handler context (response : int Response.t) =

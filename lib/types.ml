@@ -11,15 +11,19 @@ and 'context iteration = {
 type body_reader_fragment =
   [ `Data of Cstruct.t | `End of Cstruct.t option * Header.t list ]
 
+type 'context body_reader_result = {
+  action : [ `Continue | `Reset ];
+  context : 'context;
+}
+
 type 'context body_writer_fragment =
   [ `Data of Cstruct.t list
   | `End of Cstruct.t list option * Header.t list
   | `Yield ]
-  * (unit -> unit)
-  * 'context
 
-type 'context body_reader_result = {
-  action : [ `Continue | `Reset ];
+type 'context body_writer_result = {
+  payload : 'context body_writer_fragment;
+  on_flush : unit -> unit;
   context : 'context;
 }
 
@@ -27,4 +31,4 @@ type 'context body_reader =
   'context -> body_reader_fragment -> 'context body_reader_result
 
 type 'context body_writer =
-  'context -> window_size:int32 -> 'context body_writer_fragment
+  'context -> window_size:int32 -> 'context body_writer_result

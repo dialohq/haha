@@ -76,7 +76,7 @@ let process_data_frame (state : _ state) { Frame.stream_id; flags; _ } bs :
               final_contexts = (stream_id, new_context) :: state.final_contexts;
             })
   | HalfClosed (Local { readers; context; _ }), true ->
-      let { Types.context = new_context; _ } =
+      let { Types.context = new_context; _ } : _ Types.body_reader_result =
         readers context (`End (Some (Cstruct.of_bigarray bs), []))
       in
       let streams =
@@ -143,8 +143,8 @@ let process_data_frame (state : _ state) { Frame.stream_id; flags; _ } bs :
               final_contexts = (stream_id, new_context) :: state.final_contexts;
             })
 
-let process_complete_headers request_handler (state : _ state)
-    { Frame.flags; stream_id; _ } header_list : _ step =
+let process_complete_headers (request_handler : _ Reqd.handler)
+    (state : _ state) { Frame.flags; stream_id; _ } header_list : _ step =
   let connection_error = step_connection_error state in
   let stream_error = step_stream_error state in
   let end_stream = Flags.test_end_stream flags in
@@ -183,7 +183,7 @@ let process_complete_headers request_handler (state : _ state)
                     (stream_id, new_context) :: state.final_contexts;
                 })
       | HalfClosed (Local { readers; context; _ }) ->
-          let { Types.context = new_context; _ } =
+          let { Types.context = new_context; _ } : _ Types.body_reader_result =
             readers context (`End (None, header_list))
           in
           let streams =
@@ -219,7 +219,12 @@ let process_complete_headers request_handler (state : _ state)
               }
             in
 
-            let readers, response_writer, error_handler, initial_context =
+            let {
+              Reqd.on_data = readers;
+              response_writer;
+              error_handler;
+              initial_context;
+            } =
               request_handler reqd
             in
 
@@ -311,7 +316,7 @@ let connection_handler :
     ?config:Settings.t ->
     ?goaway_writer:(unit -> unit) ->
     error_handler:(Error.connection_error -> unit) ->
-    (Reqd.t -> 'c Reqd.handler) ->
+    'c Reqd.handler ->
     _ Eio.Resource.t ->
     _ =
  fun ?(config = Settings.default) ?goaway_writer ~error_handler request_handler

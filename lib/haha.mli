@@ -40,15 +40,19 @@ module Types : sig
   type body_reader_fragment =
     [ `Data of Cstruct.t | `End of Cstruct.t option * Header.t list ]
 
+  type 'context body_reader_result = {
+    action : [ `Continue | `Reset ];
+    context : 'context;
+  }
+
   type 'context body_writer_fragment =
     [ `Data of Cstruct.t list
     | `End of Cstruct.t list option * Header.t list
     | `Yield ]
-    * (unit -> unit)
-    * 'context
 
-  type 'context body_reader_result = {
-    action : [ `Continue | `Reset ];
+  type 'context body_writer_result = {
+    payload : 'context body_writer_fragment;
+    on_flush : unit -> unit;
     context : 'context;
   }
 
@@ -56,7 +60,7 @@ module Types : sig
     'context -> body_reader_fragment -> 'context body_reader_result
 
   type 'context body_writer =
-    'context -> window_size:int32 -> 'context body_writer_fragment
+    'context -> window_size:int32 -> 'context body_writer_result
 end
 
 module Method = Method
@@ -147,22 +151,21 @@ end
 module Reqd : sig
   open Types
 
+  type 'context handler_result = {
+    on_data : 'context body_reader;
+    response_writer : 'context Response.response_writer;
+    error_handler : 'context -> Error_code.t -> 'context;
+    initial_context : 'context;
+  }
+
   type t
-  type 'context handler
+  type 'context handler = t -> 'context handler_result
 
   val path : t -> string
   val meth : t -> Method.t
   val scheme : t -> string
   val authority : t -> string option
   val headers : t -> Header.t list
-
-  val handle :
-    'context.
-    context:'context ->
-    response_writer:(unit -> 'context Response.t) ->
-    error_handler:('context -> Error_code.t -> 'context) ->
-    on_data:'context body_reader ->
-    'context handler
 end
 
 module Server : sig
@@ -171,7 +174,7 @@ module Server : sig
     ?config:Settings.t ->
     ?goaway_writer:(unit -> unit) ->
     error_handler:(Error.connection_error -> unit) ->
-    (Reqd.t -> 'context Reqd.handler) ->
+    'context Reqd.handler ->
     [> `Flow | `R | `W ] Eio.Resource.t ->
     Eio.Net.Sockaddr.stream ->
     unit
