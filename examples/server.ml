@@ -66,7 +66,7 @@ let () =
               incr iterations)
           in
 
-          let body_writer _ ~window_size:_ : _ Types.body_writer_result =
+          let body_writer _ ~window_size:_ : _ Body.writer_result =
             match take_data () with
             | None ->
                 { payload = `End (None, []); on_flush = ignore; context = () }
@@ -109,7 +109,7 @@ let () =
           }
       | POST, "/" ->
           let body_writer _ ~window_size:_ =
-            { Types.payload = `End (None, []); on_flush = ignore; context = () }
+            { Body.payload = `End (None, []); on_flush = ignore; context = () }
           in
           {
             initial_context = ();

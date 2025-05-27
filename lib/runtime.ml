@@ -303,8 +303,8 @@ let frame_handler ~process_complete_headers ~process_data_frame
           "unexpected frame other than CONTINUATION in the middle of headers \
            block"
 
-let body_writer_handler (f : unit -> _ Types.body_writer_result) id =
-  let { Types.payload = res; on_flush; context = new_context } = f () in
+let body_writer_handler (f : unit -> _ Body.writer_result) id =
+  let { Body.payload = res; on_flush; context = new_context } = f () in
 
   fun (state : ('a, 'b, 'c) State.t) ->
     let state =

@@ -1,4 +1,4 @@
-open Types
+open Body
 
 type 'context final_response = {
   status : Status.t;

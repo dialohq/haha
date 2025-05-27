@@ -12,3 +12,4 @@ module Client = Client
 module Types = Types
 module Runtime = Runtime
 module Reqd = Reqd
+module Body = Body
