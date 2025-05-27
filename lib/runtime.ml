@@ -510,8 +510,10 @@ let start :
       :: user_events_handlers state
     in
 
-    finalize_iteration socket process_events
-    @@ (Eio.Fiber.any ~combine:combine_steps events) state
+    let next_step = Eio.Fiber.any ~combine:combine_steps events in
+
+    Eio.Cancel.protect @@ fun () ->
+    finalize_iteration socket process_events (next_step state)
   in
 
   match initial_state_result with
