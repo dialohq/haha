@@ -17,9 +17,7 @@ type 'context body_reader_result = {
 }
 
 type 'context body_writer_fragment =
-  [ `Data of Cstruct.t list
-  | `End of Cstruct.t list option * Header.t list
-  | `Yield ]
+  [ `Data of Cstruct.t list | `End of Cstruct.t list option * Header.t list ]
 
 type 'context body_writer_result = {
   payload : 'context body_writer_fragment;
