@@ -1,4 +1,5 @@
 open Runtime
+open Body
 
 type 'context state =
   ( 'context Streams.server_reader,
@@ -30,7 +31,7 @@ let process_data_frame (state : _ state) { Frame.stream_id; flags; _ } bs :
       connection_error Error_code.StreamClosed
         "DATA frame received on closed stream!"
   | Open { readers; writers; error_handler; context }, true -> (
-      let { Types.action; context = new_context } =
+      let { action; context = new_context } =
         readers context (`End (Some (Cstruct.of_bigarray bs), []))
       in
       match action with
@@ -76,7 +77,7 @@ let process_data_frame (state : _ state) { Frame.stream_id; flags; _ } bs :
               final_contexts = (stream_id, new_context) :: state.final_contexts;
             })
   | HalfClosed (Local { readers; context; _ }), true ->
-      let { Types.context = new_context; _ } : _ Types.body_reader_result =
+      let { context = new_context; _ } : _ reader_result =
         readers context (`End (Some (Cstruct.of_bigarray bs), []))
       in
       let streams =
@@ -110,7 +111,7 @@ let process_data_frame (state : _ state) { Frame.stream_id; flags; _ } bs :
              stream_id
              (Bigstringaf.length bs |> Int32.of_int)
       in
-      let { Types.action; context = new_context } =
+      let { action; context = new_context } =
         readers context (`Data (Cstruct.of_bigarray bs))
       in
       match action with
@@ -158,7 +159,7 @@ let process_complete_headers (request_handler : _ Reqd.handler)
   | true, No_pseudo -> (
       match stream_state with
       | Open { readers; writers; error_handler; context } -> (
-          let { Types.action; context = new_context } =
+          let { action; context = new_context } =
             readers context (`End (None, header_list))
           in
           match action with
@@ -183,7 +184,7 @@ let process_complete_headers (request_handler : _ Reqd.handler)
                     (stream_id, new_context) :: state.final_contexts;
                 })
       | HalfClosed (Local { readers; context; _ }) ->
-          let { Types.context = new_context; _ } : _ Types.body_reader_result =
+          let { context = new_context; _ } : _ reader_result =
             readers context (`End (None, header_list))
           in
           let streams =

@@ -1,4 +1,4 @@
-open Types
+open Body
 module StreamMap = Map.Make (Int32)
 
 type 'context server_writers =

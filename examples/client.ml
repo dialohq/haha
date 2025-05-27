@@ -16,7 +16,7 @@ let () =
     Eio.Promise.await p
   in
 
-  let body_writer counter ~window_size:_ : _ Types.body_writer_result =
+  let body_writer counter ~window_size:_ : _ Body.writer_result =
     let payload, on_flush = Eio.Stream.take data_stream in
     { payload; on_flush; context = counter + 1 }
   in
@@ -33,14 +33,14 @@ let () =
               | `Data _cs ->
                   let new_count = counter + 1 in
                   Printf.printf "Data receiving, counting %i\n%!" new_count;
-                  { Types.action = `Continue; context = new_count }
+                  { Body.action = `Continue; context = new_count }
               | `End (Some _cs, _) ->
                   (* Cstruct.hexdump cs; *)
                   Printf.printf "Peer EOF, counted %i\n%!" counter;
-                  { Types.action = `Continue; context = counter }
+                  { action = `Continue; context = counter }
               | `End _ ->
                   Printf.printf "Peer EOF, counted %i\n%!" counter;
-                  { Types.action = `Continue; context = counter }),
+                  { action = `Continue; context = counter }),
           context )
     (* | `Final _ -> (None, context) *)
   in

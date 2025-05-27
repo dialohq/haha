@@ -26,6 +26,31 @@ module Header : sig
       name [name], or [None] if no header name is present. *)
 end
 
+module Body : sig
+  type reader_fragment =
+    [ `Data of Cstruct.t | `End of Cstruct.t option * Header.t list ]
+
+  type 'context reader_result = {
+    action : [ `Continue | `Reset ];
+    context : 'context;
+  }
+
+  type 'context writer_fragment =
+    [ `Data of Cstruct.t list | `End of Cstruct.t list option * Header.t list ]
+
+  type 'context writer_result = {
+    payload : 'context writer_fragment;
+    on_flush : unit -> unit;
+    context : 'context;
+  }
+
+  type 'context body_reader =
+    'context -> reader_fragment -> 'context reader_result
+
+  type 'context body_writer =
+    'context -> window_size:int32 -> 'context writer_result
+end
+
 module Types : sig
   type 'context state =
     | InProgress of (unit -> 'context iteration)
@@ -36,36 +61,13 @@ module Types : sig
     state : 'context state;
     closed_ctxs : (int32 * 'context) list;
   }
-
-  type body_reader_fragment =
-    [ `Data of Cstruct.t | `End of Cstruct.t option * Header.t list ]
-
-  type 'context body_reader_result = {
-    action : [ `Continue | `Reset ];
-    context : 'context;
-  }
-
-  type 'context body_writer_fragment =
-    [ `Data of Cstruct.t list | `End of Cstruct.t list option * Header.t list ]
-
-  type 'context body_writer_result = {
-    payload : 'context body_writer_fragment;
-    on_flush : unit -> unit;
-    context : 'context;
-  }
-
-  type 'context body_reader =
-    'context -> body_reader_fragment -> 'context body_reader_result
-
-  type 'context body_writer =
-    'context -> window_size:int32 -> 'context body_writer_result
 end
 
 module Method = Method
 module Status = Status
 
 module Response : sig
-  open Types
+  open Body
 
   type 'context final_response
   (** The type representing the final HEADERS resposne sent by the server,
@@ -111,8 +113,6 @@ module Response : sig
 end
 
 module Request : sig
-  open Types
-
   type 'context t
   type 'context request_writer = unit -> 'context t option
 
@@ -136,7 +136,7 @@ module Request : sig
   val create_with_streaming :
     ?authority:string ->
     ?scheme:string ->
-    body_writer:'context body_writer ->
+    body_writer:'context Body.body_writer ->
     context:'context ->
     response_handler:'context Response.handler ->
     error_handler:('context -> Error_code.t -> 'context) ->
@@ -147,10 +147,8 @@ module Request : sig
 end
 
 module Reqd : sig
-  open Types
-
   type 'context handler_result = {
-    on_data : 'context body_reader;
+    on_data : 'context Body.body_reader;
     response_writer : 'context Response.response_writer;
     error_handler : 'context -> Error_code.t -> 'context;
     initial_context : 'context;

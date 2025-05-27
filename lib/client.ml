@@ -1,4 +1,5 @@
 open Runtime
+open Body
 
 type 'context state =
   ( 'context Streams.client_readers,
@@ -33,7 +34,7 @@ let process_data_frame (state : _ state) { Frame.flags; stream_id; _ } bs :
       stream_error stream_id Error_code.ProtocolError
   | Open { readers = BodyStream reader; writers; error_handler; context }, true
     -> (
-      let { Types.action; context = new_context } =
+      let { action; context = new_context } =
         reader context (`End (Some (Cstruct.of_bigarray bs), []))
       in
       match action with
@@ -75,7 +76,7 @@ let process_data_frame (state : _ state) { Frame.flags; stream_id; _ } bs :
               final_contexts = (stream_id, new_context) :: state.final_contexts;
             })
   | HalfClosed (Local { readers = BodyStream reader; context; _ }), true ->
-      let { Types.context = new_context; _ } : _ Types.body_reader_result =
+      let { context = new_context; _ } : _ reader_result =
         reader context (`End (Some (Cstruct.of_bigarray bs), []))
       in
 
@@ -110,7 +111,7 @@ let process_data_frame (state : _ state) { Frame.flags; stream_id; _ } bs :
              stream_id
              (Bigstringaf.length bs |> Int32.of_int)
       in
-      let { Types.action; context = new_context } =
+      let { action; context = new_context } =
         reader context (`Data (Cstruct.of_bigarray bs))
       in
       match action with
@@ -157,7 +158,7 @@ let process_complete_headers (state : _ state) { Frame.flags; stream_id; _ }
       match stream_state with
       | Open { readers = BodyStream reader; writers; error_handler; context }
         -> (
-          let { Types.action; context = new_context } =
+          let { action; context = new_context } =
             reader context (`End (None, header_list))
           in
           match action with
@@ -182,7 +183,7 @@ let process_complete_headers (state : _ state) { Frame.flags; stream_id; _ }
                     (stream_id, new_context) :: state.final_contexts;
                 })
       | HalfClosed (Local { readers = BodyStream reader; context; _ }) ->
-          let { Types.context = new_context; _ } : _ Types.body_reader_result =
+          let { context = new_context; _ } : _ reader_result =
             reader context (`End (None, header_list))
           in
 
