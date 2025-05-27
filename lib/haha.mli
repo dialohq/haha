@@ -45,7 +45,7 @@ module Body : sig
   }
 
   type 'context reader = 'context -> reader_payload -> 'context reader_result
-  type 'context writer = 'context -> window_size:int32 -> 'context writer_result
+  type 'context writer = 'context -> 'context writer_result
 end
 
 module Types : sig
