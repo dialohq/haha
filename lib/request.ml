@@ -4,7 +4,7 @@ type 'context t = {
   authority : string option;
   scheme : string;
   headers : Header.t list;
-  body_writer : 'context Body.body_writer option;
+  body_writer : 'context Body.writer option;
   response_handler : 'context Response.handler;
   error_handler : 'context -> Error_code.t -> 'context;
   initial_context : 'context;

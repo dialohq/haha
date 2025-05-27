@@ -7,7 +7,7 @@ type t = {
 }
 
 type 'context handler_result = {
-  on_data : 'context Body.body_reader;
+  on_data : 'context Body.reader;
   response_writer : 'context Response.response_writer;
   error_handler : 'context -> Error_code.t -> 'context;
   initial_context : 'context;
