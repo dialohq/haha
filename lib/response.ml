@@ -3,7 +3,7 @@ open Body
 type 'context final_response = {
   status : Status.t;
   headers : Header.t list;
-  body_writer : 'context body_writer option;
+  body_writer : 'context writer option;
 }
 
 type 'context interim_response = {
@@ -15,7 +15,7 @@ type 'context t =
   [ `Interim of 'context interim_response | `Final of 'context final_response ]
 
 type 'context handler =
-  'context -> 'context t -> 'context body_reader option * 'context
+  'context -> 'context t -> 'context reader option * 'context
 
 type 'context response_writer = unit -> 'context t
 
@@ -33,6 +33,6 @@ let create_interim (status : Status.informational) (headers : Header.t list) :
     'context interim_response =
   { status; headers }
 
-let create_with_streaming ~(body_writer : 'context body_writer)
-    (status : Status.t) (headers : Header.t list) : 'context final_response =
+let create_with_streaming ~(body_writer : 'context writer) (status : Status.t)
+    (headers : Header.t list) : 'context final_response =
   { status; headers; body_writer = Some body_writer }

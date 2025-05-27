@@ -2,7 +2,7 @@ open Body
 module StreamMap = Map.Make (Int32)
 
 type 'context server_writers =
-  | BodyStream of 'context body_writer
+  | BodyStream of 'context writer
   | WritingResponse of 'context Response.response_writer
 
 let pp_hum_server_writers fmt = function
@@ -10,7 +10,7 @@ let pp_hum_server_writers fmt = function
   | WritingResponse _ -> Format.fprintf fmt "WritingResponse <response_writer>"
 
 type 'context client_readers =
-  | BodyStream of 'context body_reader
+  | BodyStream of 'context reader
   | AwaitingResponse of 'context Response.handler
 
 let pp_hum_client_readers fmt = function
@@ -18,8 +18,8 @@ let pp_hum_client_readers fmt = function
   | AwaitingResponse _ ->
       Format.fprintf fmt "AwaitingResponse <response_handler>"
 
-type 'context client_writer = 'context body_writer
-type 'context server_reader = 'context body_reader
+type 'context client_writer = 'context writer
+type 'context server_reader = 'context reader
 
 let pp_hum_client_writer fmt (_ : _ client_writer) =
   Format.fprintf fmt "BodyStream <body_writer>"

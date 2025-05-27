@@ -27,7 +27,7 @@ module Header : sig
 end
 
 module Body : sig
-  type reader_fragment =
+  type reader_payload =
     [ `Data of Cstruct.t | `End of Cstruct.t option * Header.t list ]
 
   type 'context reader_result = {
@@ -35,20 +35,17 @@ module Body : sig
     context : 'context;
   }
 
-  type 'context writer_fragment =
+  type 'context writer_payload =
     [ `Data of Cstruct.t list | `End of Cstruct.t list option * Header.t list ]
 
   type 'context writer_result = {
-    payload : 'context writer_fragment;
+    payload : 'context writer_payload;
     on_flush : unit -> unit;
     context : 'context;
   }
 
-  type 'context body_reader =
-    'context -> reader_fragment -> 'context reader_result
-
-  type 'context body_writer =
-    'context -> window_size:int32 -> 'context writer_result
+  type 'context reader = 'context -> reader_payload -> 'context reader_result
+  type 'context writer = 'context -> window_size:int32 -> 'context writer_result
 end
 
 module Types : sig
@@ -93,7 +90,7 @@ module Response : sig
       [interim_response]. *)
 
   type 'context handler =
-    'context -> 'context t -> 'context body_reader option * 'context
+    'context -> 'context t -> 'context reader option * 'context
 
   type 'context response_writer = unit -> 'context t
   (** The type of the callback function for writing response [t]. *)
@@ -106,7 +103,7 @@ module Response : sig
     Status.informational -> Header.t list -> 'context interim_response
 
   val create_with_streaming :
-    body_writer:'context body_writer ->
+    body_writer:'context writer ->
     Status.t ->
     Header.t list ->
     'context final_response
@@ -136,7 +133,7 @@ module Request : sig
   val create_with_streaming :
     ?authority:string ->
     ?scheme:string ->
-    body_writer:'context Body.body_writer ->
+    body_writer:'context Body.writer ->
     context:'context ->
     response_handler:'context Response.handler ->
     error_handler:('context -> Error_code.t -> 'context) ->
@@ -148,7 +145,7 @@ end
 
 module Reqd : sig
   type 'context handler_result = {
-    on_data : 'context Body.body_reader;
+    on_data : 'context Body.reader;
     response_writer : 'context Response.response_writer;
     error_handler : 'context -> Error_code.t -> 'context;
     initial_context : 'context;
