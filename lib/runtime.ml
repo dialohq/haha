@@ -401,7 +401,6 @@ let body_writer_handler (f : unit -> _ Types.body_writer_result) id =
               streams = Streams.(stream_transition state.streams id Closed);
               final_contexts = (id, new_context) :: state.final_contexts;
             })
-    | `Yield -> Eio.Fiber.await_cancel ()
 
 let user_goaway_handler ~f =
   f ();
