@@ -325,8 +325,7 @@ let body_writers t =
           | Open { writers = BodyStream body_writer; context; _ }
           | HalfClosed (Remote { writers = BodyStream body_writer; context; _ })
             ->
-              ((fun () -> body_writer context ~window_size:v.flow.out_flow), id)
-              :: acc
+              ((fun () -> body_writer context), id) :: acc
           | _ -> acc)
         t.map []
   | `Client t ->
@@ -335,8 +334,7 @@ let body_writers t =
           match v.state with
           | Open { writers = body_writer; context; _ }
           | HalfClosed (Remote { writers = body_writer; context; _ }) ->
-              ((fun () -> body_writer context ~window_size:v.flow.out_flow), id)
-              :: acc
+              ((fun () -> body_writer context), id) :: acc
           | _ -> acc)
         t.map []
 
