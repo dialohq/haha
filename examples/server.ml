@@ -118,14 +118,14 @@ let () =
             response_writer =
               (fun () ->
                 `Final (Response.create_with_streaming ~body_writer `OK []));
-            on_data = (fun _ _ -> { action = `Continue; context = () });
+            on_data = Body.ignore_reader;
           }
       | _ ->
           {
             initial_context = ();
             error_handler = (fun c _ -> c);
             response_writer = (fun () -> `Final (Response.create `Not_found []));
-            on_data = (fun _ _ -> { action = `Continue; context = () });
+            on_data = Body.ignore_reader;
           }
     in
 
