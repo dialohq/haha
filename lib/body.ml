@@ -17,3 +17,5 @@ type 'context writer_result = {
 
 type 'context reader = 'context -> reader_payload -> 'context reader_result
 type 'context writer = 'context -> 'context writer_result
+
+let ignore_reader : _ reader = fun context _ -> { action = `Continue; context }

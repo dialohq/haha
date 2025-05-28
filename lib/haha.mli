@@ -46,6 +46,8 @@ module Body : sig
 
   type 'context reader = 'context -> reader_payload -> 'context reader_result
   type 'context writer = 'context -> 'context writer_result
+
+  val ignore_reader : _ reader
 end
 
 module Types : sig
