@@ -26,12 +26,12 @@ let handle_connection_error ?(last_peer_stream = Int32.zero) ~writer error =
      in
      write_goaway ~debug_data writer last_peer_stream code
 
-let handle_stream_error (state : ('a, 'b, 'c) State.t) stream_id code =
+let handle_stream_error (state : _ State.t) stream_id code =
   write_rst_stream state.writer stream_id code;
   (* FIXME: handler stream error on "protocol errors" with user error handler and pass the context to final contexts here *)
   {
     state with
-    streams = Streams.stream_transition state.streams stream_id Closed;
+    streams = Streams.stream_transition state.streams stream_id (State Closed);
   }
 
 let process_preface_settings ?user_settings ~socket ~receive_buffer () =
@@ -198,7 +198,8 @@ let frame_handler ~process_complete_headers ~process_data_frame
   in
 
   let process_rst_stream_frame { Frame.stream_id; _ } error_code =
-    match Streams.state_of_id state.streams stream_id with
+    let (State stream_state) = Streams.state_of_id state.streams stream_id in
+    match stream_state with
     | Idle ->
         connection_error Error_code.ProtocolError
           "RST_STREAM received on a idle stream"
@@ -212,26 +213,14 @@ let frame_handler ~process_complete_headers ~process_data_frame
     | Reserved
         ( Remote { error_handler; context; _ }
         | Local { error_handler; context; _ } ) -> (
-        let new_context = error_handler context error_code in
+        (* TODO: here we should run the on_close stream callback with the _new_context *)
+        let _new_context = error_handler context error_code in
         let streams =
-          Streams.stream_transition state.streams stream_id Closed
+          Streams.stream_transition state.streams stream_id (State Closed)
         in
         match (state.shutdown, Streams.all_closed streams) with
-        | true, true ->
-            step End
-              {
-                state with
-                final_contexts =
-                  (stream_id, new_context) :: state.final_contexts;
-              }
-        | _ ->
-            step InProgress
-              {
-                state with
-                streams;
-                final_contexts =
-                  (stream_id, new_context) :: state.final_contexts;
-              })
+        | true, true -> step End state
+        | _ -> step InProgress { state with streams })
   in
 
   let process_goaway_frame payload =
@@ -257,7 +246,7 @@ let frame_handler ~process_complete_headers ~process_data_frame
         { state with flow = Flow_control.incr_out_flow state.flow increment }
     else
       match Streams.state_of_id state.streams stream_id with
-      | Open _ | Reserved (Local _) | HalfClosed _ ->
+      | State (Open _) | State (Reserved (Local _)) | State (HalfClosed _) ->
           step InProgress
             {
               state with
@@ -270,137 +259,155 @@ let frame_handler ~process_complete_headers ~process_data_frame
 
   let { Frame.frame_payload; frame_header } = frame in
 
-  if
-    List.exists
-      (fun (stream_id, _) -> stream_id = frame_header.stream_id)
-      state.final_contexts
-    || List.exists
-         (fun stream_id -> stream_id = frame_header.stream_id)
-         state.prev_iter_ignore
-  then step InProgress state
-  else
-    match (state.headers_state, frame_payload) with
-    | InProgress _, Continuation _ | Idle, _ -> (
-        match frame_payload with
-        | Data payload -> process_data_frame frame_header payload
-        | Settings payload -> process_settings_frame frame_header payload
-        | Ping bs ->
-            write_ping state.writer bs ~ack:true;
-            step InProgress state
-        | Headers payload -> process_headers_frame frame_header payload
-        | Continuation payload ->
-            process_continuation_frame frame_header payload
-        | RSTStream payload -> process_rst_stream_frame frame_header payload
-        | PushPromise _ ->
-            connection_error Error_code.ProtocolError "client cannot push"
-        | GoAway payload -> process_goaway_frame payload
-        | WindowUpdate payload ->
-            process_window_update_frame frame_header payload
-        | Unknown _ -> step InProgress state
-        | Priority -> step InProgress state)
-    | InProgress _, _ ->
-        connection_error Error_code.ProtocolError
-          "unexpected frame other than CONTINUATION in the middle of headers \
-           block"
+  match (state.headers_state, frame_payload) with
+  | InProgress _, Continuation _ | Idle, _ -> (
+      match frame_payload with
+      | Data payload -> process_data_frame frame_header payload
+      | Settings payload -> process_settings_frame frame_header payload
+      | Ping bs ->
+          write_ping state.writer bs ~ack:true;
+          step InProgress state
+      | Headers payload -> process_headers_frame frame_header payload
+      | Continuation payload -> process_continuation_frame frame_header payload
+      | RSTStream payload -> process_rst_stream_frame frame_header payload
+      | PushPromise _ ->
+          connection_error Error_code.ProtocolError "client cannot push"
+      | GoAway payload -> process_goaway_frame payload
+      | WindowUpdate payload -> process_window_update_frame frame_header payload
+      | Unknown _ -> step InProgress state
+      | Priority -> step InProgress state)
+  | InProgress _, _ ->
+      connection_error Error_code.ProtocolError
+        "unexpected frame other than CONTINUATION in the middle of headers \
+         block"
 
-let body_writer_handler (f : unit -> _ Body.writer_result) id =
-  let { Body.payload = res; on_flush; context = new_context } = f () in
+let body_writer_handler (type p) :
+    state_on_data:p Streams.Stream.state ->
+    state_on_end:p Streams.Stream.state ->
+    _ Body.writer_payload ->
+    Stream_identifier.t ->
+    (unit -> unit) ->
+    p t ->
+    p t =
+ fun ~state_on_data ~state_on_end res id on_flush ->
+  fun state ->
+   let state =
+     { state with flush_thunk = Util.merge_thunks state.flush_thunk on_flush }
+   in
+   let max_frame_size = state.peer_settings.max_frame_size in
 
-  fun (state : ('a, 'b, 'c) State.t) ->
-    let state =
-      { state with flush_thunk = Util.merge_thunks state.flush_thunk on_flush }
-    in
-    let stream_flow = Streams.flow_of_id state.streams id in
-    let max_frame_size = state.peer_settings.max_frame_size in
-    match res with
-    | `Data cs_list -> (
-        let total_len =
-          List.fold_left (fun acc cs -> cs.Cstruct.len + acc) 0 cs_list
-        in
+   match res with
+   | `Data cs_list ->
+       let distributed = Util.split_cstructs cs_list max_frame_size in
+       List.iteri
+         (fun _ (cs_list, len) ->
+           write_data ~end_stream:false state.writer id len cs_list)
+         distributed;
 
-        match
-          Flow_control.incr_sent stream_flow (Int32.of_int total_len)
-            ~initial_window_size:state.peer_settings.initial_window_size
-        with
-        (* | Error _ -> failwith "window overflow 1, report to user" *)
-        | _ ->
-            let distributed = Util.split_cstructs cs_list max_frame_size in
-            List.iteri
-              (fun _ (cs_list, len) ->
-                write_data ~end_stream:false state.writer id len cs_list
-                (* if i < List.length distributed - 1 then write () *))
-              distributed;
+       {
+         state with
+         streams = Streams.stream_transition state.streams id state_on_data;
+       }
+   | `End (Some cs_list, trailers) ->
+       let send_trailers = List.length trailers > 0 in
+       let distributed = Util.split_cstructs cs_list max_frame_size in
+       List.iteri
+         (fun i (cs_list, len) ->
+           write_data
+             ~end_stream:((not send_trailers) && i = List.length distributed - 1)
+             state.writer id len cs_list)
+         distributed;
 
-            (* { *)
-            (*   state with *)
-            (*   streams = Streams.update_stream_flow state.streams id new_flow; *)
-            (* } *)
-            {
-              state with
-              streams = Streams.update_context id new_context state.streams;
-            })
-    | `End (Some cs_list, trailers) -> (
-        let send_trailers = List.length trailers > 0 in
-        let total_len =
-          List.fold_left (fun acc cs -> cs.Cstruct.len + acc) 0 cs_list
-        in
-        match
-          Flow_control.incr_sent stream_flow (Int32.of_int total_len)
-            ~initial_window_size:state.peer_settings.initial_window_size
-        with
-        | Error _ -> failwith "window overflow 2, report to user"
-        | Ok new_flow -> (
-            let distributed = Util.split_cstructs cs_list max_frame_size in
-            List.iteri
-              (fun _ (cs_list, len) ->
-                write_data ~end_stream:(not send_trailers) state.writer id len
-                  cs_list
-                (* if i < List.length distributed - 1 then write () *))
-              distributed;
+       if send_trailers then
+         write_trailers state.writer state.hpack_encoder id trailers;
+       {
+         state with
+         streams = Streams.stream_transition state.streams id state_on_end;
+       }
+   | `End (None, trailers) ->
+       let send_trailers = List.length trailers > 0 in
+       if send_trailers then
+         write_trailers state.writer state.hpack_encoder id trailers
+       else write_data ~end_stream:true state.writer id 0 [ Cstruct.empty ];
+       {
+         state with
+         streams = Streams.(stream_transition state.streams id state_on_end);
+       }
 
-            if send_trailers then
-              write_trailers state.writer state.hpack_encoder id trailers;
-            let updated_streams =
-              Streams.update_stream_flow state.streams id new_flow
-            in
-            match Streams.state_of_id updated_streams id with
-            | Open { readers; error_handler; _ } ->
-                {
-                  state with
-                  streams =
-                    Streams.stream_transition updated_streams id
-                      (HalfClosed
-                         (Local
-                            { readers; error_handler; context = new_context }));
-                }
-            | _ ->
-                {
-                  state with
-                  streams =
-                    Streams.(stream_transition updated_streams id Closed);
-                  final_contexts = (id, new_context) :: state.final_contexts;
-                }))
-    | `End (None, trailers) -> (
-        let send_trailers = List.length trailers > 0 in
-        if send_trailers then
-          write_trailers state.writer state.hpack_encoder id trailers
-        else write_data ~end_stream:true state.writer id 0 [ Cstruct.empty ];
-        match Streams.state_of_id state.streams id with
-        | Open { readers; error_handler; _ } ->
-            {
-              state with
-              streams =
-                Streams.(
-                  stream_transition state.streams id
-                    (HalfClosed
-                       (Local { readers; error_handler; context = new_context })));
-            }
-        | _ ->
-            {
-              state with
-              streams = Streams.(stream_transition state.streams id Closed);
-              final_contexts = (id, new_context) :: state.final_contexts;
-            })
+let make_body_writer_event (type p) :
+    p Streams.Stream.t -> Stream_identifier.t -> (unit -> p t -> p t) option =
+ fun stream id ->
+  match stream.state with
+  | State
+      (Open
+         ({
+            writers = EitherWriter (BodyStream body_writer);
+            readers;
+            error_handler;
+            context;
+            _;
+          } as state')) ->
+      Some
+        (fun () ->
+          let { Body.payload = res; on_flush; context = new_context } =
+            body_writer context
+          in
+
+          body_writer_handler
+            ~state_on_data:(State (Open { state' with context = new_context }))
+            ~state_on_end:
+              (State (HalfClosed (Local { context; error_handler; readers })))
+            res id on_flush)
+  | State
+      (Open
+         ({
+            writers = BodyWriter body_writer;
+            readers;
+            error_handler;
+            context;
+            _;
+          } as state')) ->
+      Some
+        (fun () ->
+          let { Body.payload = res; on_flush; context = new_context } =
+            body_writer context
+          in
+
+          body_writer_handler
+            ~state_on_data:(State (Open { state' with context = new_context }))
+            ~state_on_end:
+              (State (HalfClosed (Local { context; error_handler; readers })))
+            res id on_flush)
+  | State
+      (HalfClosed
+         (Remote
+            ({ writers = EitherWriter (BodyStream body_writer); context; _ } as
+             state'))) ->
+      Some
+        (fun () ->
+          let { Body.payload = res; on_flush; context = new_context } =
+            body_writer context
+          in
+
+          body_writer_handler
+            ~state_on_data:
+              (State (HalfClosed (Remote { state' with context = new_context })))
+            ~state_on_end:(State Closed) res id on_flush)
+  | State
+      (HalfClosed
+         (Remote ({ writers = BodyWriter body_writer; context; _ } as state')))
+    ->
+      Some
+        (fun () ->
+          let { Body.payload = res; on_flush; context = new_context } =
+            body_writer context
+          in
+
+          body_writer_handler
+            ~state_on_data:
+              (State (HalfClosed (Remote { state' with context = new_context })))
+            ~state_on_end:(State Closed) res id on_flush)
+  | _ -> None
 
 let user_goaway_handler ~f =
   f ();
@@ -409,7 +416,7 @@ let user_goaway_handler ~f =
       Error_code.NoError;
     { state with shutdown = true }
 
-let parse_and_handle ~frame_handler (state : ('a, 'b, 'c) State.t) cs =
+let parse_and_handle ~frame_handler (state : _ State.t) cs =
   match Parse.read_frames cs state.parse_state with
   | Ok (consumed, frames, continue_opt) ->
       let state_with_parse = { state with parse_state = continue_opt } in
@@ -468,10 +475,7 @@ let combine_steps x y =
   | other -> other
 
 let finalize_iteration :
-    _ Eio.Resource.t ->
-    (_ State.t -> _ Types.iteration) ->
-    _ step ->
-    _ Types.iteration =
+    _ Eio.Resource.t -> (_ t -> Types.iteration) -> _ step -> Types.iteration =
  fun socket continue { iter_result; state } ->
   (match iter_result with
   | ConnectionError err ->
@@ -479,30 +483,29 @@ let finalize_iteration :
         ~writer:state.writer err
   | _ -> ());
   let write_result = write state.writer socket in
-  let all_ctxs, closed_ctxs, state = do_flush state |> extract_context in
+  let state = do_flush state in
+  let active_streams = active_streams state in
 
   match (iter_result, write_result) with
-  | ConnectionError err, _ -> { closed_ctxs = all_ctxs; state = Error err }
-  | End, Ok () -> { closed_ctxs; state = End }
+  | ConnectionError err, _ -> { active_streams; state = Error err }
+  | End, Ok () -> { active_streams; state = End }
   | InProgress, Ok () when state.shutdown && Streams.all_closed state.streams ->
-      { closed_ctxs; state = End }
-  | (End | InProgress), Error exn -> { closed_ctxs; state = Error (Exn exn) }
+      { active_streams; state = End }
+  | (End | InProgress), Error exn -> { active_streams; state = Error (Exn exn) }
   | InProgress, Ok () ->
-      { closed_ctxs; state = InProgress (fun () -> continue state) }
+      { active_streams; state = InProgress (fun () -> continue state) }
 
 let start :
-    'a 'b 'c.
-    initial_state_result:
-      (('a, 'b, 'c) t * Cstruct.t, Error.connection_error) result ->
-    frame_handler:(Frame.t -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t step) ->
+    'peer.
+    initial_state_result:('peer t * Cstruct.t, Error.connection_error) result ->
+    frame_handler:(Frame.t -> 'peer t -> 'peer t step) ->
     receive_buffer:Cstruct.t ->
-    user_events_handlers:
-      (('a, 'b, 'c) t -> (unit -> ('a, 'b, 'c) t -> ('a, 'b, 'c) t step) list) ->
+    user_events_handlers:('peer t -> (unit -> 'peer t -> 'peer t step) list) ->
     _ Eio.Resource.t ->
-    'c Types.iteration =
+    Types.iteration =
  fun ~initial_state_result ~frame_handler ~receive_buffer ~user_events_handlers
      socket ->
-  let rec process_events : ('a, 'b, 'c) t -> 'c Types.iteration =
+  let rec process_events : 'peer t -> Types.iteration =
    fun state ->
     let events =
       read_loop ~receive_buffer ~socket ~frame_handler state.read_off
@@ -520,7 +523,7 @@ let start :
       let writer = create Settings.default.max_frame_size in
       handle_connection_error ~writer err;
       write writer socket |> ignore;
-      { closed_ctxs = []; state = Error err }
+      { active_streams = 0; state = Error err }
   | Ok (initial_state, rest_to_parse) ->
       if Cstruct.length rest_to_parse > 0 then
         let step =
@@ -536,6 +539,6 @@ let start :
         finalize_iteration socket process_events step
       else
         {
-          closed_ctxs = [];
+          active_streams = 0;
           state = InProgress (fun () -> process_events initial_state);
         }

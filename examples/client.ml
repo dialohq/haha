@@ -1,100 +1,80 @@
 open Haha
 
-let () =
-  Eio_main.run @@ fun env ->
-  Eio.Switch.run @@ fun sw ->
-  let socket =
-    Eio.Net.connect ~sw env#net (`Tcp (Eio.Net.Ipaddr.V4.loopback, 8080))
-  in
+type context = int * bool;;
 
-  let max = 10 in
-  let data_stream = Eio.Stream.create 0 in
+Eio_main.run @@ fun env ->
+Eio.Switch.run @@ fun sw ->
+let socket =
+  Eio.Net.connect ~sw env#net (`Tcp (Eio.Net.Ipaddr.V4.loopback, 8080))
+in
 
-  let send_data data =
-    let p, r = Eio.Promise.create () in
-    Eio.Stream.add data_stream (data, Eio.Promise.resolve r);
-    Eio.Promise.await p
-  in
+let payload = Cstruct.create 16 in
 
-  let body_writer counter : _ Body.writer_result =
-    let payload, on_flush = Eio.Stream.take data_stream in
-    { payload; on_flush; context = counter + 1 }
-  in
+let body_writer : context Body.writer =
+ fun ((count, received_back) as context) ->
+  match received_back with
+  | true when count < 10 ->
+      let now = Eio.Time.now env#clock |> Int64.bits_of_float in
+      Cstruct.BE.set_uint64 payload 0 now;
 
-  let response_handler context (response : int Response.t) =
-    let status = Response.status response in
-    Printf.printf "Got response of status %s\n%!" @@ Status.to_string status;
+      {
+        payload = `Data [ payload ];
+        on_flush = ignore;
+        context = (count + 1, false);
+      }
+  | true -> { payload = `End (None, []); on_flush = ignore; context }
+  | false -> Eio.Fiber.await_cancel ()
+in
 
-    match response with
-    | _ ->
-        ( Some
-            (fun counter cs ->
-              match cs with
-              | `Data _cs ->
-                  let new_count = counter + 1 in
-                  Printf.printf "Data receiving, counting %i\n%!" new_count;
-                  { Body.action = `Continue; context = new_count }
-              | `End (Some _cs, _) ->
-                  (* Cstruct.hexdump cs; *)
-                  Printf.printf "Peer EOF, counted %i\n%!" counter;
-                  { action = `Continue; context = counter }
-              | `End _ ->
-                  Printf.printf "Peer EOF, counted %i\n%!" counter;
-                  { action = `Continue; context = counter }),
-          context )
-    (* | `Final _ -> (None, context) *)
-  in
+let body_reader : context Body.reader =
+ fun (count, _) -> function
+   | `Data _ ->
+       Printf.printf "received data back, count %i\n%!" count;
+       { action = `Continue; context = (count, true) }
+   | `End _ ->
+       Printf.printf "end of data\n%!";
+       { action = `Continue; context = (count, true) }
+in
 
-  let sample_request =
-    Request.create_with_streaming ~context:0
-      ~error_handler:(fun c _ -> c)
-      ~body_writer ~response_handler ~headers:[] POST "/stream"
-  in
-  (* let requests = Dynarray.of_list [ sample_request ] in *)
-  let req_stream = Eio.Stream.create 0 in
+let error_handler : context -> Error_code.t -> context =
+ fun c code ->
+  Printf.printf "stream error of code %s\n%!" (Error_code.to_string code);
+  c
+in
 
-  let request_writer () = Eio.Stream.take req_stream in
+let response_handler : context Response.handler =
+ fun c response ->
+  Format.printf "status %a@." Status.pp_hum (Response.status response);
+  (Some body_reader, c)
+in
 
-  let write_req () = Eio.Stream.add req_stream (Some sample_request) in
-  let _write_end () = Eio.Stream.add req_stream None in
+let requests =
+  Dynarray.of_list
+    [
+      Request.create_with_streaming ~body_writer ~context:(0, true)
+        ~error_handler ~response_handler ~headers:[] POST "/";
+    ]
+in
 
-  let error_handler = function
-    | Haha.Error.ProtocolViolation (_, msg) ->
-        Printf.printf "Error, server violated protocol: %s\n%!" msg
-    | Exn exn ->
-        Printf.printf "Local exception: %s\n%!" @@ Printexc.to_string exn
-    | PeerError (_, msg) ->
-        Printf.printf "Received connection error: %s\n%!" msg
-  in
+let request_writer : context Request.request_writer =
+ fun () -> Dynarray.pop_last_opt requests
+in
 
-  Eio.Fiber.fork ~sw (fun () ->
-      let initial_step =
-        Client.connect ~request_writer ~config:Settings.default socket
-      in
+let initial_iteration = Client.connect ~request_writer socket in
 
-      let rec loop : int Client.iteration -> unit =
-       fun step ->
-        match step with
-        | { state = End; _ } -> Printf.printf "End of connection\n%!"
-        | { state = Error err; _ } -> error_handler err
-        | { state = InProgress next; _ } -> (loop [@tailcall]) (next ())
-      in
+let rec iterate : Client.iteration -> unit = function
+  | { state = End; _ } -> print_endline "end of connection"
+  | { state = Error (Exn exn); _ } ->
+      Printf.printf "connection error, exn: %s\n%!" (Printexc.to_string exn)
+  | { state = Error (PeerError (code, msg)); _ } ->
+      Printf.printf "connection error, peer error of code %s: %s\n%!"
+        (Error_code.to_string code)
+        msg
+  | { state = Error (ProtocolViolation (code, msg)); _ } ->
+      Printf.printf "connection error, protocol violation of code %s: %s\n%!"
+        (Error_code.to_string code)
+        msg
+  | { state = InProgress next; _ } -> iterate (next ())
+in
 
-      loop initial_step);
-
-  Printf.printf "Writing request...\n%!";
-  write_req ();
-
-  let rec loop sent : unit =
-    if sent < max then (
-      Eio.Time.sleep env#clock 0.2;
-      let cs = Cstruct.create 16 in
-      Cstruct.LE.set_uint64 cs 0 (Eio.Time.now env#clock |> Int64.bits_of_float);
-      Printf.printf "Data sending, counting\n%!";
-      send_data (`Data [ cs ]);
-      loop (sent + 1))
-    else (
-      Printf.printf "Data sending, counting\n%!";
-      send_data (`End (None, [])))
-  in
-  loop 0
+iterate initial_iteration
