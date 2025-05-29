@@ -2,12 +2,12 @@ type settings_sync = Syncing of Settings.settings_list | Idle
 type headers_state = Idle | InProgress of Bigstringaf.t * int
 type 'context final_contexts = (Stream_identifier.t * 'context) list
 
-type ('readers, 'writers, 'context) t = {
+type 'peer t = {
   peer_settings : Settings.t;
   local_settings : Settings.t;
   settings_status : settings_sync;
   headers_state : headers_state;
-  streams : ('readers, 'writers, 'context) Streams.t;
+  streams : 'peer Streams.t;
   hpack_encoder : Hpackv.Encoder.t;
   hpack_decoder : Hpackv.Decoder.t;
   shutdown : bool;
@@ -16,7 +16,6 @@ type ('readers, 'writers, 'context) t = {
   flow : Flow_control.t;
   read_off : int;
   flush_thunk : unit -> unit;
-  final_contexts : 'context final_contexts;
   prev_iter_ignore : Stream_identifier.t list;
 }
 
@@ -41,25 +40,17 @@ let initial ~writer ~peer_settings ~user_settings =
     flow = Flow_control.initial;
     read_off = 0;
     flush_thunk = ignore;
-    final_contexts = [];
     prev_iter_ignore = [];
   }
 
-let extract_context t =
-  ( List.concat [ Streams.extract_contexts t.streams; t.final_contexts ],
-    t.final_contexts,
-    {
-      t with
-      prev_iter_ignore = List.map (fun (id, _) -> id) t.final_contexts;
-      final_contexts = [];
-    } )
+let active_streams t = Streams.count_active t.streams
 
 let do_flush t =
   t.flush_thunk ();
   { t with flush_thunk = ignore }
 
-let update_state_with_peer_settings (t : ('a, 'b, 'c) t) settings_list =
-  let rec loop list (state : ('a, 'b, 'c) t) : (('a, 'b, 'c) t, string) result =
+let update_state_with_peer_settings (t : _ t) settings_list =
+  let rec loop list (state : _ t) : (_ t, string) result =
     match list with
     | [] -> Ok state
     | Settings.HeaderTableSize x :: l -> (
@@ -78,8 +69,8 @@ let update_state_with_peer_settings (t : ('a, 'b, 'c) t) settings_list =
   loop settings_list
     { t with peer_settings = Settings.(update_with_list default settings_list) }
 
-let update_state_with_local_settings (t : ('a, 'b, 'c) t) settings_list =
-  let rec loop list (state : ('a, 'b, 'c) t) : (('a, 'b, 'c) t, string) result =
+let update_state_with_local_settings (t : _ t) settings_list =
+  let rec loop list (state : _ t) : (_ t, string) result =
     match list with
     | [] -> Ok state
     | Settings.HeaderTableSize x :: l ->
@@ -95,51 +86,3 @@ let update_state_with_local_settings (t : ('a, 'b, 'c) t) settings_list =
       t with
       local_settings = Settings.(update_with_list default settings_list);
     }
-
-let pp_hum_generic fmt t =
-  let open Format in
-  fprintf fmt "@[<v 2>{";
-  fprintf fmt "peer_settings = %a;" Settings.pp_hum t.peer_settings;
-  fprintf fmt "@ local_settings = %a;" Settings.pp_hum t.local_settings;
-  fprintf fmt "@ settings_status = ";
-  (match t.settings_status with
-  | Syncing settings_list ->
-      fprintf fmt "Syncing <length %i>" (List.length settings_list)
-  | Idle -> fprintf fmt "Idle");
-  fprintf fmt ";";
-  fprintf fmt "@ headers_state = ";
-  (match t.headers_state with
-  | Idle -> fprintf fmt "Idle"
-  | InProgress (_, n) -> fprintf fmt "InProgress (<bigstring>, %d)" n);
-  fprintf fmt ";";
-  fprintf fmt "@ streams = %a;" Streams.pp_hum_generic t.streams;
-  fprintf fmt "@ shutdown = %b;" t.shutdown;
-  fprintf fmt "@ writer = %a;" Writer.pp_hum t.writer;
-  fprintf fmt "@ parse_state = %s;"
-    (match t.parse_state with Some _ -> "Some" | None -> "None");
-  fprintf fmt "@ flow = %a" Flow_control.pp_hum t.flow;
-  fprintf fmt "@]}"
-
-let pp_hum pp_readers pp_writers fmt t =
-  let open Format in
-  fprintf fmt "@[<v 2>{";
-  fprintf fmt "peer_settings = %a;" Settings.pp_hum t.peer_settings;
-  fprintf fmt "@ local_settings = %a;" Settings.pp_hum t.local_settings;
-  fprintf fmt "@ settings_status = ";
-  (match t.settings_status with
-  | Syncing settings_list ->
-      fprintf fmt "Syncing <length %i>" (List.length settings_list)
-  | Idle -> fprintf fmt "Idle");
-  fprintf fmt ";";
-  fprintf fmt "@ headers_state = ";
-  (match t.headers_state with
-  | Idle -> fprintf fmt "Idle"
-  | InProgress (_, n) -> fprintf fmt "InProgress (<bigstring>, %d)" n);
-  fprintf fmt ";";
-  fprintf fmt "@ streams = %a;" (Streams.pp_hum pp_readers pp_writers) t.streams;
-  fprintf fmt "@ shutdown = %b;" t.shutdown;
-  fprintf fmt "@ writer = %a;" Writer.pp_hum t.writer;
-  fprintf fmt "@ parse_state = %s;"
-    (match t.parse_state with Some _ -> "Some" | None -> "None");
-  fprintf fmt "@ flow = %a" Flow_control.pp_hum t.flow;
-  fprintf fmt "@]}"

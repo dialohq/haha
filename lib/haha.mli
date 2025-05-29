@@ -51,15 +51,12 @@ module Body : sig
 end
 
 module Types : sig
-  type 'context state =
-    | InProgress of (unit -> 'context iteration)
+  type state =
+    | InProgress of (unit -> iteration)
     | End
     | Error of Error.connection_error
 
-  and 'context iteration = {
-    state : 'context state;
-    closed_ctxs : (int32 * 'context) list;
-  }
+  and iteration = { state : state; active_streams : int }
 end
 
 module Method = Method
@@ -147,7 +144,7 @@ end
 
 module Reqd : sig
   type 'context handler_result = {
-    on_data : 'context Body.reader;
+    body_reader : 'context Body.reader;
     response_writer : 'context Response.response_writer;
     error_handler : 'context -> Error_code.t -> 'context;
     initial_context : 'context;
@@ -179,12 +176,12 @@ end
 module Settings = Settings
 
 module Client : sig
-  type 'context iteration = 'context Types.iteration
+  type iteration = Types.iteration
 
   val connect :
     'context.
     ?config:Settings.t ->
     request_writer:'context Request.request_writer ->
     [> `Flow | `R | `W ] Eio.Resource.t ->
-    'context iteration
+    iteration
 end
