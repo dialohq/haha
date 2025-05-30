@@ -26,17 +26,11 @@ let process_data_frame :
   | Closed, _ | Idle, _ | HalfClosed (Remote _), _ ->
       connection_error Error_code.StreamClosed
         "DATA frame received on closed stream!"
-  | Open { readers = EitherReader (AwaitingResponse _); _ }, _
-  | HalfClosed (Local { readers = EitherReader (AwaitingResponse _); _ }), _ ->
+  | Open { readers = AwaitingResponse _; _ }, _
+  | HalfClosed (Local { readers = AwaitingResponse _; _ }), _ ->
       stream_error stream_id Error_code.ProtocolError
-  | ( Open
-        {
-          readers = EitherReader (BodyStream reader);
-          writers;
-          error_handler;
-          context;
-        },
-      true ) -> (
+  | Open { readers = BodyReader reader; writers; error_handler; context }, true
+    -> (
       let { action; context = new_context } =
         reader context (`End (Some (Cstruct.of_bigarray bs), []))
       in
@@ -80,9 +74,7 @@ let process_data_frame :
                   state.flow
                   (Bigstringaf.length bs |> Int32.of_int);
             })
-  | ( HalfClosed
-        (Local { readers = EitherReader (BodyStream reader); context; _ }),
-      true ) ->
+  | HalfClosed (Local { readers = BodyReader reader; context; _ }), true ->
       (* TODO: call stream on_close with the _new_context *)
       let { context = _new_context; _ } : _ reader_result =
         reader context (`End (Some (Cstruct.of_bigarray bs), []))
@@ -106,8 +98,7 @@ let process_data_frame :
                 (write_window_update state.writer Stream_identifier.connection)
               (Bigstringaf.length bs |> Int32.of_int);
         }
-  | ( Open ({ readers = EitherReader (BodyStream reader); context; _ } as state'),
-      false ) -> (
+  | Open ({ readers = BodyReader reader; context; _ } as state'), false -> (
       let streams =
         (if Stream_identifier.is_client stream_id then
            Streams.update_last_local_stream stream_id state.streams
@@ -150,9 +141,7 @@ let process_data_frame :
                        Stream_identifier.connection)
                   (Bigstringaf.length bs |> Int32.of_int);
             })
-  | ( HalfClosed
-        (Local
-           ({ readers = EitherReader (BodyStream reader); context; _ } as state')),
+  | ( HalfClosed (Local ({ readers = BodyReader reader; context; _ } as state')),
       false ) -> (
       let streams =
         (if Stream_identifier.is_client stream_id then
@@ -213,13 +202,8 @@ let process_complete_headers :
       stream_error stream_id Error_code.ProtocolError
   | true, No_pseudo -> (
       match stream_state with
-      | Open
-          {
-            readers = EitherReader (BodyStream reader);
-            writers;
-            error_handler;
-            context;
-          } -> (
+      | Open { readers = BodyReader reader; writers; error_handler; context }
+        -> (
           let { action; context = new_context } =
             reader context (`End (None, header_list))
           in
@@ -245,8 +229,7 @@ let process_complete_headers :
                     Streams.stream_transition state.streams stream_id
                       (State Closed);
                 })
-      | HalfClosed
-          (Local { readers = EitherReader (BodyStream reader); context; _ }) ->
+      | HalfClosed (Local { readers = BodyReader reader; context; _ }) ->
           let { context = _new_context; _ } : _ reader_result =
             reader context (`End (None, header_list))
           in
@@ -255,8 +238,8 @@ let process_complete_headers :
             Streams.(stream_transition state.streams stream_id (State Closed))
           in
           step InProgress { state with streams }
-      | Open { readers = EitherReader (AwaitingResponse _); _ }
-      | HalfClosed (Local { readers = EitherReader (AwaitingResponse _); _ }) ->
+      | Open { readers = AwaitingResponse _; _ }
+      | HalfClosed (Local { readers = AwaitingResponse _; _ }) ->
           connection_error Error_code.ProtocolError
             (Format.sprintf
                "received first HEADERS in stream %li with no pseudo-headers"
@@ -275,11 +258,8 @@ let process_complete_headers :
       in
       match (stream_state, response) with
       | ( Open
-            ({
-               readers = EitherReader (AwaitingResponse response_handler);
-               context;
-               _;
-             } as state'),
+            ({ readers = AwaitingResponse response_handler; context; _ } as
+             state'),
           `Interim _ ) ->
           let _body_reader, context = response_handler context response in
 
@@ -291,11 +271,8 @@ let process_complete_headers :
           step InProgress { state with streams }
       | ( HalfClosed
             (Local
-               ({
-                  readers = EitherReader (AwaitingResponse response_handler);
-                  context;
-                  _;
-                } as state')),
+               ({ readers = AwaitingResponse response_handler; context; _ } as
+                state')),
           `Interim _ ) ->
           let _body_reader, context = response_handler context response in
 
@@ -307,7 +284,7 @@ let process_complete_headers :
           step InProgress { state with streams }
       | ( Open
             {
-              readers = EitherReader (AwaitingResponse response_handler);
+              readers = AwaitingResponse response_handler;
               writers = body_writer;
               error_handler;
               context;
@@ -328,7 +305,7 @@ let process_complete_headers :
                 State
                   (Open
                      {
-                       readers = EitherReader (BodyStream body_reader);
+                       readers = BodyReader body_reader;
                        writers = body_writer;
                        error_handler;
                        context;
@@ -345,7 +322,7 @@ let process_complete_headers :
       | ( HalfClosed
             (Local
                {
-                 readers = EitherReader (AwaitingResponse response_handler);
+                 readers = AwaitingResponse response_handler;
                  error_handler;
                  context;
                }),
@@ -362,7 +339,7 @@ let process_complete_headers :
                   (HalfClosed
                      (Local
                         {
-                          readers = EitherReader (BodyStream body_reader);
+                          readers = BodyReader body_reader;
                           error_handler;
                           context;
                         }))
@@ -372,8 +349,8 @@ let process_complete_headers :
             Streams.stream_transition state.streams stream_id new_stream_state
           in
           step InProgress { state with streams }
-      | Open { readers = EitherReader (BodyStream _); _ }, _
-      | HalfClosed (Local { readers = EitherReader (BodyStream _); _ }), _ ->
+      | Open { readers = BodyReader _; _ }, _
+      | HalfClosed (Local { readers = BodyReader _; _ }), _ ->
           connection_error Error_code.ProtocolError
             (Format.sprintf
                "unexpected multiple non-informational HEADERS on stream %li"
@@ -414,7 +391,7 @@ let request_writer_handler request_writer =
               State
                 (Open
                    {
-                     readers = EitherReader (AwaitingResponse response_handler);
+                     readers = AwaitingResponse response_handler;
                      writers = BodyWriter body_writer;
                      error_handler;
                      context = initial_context;
@@ -424,8 +401,7 @@ let request_writer_handler request_writer =
                 (HalfClosed
                    (Local
                       {
-                        readers =
-                          EitherReader (AwaitingResponse response_handler);
+                        readers = AwaitingResponse response_handler;
                         error_handler;
                         context = initial_context;
                       }))
