@@ -7,6 +7,9 @@ module Error : sig
     | Exn of exn
         (** The type of connection error. Caused by a valiation of the protocol
             from the other side of connection, or an exception. *)
+
+  type stream_error = int32 * Error_code.t
+  type t = ConnectionError of connection_error | StreamError of stream_error
 end
 
 module Header : sig
@@ -121,10 +124,10 @@ module Request : sig
   val create :
     ?authority:string ->
     ?scheme:string ->
+    ?on_close:('context -> unit) ->
     context:'context ->
     response_handler:'context Response.handler ->
-    on_close:('context -> unit) ->
-    error_handler:('context -> Error_code.t -> 'context) ->
+    error_handler:('context -> Error.t -> 'context) ->
     headers:Header.t list ->
     Method.t ->
     string ->
@@ -133,11 +136,11 @@ module Request : sig
   val create_with_streaming :
     ?authority:string ->
     ?scheme:string ->
+    ?on_close:('context -> unit) ->
     context:'context ->
     body_writer:'context Body.writer ->
     response_handler:'context Response.handler ->
-    on_close:('context -> unit) ->
-    error_handler:('context -> Error_code.t -> 'context) ->
+    error_handler:('context -> Error.t -> 'context) ->
     headers:Header.t list ->
     Method.t ->
     string ->
@@ -156,11 +159,12 @@ module Reqd : sig
   val headers : t -> Header.t list
 
   val handle :
+    ?on_close:('a -> unit) ->
     context:'a ->
     response_writer:'a Response.response_writer ->
     body_reader:'a Body.reader ->
-    on_close:('a -> unit) ->
-    error_handler:('a -> Error_code.t -> 'a) ->
+    error_handler:('a -> Error.t -> 'a) ->
+    unit ->
     handler_result
 
   val pp_hum : Format.formatter -> t -> unit

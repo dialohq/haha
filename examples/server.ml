@@ -34,10 +34,12 @@ let body_reader : context Body.reader =
    | `End _ -> { action = `Continue; context = `End }
 in
 
-let error_handler : context -> Error_code.t -> context =
- fun c code ->
-  Printf.printf "stream error of code %s\n%!" (Error_code.to_string code);
-  c
+let error_handler : context -> Error.t -> context =
+ fun c -> function
+   | StreamError (_, code) ->
+       Printf.printf "stream error of code %s\n%!" (Error_code.to_string code);
+       c
+   | _ -> c
 in
 
 let response_writer : context Response.response_writer =
@@ -51,7 +53,7 @@ let request_handler : Reqd.handler =
   Format.printf "%a@." Reqd.pp_hum reqd;
 
   Reqd.handle ~context:`Wait ~body_reader ~response_writer ~error_handler
-    ~on_close
+    ~on_close ()
 in
 
 let connection_handler socket addr =

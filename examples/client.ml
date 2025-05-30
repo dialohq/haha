@@ -36,10 +36,12 @@ let body_reader : context Body.reader =
        { action = `Continue; context = (count, true) }
 in
 
-let error_handler : context -> Error_code.t -> context =
- fun c code ->
-  Printf.printf "stream error of code %s\n%!" (Error_code.to_string code);
-  c
+let error_handler : context -> Error.t -> context =
+ fun c -> function
+   | StreamError (_, code) ->
+       Printf.printf "stream error of code %s\n%!" (Error_code.to_string code);
+       c
+   | _ -> c
 in
 
 let response_handler : context Response.handler =

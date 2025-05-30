@@ -12,7 +12,7 @@ type (_, 'c) readers =
   | AwaitingResponse : 'c Response.handler -> (client_peer, 'c) readers
 
 module Stream = struct
-  type 'context error_handler = 'context -> Error_code.t -> 'context
+  type 'context error_handler = 'context -> Error.t -> 'context
 
   type ('peer, 'c) open_state = {
     readers : ('peer, 'c) readers;
@@ -114,16 +114,17 @@ let count_open t =
 
 let count_active t = StreamMap.cardinal t.map
 
-let on_close_all t =
+let error_all err t =
   StreamMap.iter
     (fun _ (stream : _ Stream.t) ->
       let (State stream_state) = stream.state in
 
       match stream_state with
-      | Open { on_close; context; _ }
+      | Open { on_close; context; error_handler; _ }
       | HalfClosed
-          (Remote { on_close; context; _ } | Local { on_close; context; _ }) ->
-          on_close context
+          ( Remote { on_close; context; error_handler; _ }
+          | Local { on_close; context; error_handler; _ } ) ->
+          on_close (error_handler context (ConnectionError err))
       | _ -> ())
     t.map
 
