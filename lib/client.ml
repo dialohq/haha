@@ -400,13 +400,9 @@ let request_writer_handler request_writer =
         let new_state = { state with shutdown = true } in
         new_state
     | Some
-        ({
-           Request.response_handler;
-           body_writer;
-           error_handler;
-           initial_context;
-           _;
-         } as request) ->
+        (Request.Request
+           { response_handler; body_writer; error_handler; initial_context; _ }
+         as request) ->
         let id = Streams.get_next_id state.streams `Client in
         Writer.writer_request_headers state.writer state.hpack_encoder id
           request;
@@ -453,7 +449,7 @@ let get_body_writers : state -> (unit -> state -> state) list =
 let connect :
     'c.
     ?config:Settings.t ->
-    request_writer:'c Request.request_writer ->
+    request_writer:Request.request_writer ->
     _ Eio.Resource.t ->
     iteration =
  fun ?(config = Settings.default) ~request_writer socket ->

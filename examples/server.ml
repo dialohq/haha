@@ -50,9 +50,11 @@ let connection_handler socket addr =
    fun () -> `Final (Response.create_with_streaming ~body_writer `OK [])
   in
 
-  let request_handler : context Reqd.handler =
-   fun _reqd ->
-    { initial_context = `Wait; body_reader; response_writer; error_handler }
+  let request_handler : Reqd.handler =
+   fun reqd ->
+    Format.printf "%a@." Reqd.pp_hum reqd;
+
+    Reqd.handle ~context:`Wait ~body_reader ~response_writer ~error_handler
   in
 
   Server.connection_handler ~error_handler:conn_error_handler request_handler
