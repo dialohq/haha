@@ -274,8 +274,7 @@ let process_complete_headers :
                   (HalfClosed
                      (Remote
                         {
-                          writers =
-                            EitherWriter (WritingResponse response_writer);
+                          writers = WritingResponse response_writer;
                           error_handler;
                           context = initial_context;
                         }))
@@ -284,7 +283,7 @@ let process_complete_headers :
                   (Open
                      {
                        readers = BodyReader reader;
-                       writers = EitherWriter (WritingResponse response_writer);
+                       writers = WritingResponse response_writer;
                        error_handler;
                        context = initial_context;
                      })
@@ -318,7 +317,7 @@ let make_response_writer_handler :
   match stream_state with
   | Open
       ({
-         writers = EitherWriter (WritingResponse response_writer);
+         writers = WritingResponse response_writer;
          readers;
          error_handler;
          context;
@@ -339,11 +338,7 @@ let make_response_writer_handler :
                   streams =
                     Streams.stream_transition state.streams id
                       (State
-                         (Open
-                            {
-                              state' with
-                              writers = EitherWriter (BodyStream body_writer);
-                            }));
+                         (Open { state' with writers = BodyWriter body_writer }));
                 }
             | `Final { body_writer = None; _ } ->
                 write_window_update state.writer id
@@ -357,9 +352,7 @@ let make_response_writer_handler :
                 }
             | `Interim _ -> state)
   | HalfClosed
-      (Remote
-         ({ writers = EitherWriter (WritingResponse response_writer); _ } as
-          state')) ->
+      (Remote ({ writers = WritingResponse response_writer; _ } as state')) ->
       Some
         (fun () ->
           let open Writer in
@@ -378,10 +371,7 @@ let make_response_writer_handler :
                       (State
                          (HalfClosed
                             (Remote
-                               {
-                                 state' with
-                                 writers = EitherWriter (BodyStream body_writer);
-                               })));
+                               { state' with writers = BodyWriter body_writer })));
                 }
             | `Final { body_writer = None; _ } ->
                 write_window_update state.writer id

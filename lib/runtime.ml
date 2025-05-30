@@ -341,26 +341,6 @@ let make_body_writer_event (type p) :
   | State
       (Open
          ({
-            writers = EitherWriter (BodyStream body_writer);
-            readers;
-            error_handler;
-            context;
-            _;
-          } as state')) ->
-      Some
-        (fun () ->
-          let { Body.payload = res; on_flush; context = new_context } =
-            body_writer context
-          in
-
-          body_writer_handler
-            ~state_on_data:(State (Open { state' with context = new_context }))
-            ~state_on_end:
-              (State (HalfClosed (Local { context; error_handler; readers })))
-            res id on_flush)
-  | State
-      (Open
-         ({
             writers = BodyWriter body_writer;
             readers;
             error_handler;
@@ -378,21 +358,6 @@ let make_body_writer_event (type p) :
             ~state_on_end:
               (State (HalfClosed (Local { context; error_handler; readers })))
             res id on_flush)
-  | State
-      (HalfClosed
-         (Remote
-            ({ writers = EitherWriter (BodyStream body_writer); context; _ } as
-             state'))) ->
-      Some
-        (fun () ->
-          let { Body.payload = res; on_flush; context = new_context } =
-            body_writer context
-          in
-
-          body_writer_handler
-            ~state_on_data:
-              (State (HalfClosed (Remote { state' with context = new_context })))
-            ~state_on_end:(State Closed) res id on_flush)
   | State
       (HalfClosed
          (Remote ({ writers = BodyWriter body_writer; context; _ } as state')))

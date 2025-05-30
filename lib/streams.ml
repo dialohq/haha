@@ -3,21 +3,13 @@ module StreamMap = Map.Make (Int32)
 type client_peer = private Client
 type server_peer = private Server
 
-type 'c body_or_resp_writer =
-  | BodyStream of 'c Body.writer
-  | WritingResponse of 'c Response.response_writer
-
-type 'context body_or_resp_reader =
-  | BodyStream of 'context Body.reader
-  | AwaitingResponse of 'context Response.handler
-
 type (_, 'c) writers =
-  | BodyWriter : 'c Body.writer -> (client_peer, 'c) writers
-  | EitherWriter : 'c body_or_resp_writer -> (server_peer, 'c) writers
+  | BodyWriter : 'c Body.writer -> ('peer, 'c) writers
+  | WritingResponse : 'c Response.response_writer -> (server_peer, 'c) writers
 
 type (_, 'c) readers =
-  | BodyReader : 'c Body.reader -> (server_peer, 'c) readers
-  | EitherReader : 'c body_or_resp_reader -> (client_peer, 'c) readers
+  | BodyReader : 'c Body.reader -> ('peer, 'c) readers
+  | AwaitingResponse : 'c Response.handler -> (client_peer, 'c) readers
 
 module Stream = struct
   type 'context error_handler = 'context -> Error_code.t -> 'context
