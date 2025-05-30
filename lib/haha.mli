@@ -123,6 +123,7 @@ module Request : sig
     ?scheme:string ->
     context:'context ->
     response_handler:'context Response.handler ->
+    on_close:('context -> unit) ->
     error_handler:('context -> Error_code.t -> 'context) ->
     headers:Header.t list ->
     Method.t ->
@@ -135,6 +136,7 @@ module Request : sig
     context:'context ->
     body_writer:'context Body.writer ->
     response_handler:'context Response.handler ->
+    on_close:('context -> unit) ->
     error_handler:('context -> Error_code.t -> 'context) ->
     headers:Header.t list ->
     Method.t ->
@@ -157,6 +159,7 @@ module Reqd : sig
     context:'a ->
     response_writer:'a Response.response_writer ->
     body_reader:'a Body.reader ->
+    on_close:('a -> unit) ->
     error_handler:('a -> Error_code.t -> 'a) ->
     handler_result
 

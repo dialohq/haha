@@ -18,6 +18,7 @@ module Stream = struct
     readers : ('peer, 'c) readers;
     writers : ('peer, 'c) writers;
     error_handler : 'c error_handler;
+    on_close : 'c -> unit;
     context : 'c;
   }
 
@@ -25,11 +26,13 @@ module Stream = struct
     | Remote of {
         writers : ('peer, 'c) writers;
         error_handler : 'c error_handler;
+        on_close : 'c -> unit;
         context : 'c;
       }
     | Local of {
         readers : ('peer, 'c) readers;
         error_handler : 'c error_handler;
+        on_close : 'c -> unit;
         context : 'c;
       }
 
@@ -110,6 +113,19 @@ let count_open t =
     t.map 0
 
 let count_active t = StreamMap.cardinal t.map
+
+let on_close_all t =
+  StreamMap.iter
+    (fun _ (stream : _ Stream.t) ->
+      let (State stream_state) = stream.state in
+
+      match stream_state with
+      | Open { on_close; context; _ }
+      | HalfClosed
+          (Remote { on_close; context; _ } | Local { on_close; context; _ }) ->
+          on_close context
+      | _ -> ())
+    t.map
 
 let get_next_id t = function
   | `Client ->

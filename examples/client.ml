@@ -48,12 +48,16 @@ let response_handler : context Response.handler =
   (Some body_reader, c)
 in
 
+let on_close =
+ fun (count, _) -> Printf.printf "stream closed, final count: %i\n%!" count
+in
+
 let requests =
   Dynarray.of_list
     [
-      Request.create_with_streaming ~body_writer ~context:(0, true)
+      Request.create_with_streaming ~body_writer ~context:(0, true) ~on_close
         ~error_handler ~response_handler ~headers:[] POST "/stream";
-      Request.create_with_streaming ~body_writer ~context:(0, true)
+      Request.create_with_streaming ~body_writer ~context:(0, true) ~on_close
         ~error_handler ~response_handler ~headers:[] POST "/stream";
     ]
 in

@@ -29,8 +29,15 @@ let process_data_frame :
   | Open { readers = AwaitingResponse _; _ }, _
   | HalfClosed (Local { readers = AwaitingResponse _; _ }), _ ->
       stream_error stream_id Error_code.ProtocolError
-  | Open { readers = BodyReader reader; writers; error_handler; context }, true
-    -> (
+  | ( Open
+        {
+          readers = BodyReader reader;
+          writers;
+          error_handler;
+          on_close;
+          context;
+        },
+      true ) -> (
       let { action; context = new_context } =
         reader context (`End (Some (Cstruct.of_bigarray bs), []))
       in
@@ -45,7 +52,12 @@ let process_data_frame :
                     (State
                        (HalfClosed
                           (Remote
-                             { writers; error_handler; context = new_context })))
+                             {
+                               writers;
+                               error_handler;
+                               on_close;
+                               context = new_context;
+                             })))
                   |> update_flow_on_data
                        ~send_update:(write_window_update state.writer stream_id)
                        stream_id
@@ -60,6 +72,7 @@ let process_data_frame :
             }
       | `Reset ->
           Writer.write_rst_stream state.writer stream_id NoError;
+          on_close new_context;
           step InProgress
             {
               state with
@@ -74,9 +87,9 @@ let process_data_frame :
                   state.flow
                   (Bigstringaf.length bs |> Int32.of_int);
             })
-  | HalfClosed (Local { readers = BodyReader reader; context; _ }), true ->
-      (* TODO: call stream on_close with the _new_context *)
-      let { context = _new_context; _ } : _ reader_result =
+  | ( HalfClosed (Local { readers = BodyReader reader; on_close; context; _ }),
+      true ) ->
+      let { context = new_context; _ } : _ reader_result =
         reader context (`End (Some (Cstruct.of_bigarray bs), []))
       in
 
@@ -88,6 +101,7 @@ let process_data_frame :
                stream_id
                (Bigstringaf.length bs |> Int32.of_int))
       in
+      on_close new_context;
       step InProgress
         {
           state with
@@ -98,7 +112,8 @@ let process_data_frame :
                 (write_window_update state.writer Stream_identifier.connection)
               (Bigstringaf.length bs |> Int32.of_int);
         }
-  | Open ({ readers = BodyReader reader; context; _ } as state'), false -> (
+  | ( Open ({ readers = BodyReader reader; on_close; context; _ } as state'),
+      false ) -> (
       let streams =
         (if Stream_identifier.is_client stream_id then
            Streams.update_last_local_stream stream_id state.streams
@@ -127,8 +142,8 @@ let process_data_frame :
                   (Bigstringaf.length bs |> Int32.of_int);
             }
       | `Reset ->
-          (* TODO: call stream on_close with the _new_context *)
           Writer.write_rst_stream state.writer stream_id NoError;
+          on_close new_context;
           step InProgress
             {
               state with
@@ -141,7 +156,8 @@ let process_data_frame :
                        Stream_identifier.connection)
                   (Bigstringaf.length bs |> Int32.of_int);
             })
-  | ( HalfClosed (Local ({ readers = BodyReader reader; context; _ } as state')),
+  | ( HalfClosed
+        (Local ({ readers = BodyReader reader; on_close; context; _ } as state')),
       false ) -> (
       let streams =
         (if Stream_identifier.is_client stream_id then
@@ -172,8 +188,8 @@ let process_data_frame :
                   (Bigstringaf.length bs |> Int32.of_int);
             }
       | `Reset ->
-          (* TODO: call stream on_close with the _new_context *)
           Writer.write_rst_stream state.writer stream_id NoError;
+          on_close new_context;
           step InProgress
             {
               state with
@@ -202,8 +218,14 @@ let process_complete_headers :
       stream_error stream_id Error_code.ProtocolError
   | true, No_pseudo -> (
       match stream_state with
-      | Open { readers = BodyReader reader; writers; error_handler; context }
-        -> (
+      | Open
+          {
+            readers = BodyReader reader;
+            writers;
+            error_handler;
+            on_close;
+            context;
+          } -> (
           let { action; context = new_context } =
             reader context (`End (None, header_list))
           in
@@ -217,11 +239,16 @@ let process_complete_headers :
                       (State
                          (HalfClosed
                             (Remote
-                               { writers; error_handler; context = new_context })));
+                               {
+                                 writers;
+                                 error_handler;
+                                 on_close;
+                                 context = new_context;
+                               })));
                 }
           | `Reset ->
-              (* TODO: call stream on_close with the _new_context *)
               Writer.write_rst_stream state.writer stream_id NoError;
+              on_close new_context;
               step InProgress
                 {
                   state with
@@ -229,14 +256,16 @@ let process_complete_headers :
                     Streams.stream_transition state.streams stream_id
                       (State Closed);
                 })
-      | HalfClosed (Local { readers = BodyReader reader; context; _ }) ->
-          let { context = _new_context; _ } : _ reader_result =
+      | HalfClosed (Local { readers = BodyReader reader; on_close; context; _ })
+        ->
+          let { context = new_context; _ } : _ reader_result =
             reader context (`End (None, header_list))
           in
 
           let streams =
             Streams.(stream_transition state.streams stream_id (State Closed))
           in
+          on_close new_context;
           step InProgress { state with streams }
       | Open { readers = AwaitingResponse _; _ }
       | HalfClosed (Local { readers = AwaitingResponse _; _ }) ->
@@ -287,6 +316,7 @@ let process_complete_headers :
               readers = AwaitingResponse response_handler;
               writers = body_writer;
               error_handler;
+              on_close;
               context;
             },
           `Final _ ) ->
@@ -296,11 +326,18 @@ let process_complete_headers :
             match (body_reader, end_stream) with
             | None, _ ->
                 Writer.write_rst_stream state.writer stream_id NoError;
+                on_close context;
                 State Closed
             | Some _, true ->
                 State
                   (HalfClosed
-                     (Remote { writers = body_writer; error_handler; context }))
+                     (Remote
+                        {
+                          writers = body_writer;
+                          error_handler;
+                          on_close;
+                          context;
+                        }))
             | Some body_reader, false ->
                 State
                   (Open
@@ -308,6 +345,7 @@ let process_complete_headers :
                        readers = BodyReader body_reader;
                        writers = body_writer;
                        error_handler;
+                       on_close;
                        context;
                      })
           in
@@ -325,6 +363,7 @@ let process_complete_headers :
                  readers = AwaitingResponse response_handler;
                  error_handler;
                  context;
+                 on_close;
                }),
           `Final _ ) ->
           let body_reader, context = response_handler context response in
@@ -333,6 +372,7 @@ let process_complete_headers :
             match (end_stream, body_reader) with
             | false, None ->
                 Writer.write_rst_stream state.writer stream_id NoError;
+                on_close context;
                 State Closed
             | false, Some body_reader ->
                 State
@@ -341,9 +381,12 @@ let process_complete_headers :
                         {
                           readers = BodyReader body_reader;
                           error_handler;
+                          on_close;
                           context;
                         }))
-            | true, _ -> State Closed
+            | true, _ ->
+                on_close context;
+                State Closed
           in
           let streams =
             Streams.stream_transition state.streams stream_id new_stream_state
@@ -378,8 +421,14 @@ let request_writer_handler request_writer =
         new_state
     | Some
         (Request.Request
-           { response_handler; body_writer; error_handler; initial_context; _ }
-         as request) ->
+           {
+             response_handler;
+             body_writer;
+             error_handler;
+             initial_context;
+             on_close;
+             _;
+           } as request) ->
         let id = Streams.get_next_id state.streams `Client in
         Writer.writer_request_headers state.writer state.hpack_encoder id
           request;
@@ -395,6 +444,7 @@ let request_writer_handler request_writer =
                      writers = BodyWriter body_writer;
                      error_handler;
                      context = initial_context;
+                     on_close;
                    })
           | None ->
               State
@@ -404,6 +454,7 @@ let request_writer_handler request_writer =
                         readers = AwaitingResponse response_handler;
                         error_handler;
                         context = initial_context;
+                        on_close;
                       }))
         in
         {
