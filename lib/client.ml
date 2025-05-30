@@ -3,7 +3,7 @@ open Body
 
 type state = Streams.client_peer State.t
 type iteration = Types.iteration
-type 'context stream_state = Streams.(client_peer Stream.state)
+type 'context stream_state = Streams.client_peer Streams.Stream.state
 
 let process_data_frame :
     state -> Frame.frame_header -> Bigstringaf.t -> state step =

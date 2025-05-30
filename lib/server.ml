@@ -3,7 +3,7 @@ open Body
 
 type state = Streams.server_peer State.t
 type interation = Types.iteration
-type 'context stream_state = Streams.(server_peer Stream.state)
+type 'context stream_state = Streams.server_peer Streams.Stream.state
 
 let process_data_frame :
     state -> Frame.frame_header -> Bigstringaf.t -> state step =
@@ -310,7 +310,7 @@ let process_complete_headers :
             "HEADERS received on closed stream")
 
 let make_response_writer_handler :
-    Streams.(server_peer Stream.t) ->
+    Streams.server_peer Streams.Stream.t ->
     Stream_identifier.t ->
     (unit -> state -> state) option =
  fun stream id ->
