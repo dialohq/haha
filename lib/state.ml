@@ -44,7 +44,7 @@ let initial ~writer ~peer_settings ~user_settings =
   }
 
 let active_streams t = Streams.count_active t.streams
-let on_close_all t = Streams.on_close_all t.streams
+let error_all err t = Streams.error_all err t.streams
 
 let do_flush t =
   t.flush_thunk ();

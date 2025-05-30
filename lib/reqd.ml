@@ -10,7 +10,7 @@ type handler_result =
   | ReqdHandle : {
       body_reader : 'context Body.reader;
       response_writer : 'context Response.response_writer;
-      error_handler : 'context -> Error_code.t -> 'context;
+      error_handler : 'context -> Error.t -> 'context;
       context : 'context;
       on_close : 'context -> unit;
     }
@@ -24,7 +24,8 @@ let scheme t = t.scheme
 let authority t = t.authority
 let headers t = t.headers
 
-let handle ~context ~response_writer ~body_reader ~on_close ~error_handler =
+let handle ?(on_close = ignore) ~context ~response_writer ~body_reader
+    ~error_handler () =
   ReqdHandle { body_reader; response_writer; error_handler; on_close; context }
 
 let pp_hum fmt { meth; path; _ } =

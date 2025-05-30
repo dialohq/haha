@@ -214,7 +214,9 @@ let frame_handler ~process_complete_headers ~process_data_frame
         ( Remote { error_handler; context; _ }
         | Local { error_handler; context; _ } ) -> (
         (* TODO: here we should run the on_close stream callback with the _new_context *)
-        let _new_context = error_handler context error_code in
+        let _new_context =
+          error_handler context (StreamError (stream_id, error_code))
+        in
         let streams =
           Streams.stream_transition state.streams stream_id (State Closed)
         in
@@ -455,13 +457,13 @@ let finalize_iteration :
 
   match (iter_result, write_result) with
   | ConnectionError err, _ ->
-      on_close_all state;
+      error_all err state;
       { active_streams; state = Error err }
   | End, Ok () -> { active_streams; state = End }
   | InProgress, Ok () when state.shutdown && Streams.all_closed state.streams ->
       { active_streams; state = End }
   | (End | InProgress), Error exn ->
-      on_close_all state;
+      error_all (Exn exn) state;
       { active_streams; state = Error (Exn exn) }
   | InProgress, Ok () ->
       { active_streams; state = InProgress (fun () -> continue state) }

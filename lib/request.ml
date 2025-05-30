@@ -7,7 +7,7 @@ type t =
       headers : Header.t list;
       body_writer : 'context Body.writer option;
       response_handler : 'context Response.handler;
-      error_handler : 'context -> Error_code.t -> 'context;
+      error_handler : 'context -> Error.t -> 'context;
       on_close : 'context -> unit;
       initial_context : 'context;
     }
@@ -21,8 +21,8 @@ let scheme (Request t) = t.scheme
 let authority (Request t) = t.authority
 let headers (Request t) = t.headers
 
-let create ?authority ?(scheme = "http") ~context ~response_handler ~on_close
-    ~error_handler ~headers meth path =
+let create ?authority ?(scheme = "http") ?(on_close = ignore) ~context
+    ~response_handler ~error_handler ~headers meth path =
   Request
     {
       path;
@@ -37,8 +37,8 @@ let create ?authority ?(scheme = "http") ~context ~response_handler ~on_close
       initial_context = context;
     }
 
-let create_with_streaming ?authority ?(scheme = "http") ~context ~body_writer
-    ~response_handler ~on_close ~error_handler ~headers meth path =
+let create_with_streaming ?authority ?(scheme = "http") ?(on_close = ignore)
+    ~context ~body_writer ~response_handler ~error_handler ~headers meth path =
   Request
     {
       path;
