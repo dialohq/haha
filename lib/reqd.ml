@@ -11,7 +11,8 @@ type handler_result =
       body_reader : 'context Body.reader;
       response_writer : 'context Response.response_writer;
       error_handler : 'context -> Error_code.t -> 'context;
-      initial_context : 'context;
+      context : 'context;
+      on_close : 'context -> unit;
     }
       -> handler_result
 
@@ -23,9 +24,8 @@ let scheme t = t.scheme
 let authority t = t.authority
 let headers t = t.headers
 
-let handle ~context ~response_writer ~body_reader ~error_handler =
-  ReqdHandle
-    { body_reader; response_writer; error_handler; initial_context = context }
+let handle ~context ~response_writer ~body_reader ~on_close ~error_handler =
+  ReqdHandle { body_reader; response_writer; error_handler; on_close; context }
 
 let pp_hum fmt { meth; path; _ } =
   Format.fprintf fmt "%s %s" (Method.to_string meth) path

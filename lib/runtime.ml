@@ -345,7 +345,7 @@ let make_body_writer_event (type p) :
             readers;
             error_handler;
             context;
-            _;
+            on_close;
           } as state')) ->
       Some
         (fun () ->
@@ -356,7 +356,9 @@ let make_body_writer_event (type p) :
           body_writer_handler
             ~state_on_data:(State (Open { state' with context = new_context }))
             ~state_on_end:
-              (State (HalfClosed (Local { context; error_handler; readers })))
+              (State
+                 (HalfClosed
+                    (Local { context; error_handler; readers; on_close })))
             res id on_flush)
   | State
       (HalfClosed
@@ -452,11 +454,15 @@ let finalize_iteration :
   let active_streams = active_streams state in
 
   match (iter_result, write_result) with
-  | ConnectionError err, _ -> { active_streams; state = Error err }
+  | ConnectionError err, _ ->
+      on_close_all state;
+      { active_streams; state = Error err }
   | End, Ok () -> { active_streams; state = End }
   | InProgress, Ok () when state.shutdown && Streams.all_closed state.streams ->
       { active_streams; state = End }
-  | (End | InProgress), Error exn -> { active_streams; state = Error (Exn exn) }
+  | (End | InProgress), Error exn ->
+      on_close_all state;
+      { active_streams; state = Error (Exn exn) }
   | InProgress, Ok () ->
       { active_streams; state = InProgress (fun () -> continue state) }
 
