@@ -6,17 +6,26 @@ type t = {
   headers : Header.t list;
 }
 
-type 'context handler_result = {
-  body_reader : 'context Body.reader;
-  response_writer : 'context Response.response_writer;
-  error_handler : 'context -> Error_code.t -> 'context;
-  initial_context : 'context;
-}
+type handler_result =
+  | ReqdHandle : {
+      body_reader : 'context Body.reader;
+      response_writer : 'context Response.response_writer;
+      error_handler : 'context -> Error_code.t -> 'context;
+      initial_context : 'context;
+    }
+      -> handler_result
 
-type 'context handler = t -> 'context handler_result
+type handler = t -> handler_result
 
 let path t = t.path
 let meth t = t.meth
 let scheme t = t.scheme
 let authority t = t.authority
 let headers t = t.headers
+
+let handle ~context ~response_writer ~body_reader ~error_handler =
+  ReqdHandle
+    { body_reader; response_writer; error_handler; initial_context = context }
+
+let pp_hum fmt { meth; path; _ } =
+  Format.fprintf fmt "%s %s" (Method.to_string meth) path

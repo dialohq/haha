@@ -1,47 +1,51 @@
-type 'context t = {
-  path : string;
-  meth : Method.t;
-  authority : string option;
-  scheme : string;
-  headers : Header.t list;
-  body_writer : 'context Body.writer option;
-  response_handler : 'context Response.handler;
-  error_handler : 'context -> Error_code.t -> 'context;
-  initial_context : 'context;
-}
+type t =
+  | Request : {
+      path : string;
+      meth : Method.t;
+      authority : string option;
+      scheme : string;
+      headers : Header.t list;
+      body_writer : 'context Body.writer option;
+      response_handler : 'context Response.handler;
+      error_handler : 'context -> Error_code.t -> 'context;
+      initial_context : 'context;
+    }
+      -> t
 
-type 'context request_writer = unit -> 'context t option
+type request_writer = unit -> t option
 
-let path t = t.path
-let meth t = t.meth
-let scheme t = t.scheme
-let authority t = t.authority
-let headers t = t.headers
+let path (Request t) = t.path
+let meth (Request t) = t.meth
+let scheme (Request t) = t.scheme
+let authority (Request t) = t.authority
+let headers (Request t) = t.headers
 
 let create ?authority ?(scheme = "http") ~context ~response_handler
     ~error_handler ~headers meth path =
-  {
-    path;
-    meth;
-    authority;
-    scheme;
-    headers;
-    body_writer = None;
-    response_handler;
-    error_handler;
-    initial_context = context;
-  }
+  Request
+    {
+      path;
+      meth;
+      authority;
+      scheme;
+      headers;
+      body_writer = None;
+      response_handler;
+      error_handler;
+      initial_context = context;
+    }
 
-let create_with_streaming ?authority ?(scheme = "http") ~body_writer ~context
+let create_with_streaming ?authority ?(scheme = "http") ~context ~body_writer
     ~response_handler ~error_handler ~headers meth path =
-  {
-    path;
-    meth;
-    authority;
-    scheme;
-    headers;
-    body_writer = Some body_writer;
-    response_handler;
-    error_handler;
-    initial_context = context;
-  }
+  Request
+    {
+      path;
+      meth;
+      authority;
+      scheme;
+      headers;
+      body_writer = Some body_writer;
+      response_handler;
+      error_handler;
+      initial_context = context;
+    }

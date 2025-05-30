@@ -109,14 +109,14 @@ module Response : sig
 end
 
 module Request : sig
-  type 'context t
-  type 'context request_writer = unit -> 'context t option
+  type t
+  type request_writer = unit -> t option
 
-  val path : 'context t -> string
-  val meth : 'context t -> Method.t
-  val scheme : 'context t -> string
-  val authority : 'context t -> string option
-  val headers : 'context t -> Header.t list
+  val path : t -> string
+  val meth : t -> Method.t
+  val scheme : t -> string
+  val authority : t -> string option
+  val headers : t -> Header.t list
 
   val create :
     ?authority:string ->
@@ -127,37 +127,40 @@ module Request : sig
     headers:Header.t list ->
     Method.t ->
     string ->
-    'context t
+    t
 
   val create_with_streaming :
     ?authority:string ->
     ?scheme:string ->
-    body_writer:'context Body.writer ->
     context:'context ->
+    body_writer:'context Body.writer ->
     response_handler:'context Response.handler ->
     error_handler:('context -> Error_code.t -> 'context) ->
     headers:Header.t list ->
     Method.t ->
     string ->
-    'context t
+    t
 end
 
 module Reqd : sig
-  type 'context handler_result = {
-    body_reader : 'context Body.reader;
-    response_writer : 'context Response.response_writer;
-    error_handler : 'context -> Error_code.t -> 'context;
-    initial_context : 'context;
-  }
-
+  type handler_result
   type t
-  type 'context handler = t -> 'context handler_result
+  type handler = t -> handler_result
 
   val path : t -> string
   val meth : t -> Method.t
   val scheme : t -> string
   val authority : t -> string option
   val headers : t -> Header.t list
+
+  val handle :
+    context:'a ->
+    response_writer:'a Response.response_writer ->
+    body_reader:'a Body.reader ->
+    error_handler:('a -> Error_code.t -> 'a) ->
+    handler_result
+
+  val pp_hum : Format.formatter -> t -> unit
 end
 
 module Server : sig
@@ -166,7 +169,7 @@ module Server : sig
     ?config:Settings.t ->
     ?goaway_writer:(unit -> unit) ->
     error_handler:(Error.connection_error -> unit) ->
-    'context Reqd.handler ->
+    Reqd.handler ->
     [> `Flow | `R | `W ] Eio.Resource.t ->
     Eio.Net.Sockaddr.stream ->
     unit
@@ -181,7 +184,7 @@ module Client : sig
   val connect :
     'context.
     ?config:Settings.t ->
-    request_writer:'context Request.request_writer ->
+    request_writer:Request.request_writer ->
     [> `Flow | `R | `W ] Eio.Resource.t ->
     iteration
 end

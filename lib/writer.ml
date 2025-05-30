@@ -95,8 +95,8 @@ let write_trailers ?padding_length ?(end_header = true) t hpack_encoder
   write_response_headers t.faraday hpack_encoder frame_info None headers
 
 let writer_request_headers ?padding_length ?(end_header = true) t hpack_encoder
-    stream_id (request : 'c Request.t) =
-  let { Request.meth; path; scheme; authority; headers; body_writer; _ } =
+    stream_id (request : Request.t) =
+  let (Request { meth; path; scheme; authority; headers; body_writer; _ }) =
     request
   in
 

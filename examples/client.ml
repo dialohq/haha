@@ -52,11 +52,11 @@ let requests =
   Dynarray.of_list
     [
       Request.create_with_streaming ~body_writer ~context:(0, true)
-        ~error_handler ~response_handler ~headers:[] POST "/";
+        ~error_handler ~response_handler ~headers:[] POST "/stream";
     ]
 in
 
-let request_writer : context Request.request_writer =
+let request_writer : Request.request_writer =
  fun () -> Dynarray.pop_last_opt requests
 in
 

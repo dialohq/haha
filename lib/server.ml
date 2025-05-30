@@ -186,8 +186,7 @@ let process_data_frame :
             })
 
 let process_complete_headers :
-    _ Reqd.handler -> state -> Frame.frame_header -> Header.t list -> state step
-    =
+    Reqd.handler -> state -> Frame.frame_header -> Header.t list -> state step =
  fun request_handler state { Frame.flags; stream_id; _ } header_list ->
   let connection_error = step_connection_error state in
   let stream_error = step_stream_error state in
@@ -259,12 +258,13 @@ let process_complete_headers :
               }
             in
 
-            let {
-              Reqd.body_reader = reader;
-              response_writer;
-              error_handler;
-              initial_context;
-            } =
+            let (ReqdHandle
+                   {
+                     body_reader = reader;
+                     response_writer;
+                     error_handler;
+                     initial_context;
+                   }) =
               request_handler reqd
             in
 
@@ -417,7 +417,7 @@ let connection_handler :
     ?config:Settings.t ->
     ?goaway_writer:(unit -> unit) ->
     error_handler:(Error.connection_error -> unit) ->
-    'c Reqd.handler ->
+    Reqd.handler ->
     _ Eio.Resource.t ->
     _ =
  fun ?(config = Settings.default) ?goaway_writer ~error_handler request_handler
