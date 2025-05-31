@@ -29,9 +29,7 @@ let body_writer : context Body.writer = function
 in
 
 let body_reader : context Body.reader =
- fun _ -> function
-   | `Data cs -> { action = `Continue; context = `Data cs }
-   | `End _ -> { action = `Continue; context = `End }
+ fun _ -> function `Data cs -> `Data cs | `End _ -> `End
 in
 
 let error_handler : context -> Error.t -> context =
