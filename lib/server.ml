@@ -474,29 +474,27 @@ let connection_handler :
            fun state -> step InProgress (handler state))
   in
 
-  let receive_buffer = Cstruct.create (9 + config.max_frame_size) in
   let user_settings = config in
-  let mstring_len = String.length Frame.connection_preface in
+
+  let buf_reader =
+    Eio.Buf_read.of_flow ~max_size:Settings.default.max_frame_size socket
+  in
 
   let initial_state_result =
-    Eio.Flow.read_exact socket (Cstruct.sub receive_buffer 0 mstring_len);
-
-    match Parse.magic_parse receive_buffer.buffer ~off:0 ~len:mstring_len with
-    | Error _ as err -> err
+    match Eio.Buf_read.format_errors Parsers.connection_preface buf_reader with
+    | Error (`Msg msg) -> Error (Error.ProtocolViolation (ProtocolError, msg))
     | Ok _ -> (
         match
-          process_preface_settings ~socket ~receive_buffer ~user_settings ()
+          process_preface_settings ~socket ~buf_reader ~user_settings ()
         with
         | Error _ as err -> err
-        | Ok (peer_settings, rest_to_parse, writer) ->
-            Ok
-              ( State.initial ~user_settings ~peer_settings ~writer,
-                rest_to_parse ))
+        | Ok (peer_settings, writer) ->
+            Ok (State.initial ~user_settings ~peer_settings ~writer))
   in
 
   let initial_step =
-    start ~receive_buffer ~frame_handler ~initial_state_result
-      ~user_events_handlers socket
+    start ~buf_reader ~frame_handler ~initial_state_result ~user_events_handlers
+      socket
   in
 
   let rec loop : interation -> unit =

@@ -34,51 +34,24 @@ let handle_stream_error (state : _ State.t) stream_id code =
     streams = Streams.stream_transition state.streams stream_id (State Closed);
   }
 
-let process_preface_settings ?user_settings ~socket ~receive_buffer () =
-  let rec parse_loop read_off total_consumed total_read continue_opt =
-    let read_len =
-      Eio.Flow.single_read socket
-        (Cstruct.sub receive_buffer read_off
-           (Cstruct.length receive_buffer - read_off))
-    in
-
-    match
-      Parse.parse_frame
-        (Cstruct.sub receive_buffer read_off read_len)
-        continue_opt
-    with
-    | `Fail _ ->
-        Stdlib.Error
-          (Error.ProtocolViolation (ProtocolError, "invalid client preface"))
-    | `Partial (consumed, continue) ->
-        parse_loop consumed
-          (total_consumed + consumed)
-          (total_read + read_len) (Some continue)
-    | `Complete (consumed, { Frame.frame_payload = Settings settings_list; _ })
-      ->
-        let peer_settings = Settings.(update_with_list default settings_list) in
-        let open Writer in
-        let writer = create (peer_settings.max_frame_size + 9) in
-
-        (match user_settings with
-        | Some user_settings -> write_settings writer user_settings
-        | None -> ());
-        write_settings_ack writer;
-        write_window_update writer Stream_identifier.connection
-          Flow_control.WindowSize.initial_increment;
-        write writer socket
-        |> Result.map_error (fun exn -> Error.Exn exn)
-        |> Result.map (fun () ->
-               let rest_off = read_off + total_consumed + consumed in
-               let rest_len = total_read + read_len - rest_off in
-
-               ( peer_settings,
-                 Cstruct.sub receive_buffer rest_off rest_len,
-                 writer ))
-    | `Complete (_, _) ->
-        Error (ProtocolViolation (ProtocolError, "invalid client preface"))
-  in
-  parse_loop 0 0 0 None
+let process_preface_settings ?user_settings ~buf_reader ~socket () =
+  match Eio.Buf_read.format_errors Parsers.parse_frame buf_reader with
+  | Ok (Ok { Frame.frame_payload = Settings settings_list; _ }) ->
+      let peer_settings = Settings.(update_with_list default settings_list) in
+      let open Writer in
+      let writer = create (peer_settings.Settings.max_frame_size + 9) in
+      (match user_settings with
+      | Some user_settings -> write_settings writer user_settings
+      | None -> ());
+      write_settings_ack writer;
+      write_window_update writer Stream_identifier.connection
+        Flow_control.WindowSize.initial_increment;
+      write writer socket
+      |> Result.map_error (fun exn -> Error.Exn exn)
+      |> Result.map (fun () -> (peer_settings, writer))
+  | _ ->
+      Stdlib.Error
+        (Error.ProtocolViolation (ProtocolError, "invalid client preface"))
 
 let step iter_result state = { iter_result; state }
 
@@ -385,6 +358,7 @@ let user_goaway_handler ~f =
       Error_code.NoError;
     { state with shutdown = true }
 
+(* 
 let parse_and_handle ~frame_handler (state : _ State.t) cs =
   match Parse.read_frames cs state.parse_state with
   | Ok (consumed, frames, continue_opt) ->
@@ -410,32 +384,65 @@ let parse_and_handle ~frame_handler (state : _ State.t) cs =
               iter_result = InProgress;
               state = handle_stream_error state stream_id code;
             } ))
+*)
 
-let read_loop ~socket ~receive_buffer ~frame_handler off () =
-  let read_bytes =
-    try
-      Ok
-        (Eio.Flow.single_read socket
-           (Cstruct.sub receive_buffer off
-              (Cstruct.length receive_buffer - off)))
-    with
-    | Eio.Cancel.Cancelled _ as e -> raise e
-    | exn -> Error exn
+let parse_and_handle ~frame_handler ~buf_reader =
+ fun () ->
+  let parsing_result =
+    Eio.Buf_read.format_errors (Eio.Buf_read.seq Parsers.parse_frame) buf_reader
   in
+
   fun state ->
-    match read_bytes with
-    | Error exn -> step (ConnectionError (Exn exn)) state
-    | Ok read_bytes -> (
-        let consumed, next_step =
-          parse_and_handle ~frame_handler state
-            (Cstruct.sub receive_buffer 0 (read_bytes + off))
-        in
-        let unconsumed = read_bytes + off - consumed in
-        Cstruct.blit receive_buffer consumed receive_buffer 0 unconsumed;
-        match next_step with
-        | { iter_result = InProgress; state = next_state } ->
-            step InProgress { next_state with read_off = unconsumed }
-        | other -> other)
+    match parsing_result with
+    | Ok frame_seq ->
+        print_endline "parsed some shit";
+        Seq.fold_left
+          (fun step frame_res ->
+            print_endline "got the first some shit";
+            match step with
+            | { iter_result = InProgress; state } -> (
+                match frame_res with
+                | Ok frame -> frame_handler frame state
+                | Error (Error.ConnectionError err) ->
+                    { iter_result = ConnectionError err; state }
+                | Error (StreamError (id, code)) ->
+                    {
+                      iter_result = InProgress;
+                      state = handle_stream_error state id code;
+                    })
+            | other_step -> other_step)
+          { iter_result = InProgress; state }
+          frame_seq
+    | Error (`Msg msg) ->
+        print_endline "parsed some err";
+        let err = Error.ProtocolViolation (Error_code.ProtocolError, msg) in
+        { iter_result = ConnectionError err; state }
+
+(* let read_loop ~socket ~receive_buffer ~frame_handler off () = *)
+(*   let read_bytes = *)
+(*     try *)
+(*       Ok *)
+(*         (Eio.Flow.single_read socket *)
+(*            (Cstruct.sub receive_buffer off *)
+(*               (Cstruct.length receive_buffer - off))) *)
+(*     with *)
+(*     | Eio.Cancel.Cancelled _ as e -> raise e *)
+(*     | exn -> Error exn *)
+(*   in *)
+(*   fun state -> *)
+(*     match read_bytes with *)
+(*     | Error exn -> step (ConnectionError (Exn exn)) state *)
+(*     | Ok read_bytes -> ( *)
+(*         let next_step = *)
+(*           parse_and_handle ~frame_handler state *)
+(*             (Cstruct.sub receive_buffer 0 (read_bytes + off)) *)
+(*         in *)
+(*         let unconsumed = read_bytes + off - consumed in *)
+(*         Cstruct.blit receive_buffer consumed receive_buffer 0 unconsumed; *)
+(*         match next_step with *)
+(*         | { iter_result = InProgress; state = next_state } -> *)
+(*             step InProgress { next_state with read_off = unconsumed } *)
+(*         | other -> other) *)
 
 let combine_steps x y =
  fun step ->
@@ -470,19 +477,21 @@ let finalize_iteration :
 
 let start :
     'peer.
-    initial_state_result:('peer t * Cstruct.t, Error.connection_error) result ->
+    initial_state_result:
+      (* initial_state_result:('peer t * Cstruct.t, Error.connection_error) result -> *)
+      ('peer t, Error.connection_error) result ->
     frame_handler:(Frame.t -> 'peer t -> 'peer t step) ->
-    receive_buffer:Cstruct.t ->
+    buf_reader:Eio.Buf_read.t ->
     user_events_handlers:('peer t -> (unit -> 'peer t -> 'peer t step) list) ->
     _ Eio.Resource.t ->
     Types.iteration =
- fun ~initial_state_result ~frame_handler ~receive_buffer ~user_events_handlers
+ fun ~initial_state_result ~frame_handler ~buf_reader ~user_events_handlers
      socket ->
   let rec process_events : 'peer t -> Types.iteration =
    fun state ->
     let events =
-      read_loop ~receive_buffer ~socket ~frame_handler state.read_off
-      :: user_events_handlers state
+      print_endline "creating events";
+      parse_and_handle ~frame_handler ~buf_reader :: user_events_handlers state
     in
 
     let next_step = Eio.Fiber.any ~combine:combine_steps events in
@@ -491,27 +500,38 @@ let start :
     finalize_iteration socket process_events (next_step state)
   in
 
+  (* match initial_state_result with *)
+  (* | Error err -> *)
+  (*     let writer = create Settings.default.max_frame_size in *)
+  (*     handle_connection_error ~writer err; *)
+  (*     write writer socket |> ignore; *)
+  (*     { active_streams = 0; state = Error err } *)
+  (* | Ok (initial_state, rest_to_parse) -> *)
+  (*     if Cstruct.length rest_to_parse > 0 then *)
+  (*       let step = *)
+  (*         match parse_and_handle ~frame_handler initial_state rest_to_parse with *)
+  (*         | { iter_result = InProgress; state = next_state } -> *)
+  (*             step InProgress *)
+  (*               { *)
+  (*                 next_state with *)
+  (*                 read_off = rest_to_parse.Cstruct.len - consumed; *)
+  (*               } *)
+  (*         | _, step -> step *)
+  (*       in *)
+  (*       finalize_iteration socket process_events step *)
+  (*     else *)
+  (*       { *)
+  (*         active_streams = 0; *)
+  (*         state = InProgress (fun () -> process_events initial_state); *)
+  (*       } *)
   match initial_state_result with
   | Error err ->
       let writer = create Settings.default.max_frame_size in
       handle_connection_error ~writer err;
       write writer socket |> ignore;
       { active_streams = 0; state = Error err }
-  | Ok (initial_state, rest_to_parse) ->
-      if Cstruct.length rest_to_parse > 0 then
-        let step =
-          match parse_and_handle ~frame_handler initial_state rest_to_parse with
-          | consumed, { iter_result = InProgress; state = next_state } ->
-              step InProgress
-                {
-                  next_state with
-                  read_off = rest_to_parse.Cstruct.len - consumed;
-                }
-          | _, step -> step
-        in
-        finalize_iteration socket process_events step
-      else
-        {
-          active_streams = 0;
-          state = InProgress (fun () -> process_events initial_state);
-        }
+  | Ok state ->
+      {
+        active_streams = 0;
+        state = InProgress (fun () -> process_events state);
+      }

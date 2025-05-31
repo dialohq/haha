@@ -494,8 +494,10 @@ let connect :
   in
 
   let initial_writer = Writer.create Settings.default.max_frame_size in
-  let receive_buffer = Cstruct.create (9 + config.max_frame_size) in
   let user_settings = config in
+  let buf_reader =
+    Eio.Buf_read.of_flow ~max_size:Settings.default.max_frame_size socket
+  in
 
   Writer.write_connection_preface initial_writer;
   Writer.write_settings initial_writer user_settings;
@@ -503,14 +505,12 @@ let connect :
   let initial_state_result =
     match Writer.write initial_writer socket with
     | Ok () -> (
-        match process_preface_settings ~socket ~receive_buffer () with
+        match process_preface_settings ~buf_reader ~socket () with
         | Error _ as err -> err
-        | Ok (peer_settings, rest_to_parse, writer) ->
-            Ok
-              ( State.initial ~user_settings ~peer_settings ~writer,
-                rest_to_parse ))
+        | Ok (peer_settings, writer) ->
+            Ok (State.initial ~user_settings ~peer_settings ~writer))
     | Error exn -> Error (Exn exn)
   in
 
-  start ~frame_handler ~receive_buffer ~initial_state_result
-    ~user_events_handlers socket
+  start ~frame_handler ~buf_reader ~initial_state_result ~user_events_handlers
+    socket

@@ -59,8 +59,8 @@ let requests =
     [
       Request.create_with_streaming ~body_writer ~context:(0, true) ~on_close
         ~error_handler ~response_handler ~headers:[] POST "/stream";
-      Request.create_with_streaming ~body_writer ~context:(0, true) ~on_close
-        ~error_handler ~response_handler ~headers:[] POST "/stream";
+      (* Request.create_with_streaming ~body_writer ~context:(0, true) ~on_close *)
+      (*   ~error_handler ~response_handler ~headers:[] POST "/stream"; *)
     ]
 in
 
