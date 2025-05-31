@@ -71,7 +71,7 @@ module Response : sig
       No further responses will be send the this stream after this type of
       response. *)
 
-  type 'context interim_response
+  type interim_response
   (** The type representing an interim HEADERS response sent by the server.
       Those type of responses are informational and only informational (1xx)
       status codes are allowed for them. State of the associated stream is not
@@ -81,7 +81,7 @@ module Response : sig
       responses and/or a single [final_response]. *)
 
   type 'context t =
-    [ `Interim of 'context interim_response | `Final of 'context final_response ]
+    [ `Interim of interim_response | `Final of 'context final_response ]
   (** The type representing all types of responses, meaning [final_response] or
       [interim_response]. *)
 
@@ -94,9 +94,7 @@ module Response : sig
   val status : 'context t -> Status.t
   val headers : 'context t -> Header.t list
   val create : Status.t -> Header.t list -> 'context final_response
-
-  val create_interim :
-    Status.informational -> Header.t list -> 'context interim_response
+  val create_interim : Status.informational -> Header.t list -> interim_response
 
   val create_with_streaming :
     body_writer:'context writer ->
