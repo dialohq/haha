@@ -6,13 +6,13 @@ type 'context final_response = {
   body_writer : 'context writer option;
 }
 
-type 'context interim_response = {
+type interim_response = {
   status : Status.informational;
   headers : Header.t list;
 }
 
 type 'context t =
-  [ `Interim of 'context interim_response | `Final of 'context final_response ]
+  [ `Interim of interim_response | `Final of 'context final_response ]
 
 type 'context handler =
   'context -> 'context t -> 'context reader option * 'context
@@ -30,7 +30,7 @@ let create (status : Status.t) (headers : Header.t list) :
   { status; headers; body_writer = None }
 
 let create_interim (status : Status.informational) (headers : Header.t list) :
-    'context interim_response =
+    interim_response =
   { status; headers }
 
 let create_with_streaming ~(body_writer : 'context writer) (status : Status.t)
