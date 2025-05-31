@@ -30,10 +30,10 @@ let body_reader : context Body.reader =
  fun (count, _) -> function
    | `Data _ ->
        Printf.printf "received data back, count %i\n%!" count;
-       { action = `Continue; context = (count, true) }
+       (count, true)
    | `End _ ->
        Printf.printf "end of data\n%!";
-       { action = `Continue; context = (count, true) }
+       (count, true)
 in
 
 let error_handler : context -> Error.t -> context =

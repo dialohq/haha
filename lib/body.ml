@@ -1,10 +1,4 @@
-type reader_payload =
-  [ `Data of Cstruct.t | `End of Cstruct.t option * Header.t list ]
-
-type 'context reader_result = {
-  action : [ `Continue | `Reset ];
-  context : 'context;
-}
+type reader_payload = [ `Data of Cstruct.t | `End of Header.t list ]
 
 type 'context writer_payload =
   [ `Data of Cstruct.t list | `End of Cstruct.t list option * Header.t list ]
@@ -15,7 +9,7 @@ type 'context writer_result = {
   context : 'context;
 }
 
-type 'context reader = 'context -> reader_payload -> 'context reader_result
+type 'context reader = 'context -> reader_payload -> 'context
 type 'context writer = 'context -> 'context writer_result
 
-let ignore_reader : _ reader = fun context _ -> { action = `Continue; context }
+let ignore_reader : _ reader = fun context _ -> context
