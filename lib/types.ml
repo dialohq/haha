@@ -1,6 +1,6 @@
-type state =
-  | InProgress of (unit -> iteration)
+type 'input state =
+  | InProgress of ('input list -> 'input iteration)
   | End
   | Error of Error.connection_error
 
-and iteration = { state : state; active_streams : int }
+and 'input iteration = { state : 'input state; active_streams : int }
