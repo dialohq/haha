@@ -1,7 +1,8 @@
 open Runtime
 
+type iter_input = Shutdown | Request of Request.t
 type state = Streams.client_peer State.t
-type iteration = Types.iteration
+type iteration = iter_input Types.iteration
 type stream_state = Streams.client_peer Streams.Stream.state
 
 let process_response :
@@ -203,75 +204,66 @@ let process_complete_headers :
       process_response state pseudo end_stream header_list (State stream_state)
         stream_id
 
-let request_writer_handler request_writer =
- fun () ->
-  let req_opt = request_writer () in
+let input_handler : state -> iter_input -> state =
+ fun state input ->
+  if state.shutdown then
+    invalid_arg "HTTP/2 iteration: cannot pass inputs after Shutdown";
+  match input with
+  | Shutdown ->
+      Writer.write_goaway state.writer state.streams.last_peer_stream
+        Error_code.NoError;
+      let new_state = { state with shutdown = true } in
+      new_state
+  | Request
+      (Request.Request
+         {
+           response_handler;
+           body_writer;
+           error_handler;
+           initial_context;
+           on_close;
+           _;
+         } as request) ->
+      let id = Streams.get_next_id state.streams `Client in
+      Writer.writer_request_headers state.writer state.hpack_encoder id request;
+      Writer.write_window_update state.writer id
+        Flow_control.WindowSize.initial_increment;
+      let stream_state : stream_state =
+        match body_writer with
+        | Some body_writer ->
+            State
+              (Open
+                 {
+                   readers = AwaitingResponse response_handler;
+                   writers = BodyWriter body_writer;
+                   error_handler;
+                   context = initial_context;
+                   on_close;
+                 })
+        | None ->
+            State
+              (HalfClosed
+                 (Local
+                    {
+                      readers = AwaitingResponse response_handler;
+                      error_handler;
+                      context = initial_context;
+                      on_close;
+                    }))
+      in
+      {
+        state with
+        streams =
+          Streams.stream_transition state.streams id stream_state
+          |> Streams.update_last_local_stream id;
+      }
 
-  fun (state : state) ->
-    match req_opt with
-    | None ->
-        Writer.write_goaway state.writer state.streams.last_peer_stream
-          Error_code.NoError;
-        let new_state = { state with shutdown = true } in
-        new_state
-    | Some
-        (Request.Request
-           {
-             response_handler;
-             body_writer;
-             error_handler;
-             initial_context;
-             on_close;
-             _;
-           } as request) ->
-        let id = Streams.get_next_id state.streams `Client in
-        Writer.writer_request_headers state.writer state.hpack_encoder id
-          request;
-        Writer.write_window_update state.writer id
-          Flow_control.WindowSize.initial_increment;
-        let stream_state : stream_state =
-          match body_writer with
-          | Some body_writer ->
-              State
-                (Open
-                   {
-                     readers = AwaitingResponse response_handler;
-                     writers = BodyWriter body_writer;
-                     error_handler;
-                     context = initial_context;
-                     on_close;
-                   })
-          | None ->
-              State
-                (HalfClosed
-                   (Local
-                      {
-                        readers = AwaitingResponse response_handler;
-                        error_handler;
-                        context = initial_context;
-                        on_close;
-                      }))
-        in
-        {
-          state with
-          streams =
-            Streams.stream_transition state.streams id stream_state
-            |> Streams.update_last_local_stream id;
-        }
-
-let connect :
-    'c.
-    ?config:Settings.t ->
-    request_writer:Request.request_writer ->
-    _ Eio.Resource.t ->
-    iteration =
- fun ?(config = Settings.default) ~request_writer socket ->
+let connect : 'c. ?config:Settings.t -> _ Eio.Resource.t -> iteration =
+ fun ?(config = Settings.default) socket ->
   let frame_handler = frame_handler ~process_complete_headers in
 
   let user_events_handlers state =
-    match state.State.shutdown with
-    | false -> [ request_writer_handler request_writer |> map_event ]
-    | true -> []
+    match state.State.shutdown with false -> [] | true -> []
   in
 
   let initial_writer = Writer.create Settings.default.max_frame_size in
@@ -294,4 +286,4 @@ let connect :
   in
 
   start ~frame_handler ~receive_buffer ~initial_state_result
-    ~user_events_handlers socket
+    ~user_events_handlers ~input_handler socket

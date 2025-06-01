@@ -48,12 +48,12 @@ module Body : sig
 end
 
 module Types : sig
-  type state =
-    | InProgress of (unit -> iteration)
+  type 'input state =
+    | InProgress of ('input list -> 'input iteration)
     | End
     | Error of Error.connection_error
 
-  and iteration = { state : state; active_streams : int }
+  and 'input iteration = { state : 'input state; active_streams : int }
 end
 
 module Method = Method
@@ -178,12 +178,10 @@ end
 module Settings = Settings
 
 module Client : sig
-  type iteration = Types.iteration
+  type iter_input = Shutdown | Request of Request.t
+  type iteration = iter_input Types.iteration
 
   val connect :
     'context.
-    ?config:Settings.t ->
-    request_writer:Request.request_writer ->
-    [> `Flow | `R | `W ] Eio.Resource.t ->
-    iteration
+    ?config:Settings.t -> [> `Flow | `R | `W ] Eio.Resource.t -> iteration
 end

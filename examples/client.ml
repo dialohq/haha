@@ -54,35 +54,34 @@ let on_close =
  fun (count, _) -> Printf.printf "stream closed, final count: %i\n%!" count
 in
 
-let requests =
-  Dynarray.of_list
-    [
-      Request.create_with_streaming ~body_writer ~context:(0, true) ~on_close
-        ~error_handler ~response_handler ~headers:[] POST "/stream";
-      Request.create_with_streaming ~body_writer ~context:(0, true) ~on_close
-        ~error_handler ~response_handler ~headers:[] POST "/stream";
-    ]
+let inputs =
+  [
+    Client.Request
+      (Request.create_with_streaming ~body_writer ~context:(0, true) ~on_close
+         ~error_handler ~response_handler ~headers:[] POST "/stream");
+    Request
+      (Request.create_with_streaming ~body_writer ~context:(0, true) ~on_close
+         ~error_handler ~response_handler ~headers:[] POST "/stream");
+    Shutdown;
+  ]
 in
 
-let request_writer : Request.request_writer =
- fun () -> Dynarray.pop_last_opt requests
+let initial_iteration = Client.connect socket in
+
+let rec iterate : Client.iter_input list -> Client.iteration -> unit =
+ fun inputs -> function
+   | { state = End; _ } -> print_endline "end of connection"
+   | { state = Error (Exn exn); _ } ->
+       Printf.printf "connection error, exn: %s\n%!" (Printexc.to_string exn)
+   | { state = Error (PeerError (code, msg)); _ } ->
+       Printf.printf "connection error, peer error of code %s: %s\n%!"
+         (Error_code.to_string code)
+         msg
+   | { state = Error (ProtocolViolation (code, msg)); _ } ->
+       Printf.printf "connection error, protocol violation of code %s: %s\n%!"
+         (Error_code.to_string code)
+         msg
+   | { state = InProgress next; _ } -> iterate [] (next inputs)
 in
 
-let initial_iteration = Client.connect ~request_writer socket in
-
-let rec iterate : Client.iteration -> unit = function
-  | { state = End; _ } -> print_endline "end of connection"
-  | { state = Error (Exn exn); _ } ->
-      Printf.printf "connection error, exn: %s\n%!" (Printexc.to_string exn)
-  | { state = Error (PeerError (code, msg)); _ } ->
-      Printf.printf "connection error, peer error of code %s: %s\n%!"
-        (Error_code.to_string code)
-        msg
-  | { state = Error (ProtocolViolation (code, msg)); _ } ->
-      Printf.printf "connection error, protocol violation of code %s: %s\n%!"
-        (Error_code.to_string code)
-        msg
-  | { state = InProgress next; _ } -> iterate (next ())
-in
-
-iterate initial_iteration
+iterate inputs initial_iteration

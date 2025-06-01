@@ -1,7 +1,9 @@
 open Runtime
+open Types
 
+type iter_input = Shutdown
 type state = Streams.server_peer State.t
-type interation = Types.iteration
+type interation = iter_input Types.iteration
 type stream_state = Streams.server_peer Streams.Stream.state
 
 let process_request :
@@ -273,9 +275,11 @@ let connection_handler :
                 rest_to_parse ))
   in
 
+  let input_handler = fun s _ -> s in
+
   let initial_step =
     start ~receive_buffer ~frame_handler ~initial_state_result
-      ~user_events_handlers socket
+      ~user_events_handlers ~input_handler socket
   in
 
   let rec loop : interation -> unit =
@@ -283,7 +287,7 @@ let connection_handler :
     match step with
     | { state = End; _ } -> ()
     | { state = Error err; _ } -> error_handler err
-    | { state = InProgress next; _ } -> loop (next ())
+    | { state = InProgress next; _ } -> loop (next [])
   in
 
   loop initial_step

@@ -595,7 +595,10 @@ let get_body_writers : _ t -> (unit -> _ t -> _ t step) list =
     state.streams.map []
 
 let finalize_iteration :
-    _ Eio.Resource.t -> (_ t -> Types.iteration) -> _ step -> Types.iteration =
+    _ Eio.Resource.t ->
+    ('peer t -> 'i list -> 'i Types.iteration) ->
+    'peer t step ->
+    'i Types.iteration =
  fun socket continue { iter_result; state } ->
   (match iter_result with
   | ConnectionError err ->
@@ -616,8 +619,7 @@ let finalize_iteration :
   | (End | InProgress), Error exn ->
       error_all (Exn exn) state;
       { active_streams; state = Error (Exn exn) }
-  | InProgress, Ok () ->
-      { active_streams; state = InProgress (fun () -> continue state) }
+  | InProgress, Ok () -> { active_streams; state = InProgress (continue state) }
 
 let start :
     'peer.
@@ -625,21 +627,31 @@ let start :
     frame_handler:(Frame.t -> 'peer t -> 'peer t step) ->
     receive_buffer:Cstruct.t ->
     user_events_handlers:('peer t -> (unit -> 'peer t -> 'peer t step) list) ->
+    input_handler:('peer t -> 't -> 'peer t) ->
     _ Eio.Resource.t ->
-    Types.iteration =
+    'i Types.iteration =
  fun ~initial_state_result ~frame_handler ~receive_buffer ~user_events_handlers
-     socket ->
-  let rec process_events : 'peer t -> Types.iteration =
-   fun state ->
-    let events =
-      read_loop ~receive_buffer ~socket ~frame_handler state.read_off
-      :: List.concat [ user_events_handlers state; get_body_writers state ]
-    in
+     ~input_handler socket ->
+  let process_inputs : 'i list -> 'peer t -> 'peer t step =
+   fun inputs ->
+    (fun state -> List.fold_left input_handler state inputs) |> map_transition
+  in
 
-    let next_step = Eio.Fiber.any ~combine:combine_steps events in
+  let rec process_events : 'peer t -> 'i list -> 'i Types.iteration =
+   fun state -> function
+     | [] ->
+         let events =
+           read_loop ~receive_buffer ~socket ~frame_handler state.read_off
+           :: List.concat [ user_events_handlers state; get_body_writers state ]
+         in
 
-    Eio.Cancel.protect @@ fun () ->
-    finalize_iteration socket process_events (next_step state)
+         let next_step = Eio.Fiber.any ~combine:combine_steps events in
+
+         Eio.Cancel.protect @@ fun () ->
+         finalize_iteration socket process_events (next_step state)
+     | inputs ->
+         Eio.Cancel.protect @@ fun () ->
+         finalize_iteration socket process_events (process_inputs inputs state)
   in
 
   match initial_state_result with
@@ -664,5 +676,5 @@ let start :
       else
         {
           active_streams = 0;
-          state = InProgress (fun () -> process_events initial_state);
+          state = InProgress (process_events initial_state);
         }
