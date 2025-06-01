@@ -90,6 +90,7 @@ let write_rst_stream_frame t stream_id e =
   BE.write_uint32 t (Error_code.serialize e)
 
 let write_headers t hpack_encoder frame_info headers =
+  let tmp_faraday = Faraday.create 1_000 in
   let writer t =
     List.iter
       (fun header ->
@@ -102,17 +103,12 @@ let write_headers t hpack_encoder frame_info headers =
       headers
   in
 
-  let length =
-    List.fold_left
-      (fun acc header ->
-        acc
-        + Hpackv.Encoder.calculate_length hpack_encoder
-            {
-              Hpackv.name = header.Header.name;
-              value = header.value;
-              sensitive = false;
-            })
-      0 headers
+  writer tmp_faraday;
+  let length = Faraday.pending_bytes tmp_faraday in
+
+  (* FIXME: workaround as fuck. Will change it after implementing immutable HPACK tho *)
+  let writer t =
+    Faraday.schedule_bigstring t (Faraday.serialize_to_bigstring tmp_faraday)
   in
   write_frame_with_padding t frame_info Headers length writer
 
