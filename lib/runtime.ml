@@ -426,9 +426,10 @@ let body_writer_handler (type p) :
     _ Body.writer_payload ->
     Stream_identifier.t ->
     (unit -> unit) ->
+    (unit -> unit) ->
     p t ->
     p t =
- fun ~state_on_data ~state_on_end res id on_flush ->
+ fun ~state_on_data ~state_on_end res id on_flush on_close ->
   fun state ->
    let state =
      { state with flush_thunk = Util.merge_thunks state.flush_thunk on_flush }
@@ -459,6 +460,7 @@ let body_writer_handler (type p) :
 
        if send_trailers then
          write_trailers state.writer state.hpack_encoder id trailers;
+       (match state_on_end with State Closed -> on_close () | _ -> ());
        {
          state with
          streams = Streams.stream_transition state.streams id state_on_end;
@@ -468,6 +470,7 @@ let body_writer_handler (type p) :
        if send_trailers then
          write_trailers state.writer state.hpack_encoder id trailers
        else write_data ~end_stream:true state.writer id 0 [ Cstruct.empty ];
+       (match state_on_end with State Closed -> on_close () | _ -> ());
        {
          state with
          streams = Streams.(stream_transition state.streams id state_on_end);
@@ -501,11 +504,13 @@ let make_body_writer_event (type p) :
                  (HalfClosed
                     (Local { context; error_handler; readers; on_close })))
             res id on_flush
+            (fun () -> on_close context)
           |> map_transition)
   | State
       (HalfClosed
-         (Remote ({ writers = BodyWriter body_writer; context; _ } as state')))
-    ->
+         (Remote
+            ({ writers = BodyWriter body_writer; on_close; context; _ } as
+             state'))) ->
       Some
         (fun () ->
           let { Body.payload = res; on_flush; context = new_context } =
@@ -516,6 +521,7 @@ let make_body_writer_event (type p) :
             ~state_on_data:
               (State (HalfClosed (Remote { state' with context = new_context })))
             ~state_on_end:(State Closed) res id on_flush
+            (fun () -> on_close context)
           |> map_transition)
   | _ -> None
 
