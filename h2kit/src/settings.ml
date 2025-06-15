@@ -49,7 +49,6 @@ let update_with_list settings new_settings =
       | MaxHeaderListSize x -> { acc with max_header_list_size = Some x })
     settings new_settings
 
-(*
 let to_settings_list settings =
   let settings_list =
     if settings.max_frame_size <> default.max_frame_size then
@@ -73,4 +72,3 @@ let to_settings_list settings =
     else settings_list
   in
   settings_list
-*)

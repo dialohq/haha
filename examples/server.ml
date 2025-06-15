@@ -23,7 +23,12 @@ let conn_error_handler : Error.connection_error -> unit = function
 in
 
 let body_writer : context Body.writer = function
-  | `End -> { payload = `End (None, []); on_flush = ignore; context = `End }
+  | `End ->
+      {
+        payload = `End (None, Headers.empty);
+        on_flush = ignore;
+        context = `End;
+      }
   | `Data cs -> { payload = `Data [ cs ]; on_flush = ignore; context = `Wait }
   | `Wait -> Eio.Fiber.await_cancel ()
 in
@@ -41,7 +46,7 @@ let error_handler : context -> Error.t -> context =
 in
 
 let response_writer : context Response.response_writer =
- fun () -> `Final (Response.create_with_streaming ~body_writer `OK [])
+ fun () -> `Final (Response.create_with_streaming ~body_writer `OK)
 in
 
 let on_close = fun _ -> Printf.printf "stream closed\n%!" in

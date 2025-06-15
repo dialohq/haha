@@ -1,7 +1,9 @@
-type reader_payload = [ `Data of Cstruct.t | `End of Header.t list ]
+open H2kit
+
+type reader_payload = [ `Data of Cstruct.t | `End of Headers.t ]
 
 type 'context writer_payload =
-  [ `Data of Cstruct.t list | `End of Cstruct.t list option * Header.t list ]
+  [ `Data of Cstruct.t list | `End of Cstruct.t list option * Headers.t ]
 
 type 'context writer_result = {
   payload : 'context writer_payload;

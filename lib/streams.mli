@@ -1,3 +1,4 @@
+open H2kit
 module StreamMap : Map.S
 
 type client_peer = private Client
@@ -40,13 +41,13 @@ val all_closed : _ t -> bool
 val read_data :
   end_stream:bool ->
   send_update:(int32 -> unit) ->
-  data:Bigstringaf.t ->
+  data:Cstruct.t ->
   Stream_identifier.t ->
   'p t ->
   ('p t, Error.connection_error) result
 
 val receive_trailers :
-  headers:Header.t list ->
+  headers:Headers.t ->
   Stream_identifier.t ->
   'p t ->
   ('p t, Error.connection_error) result
@@ -61,9 +62,9 @@ val receive_window_update :
   Stream_identifier.t -> int32 -> 'p t -> ('p t, Error.connection_error) result
 
 val receive_response :
-  pseudo:Header.Pseudo.response_pseudo ->
+  pseudo:Headers.Pseudo.response_pseudos ->
   end_stream:bool ->
-  headers:Header.t list ->
+  headers:Headers.t ->
   writer:Writer.t ->
   Stream_identifier.t ->
   client_peer t ->
@@ -71,9 +72,9 @@ val receive_response :
 
 val receive_request :
   request_handler:Reqd.handler ->
-  pseudo:Header.Pseudo.request_pseudo ->
+  pseudo:Headers.Pseudo.request_pseudos ->
   end_stream:bool ->
-  headers:Header.t list ->
+  headers:Headers.t ->
   max_streams:int32 ->
   Stream_identifier.t ->
   server_peer t ->

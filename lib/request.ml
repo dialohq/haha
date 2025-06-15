@@ -1,10 +1,12 @@
+open H2kit
+
 type t =
   | Request : {
       path : string;
       meth : Method.t;
       authority : string option;
       scheme : string;
-      headers : Header.t list;
+      headers : Headers.t;
       body_writer : 'context Body.writer option;
       response_handler : 'context Response.handler;
       error_handler : 'context -> Error.t -> 'context;
@@ -21,8 +23,9 @@ let scheme (Request t) = t.scheme
 let authority (Request t) = t.authority
 let headers (Request t) = t.headers
 
-let create ?authority ?(scheme = "http") ?(on_close = ignore) ~context
-    ~response_handler ~error_handler ~headers meth path =
+let create ?authority ?(scheme = "http") ?(on_close = ignore)
+    ?(headers = Headers.empty) ~context ~response_handler ~error_handler meth
+    path =
   Request
     {
       path;
@@ -38,7 +41,8 @@ let create ?authority ?(scheme = "http") ?(on_close = ignore) ~context
     }
 
 let create_with_streaming ?authority ?(scheme = "http") ?(on_close = ignore)
-    ~context ~body_writer ~response_handler ~error_handler ~headers meth path =
+    ?(headers = Headers.empty) ~context ~body_writer ~response_handler
+    ~error_handler meth path =
   Request
     {
       path;

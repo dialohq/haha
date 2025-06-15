@@ -1,3 +1,4 @@
+open H2kit
 module StreamMap = Map.Make (Int32)
 
 type client_peer = private Client
@@ -183,7 +184,7 @@ let update_stream_state :
 let read_data :
     end_stream:bool ->
     send_update:(int32 -> unit) ->
-    data:Bigstringaf.t ->
+    data:Cstruct.t ->
     Stream_identifier.t ->
     'p t ->
     ('p t, Error.connection_error) result =
@@ -220,7 +221,7 @@ let read_data :
           in
           let flow =
             Flow_control.receive_data ~send_update flow
-              (Bigstringaf.length data |> Int32.of_int)
+              (Cstruct.length data |> Int32.of_int)
           in
 
           let new_state : _ Stream.state =
@@ -251,7 +252,7 @@ let read_data :
           in
           let flow =
             Flow_control.receive_data ~send_update flow
-              (Bigstringaf.length data |> Int32.of_int)
+              (Cstruct.length data |> Int32.of_int)
           in
 
           let new_state : _ Stream.state =
@@ -374,20 +375,19 @@ let body_writer_handler (type p) :
    match res with
    | `Data cs_list ->
        let distributed = Util.split_cstructs cs_list max_frame_size in
-       List.iteri
-         (fun _ (cs_list, len) ->
-           Writer.write_data ~end_stream:false writer id len cs_list)
+       List.iter
+         (fun cs_list -> Writer.write_data ~end_stream:false writer id cs_list)
          distributed;
 
        stream_transition id state_on_data t
    | `End (Some cs_list, trailers) ->
-       let send_trailers = List.length trailers > 0 in
+       let send_trailers = Headers.length trailers > 0 in
        let distributed = Util.split_cstructs cs_list max_frame_size in
        List.iteri
-         (fun i (cs_list, len) ->
+         (fun i cs_list ->
            Writer.write_data
              ~end_stream:((not send_trailers) && i = List.length distributed - 1)
-             writer id len cs_list)
+             writer id cs_list)
          distributed;
 
        if send_trailers then Writer.write_trailers writer id trailers;
@@ -395,9 +395,9 @@ let body_writer_handler (type p) :
 
        stream_transition id state_on_end t
    | `End (None, trailers) ->
-       let send_trailers = List.length trailers > 0 in
+       let send_trailers = Headers.length trailers > 0 in
        if send_trailers then Writer.write_trailers writer id trailers
-       else Writer.write_data ~end_stream:true writer id 0 [ Cstruct.empty ];
+       else Writer.write_data ~end_stream:true writer id [ Cstruct.empty ];
        (match state_on_end with State Closed -> on_close () | _ -> ());
 
        stream_transition id state_on_end t
@@ -542,7 +542,7 @@ let response_writers_transitions :
     t.map []
 
 let receive_trailers :
-    headers:Header.t list ->
+    headers:Headers.t ->
     Stream_identifier.t ->
     'p t ->
     ('p t, Error.connection_error) result =
@@ -594,9 +594,9 @@ let receive_trailers :
 
 let receive_request :
     request_handler:Reqd.handler ->
-    pseudo:Header.Pseudo.request_pseudo ->
+    pseudo:Headers.Pseudo.request_pseudos ->
     end_stream:bool ->
-    headers:Header.t list ->
+    headers:Headers.t ->
     max_streams:int32 ->
     Stream_identifier.t ->
     server_peer t ->
@@ -615,7 +615,7 @@ let receive_request :
                 path = pseudo.path;
                 authority = pseudo.authority;
                 scheme = pseudo.scheme;
-                headers = Header.filter_pseudo headers;
+                headers;
               }
             in
 
@@ -675,15 +675,14 @@ let receive_request :
   update_stream_state id f t
 
 let receive_response :
-    pseudo:Header.Pseudo.response_pseudo ->
+    pseudo:Headers.Pseudo.response_pseudos ->
     end_stream:bool ->
-    headers:Header.t list ->
+    headers:Headers.t ->
     writer:Writer.t ->
     Stream_identifier.t ->
     client_peer t ->
     (client_peer t, Error.connection_error) result =
  fun ~pseudo ~end_stream ~headers ~writer id t ->
-  let headers = Header.filter_pseudo headers in
   let response () : _ Response.t =
     match Status.of_code pseudo.status with
     | #Status.informational as status -> `Interim { status; headers }

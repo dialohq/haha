@@ -1,3 +1,4 @@
+open H2kit
 open Runtime
 open Types
 
@@ -7,21 +8,22 @@ type interation = iter_input Types.iteration
 type stream_state = Streams.server_peer Streams.Stream.t
 
 let process_complete_headers :
-    Reqd.handler -> state -> Frame.frame_header -> Header.t list -> state step =
+    Reqd.handler -> state -> Frame.frame_header -> Headers.t -> state step =
  fun request_handler state { Frame.flags; stream_id; _ } headers ->
   let stream_error = step_stream_error state in
-  let pseudo_validation = Header.Pseudo.validate_request headers in
+  let pseudo_validation = Headers.Pseudo.validate headers in
 
   match (Flags.test_end_stream flags, pseudo_validation) with
-  | _, Invalid | false, No_pseudo ->
+  | _, Invalid _ | false, NotPresent | _, Valid (Response _) ->
       stream_error stream_id Error_code.ProtocolError
-  | true, No_pseudo -> (
+  | true, NotPresent -> (
       match Streams.receive_trailers ~headers stream_id state.streams with
       | Error err -> step (ConnectionError err) state
       | Ok streams -> step InProgress { state with streams })
-  | end_stream, Valid pseudo -> (
+  | end_stream, Valid (Request pseudo) -> (
       match
-        Streams.receive_request ~request_handler ~pseudo ~end_stream ~headers
+        Streams.receive_request ~request_handler ~pseudo ~end_stream
+          ~headers:(Headers.filter_out_pseudo headers)
           ~max_streams:state.local_settings.max_concurrent_streams stream_id
           state.streams
       with

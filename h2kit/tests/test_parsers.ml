@@ -244,8 +244,7 @@ let test_ping_frame () =
             stream_id;
             frame_type = Frame.FrameType.Ping;
           };
-        frame_payload =
-          Frame.Ping (Bigstringaf.of_string ~off:0 ~len:8 opaque_data);
+        frame_payload = Frame.Ping (Cstruct.of_string ~off:0 ~len:8 opaque_data);
       }
   in
   let result = run_parser Parsers.parse_frame frame_str in

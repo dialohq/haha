@@ -1,15 +1,13 @@
 open Body
+open H2kit
 
 type 'context final_response = {
   status : Status.t;
-  headers : Header.t list;
+  headers : Headers.t;
   body_writer : 'context writer option;
 }
 
-type interim_response = {
-  status : Status.informational;
-  headers : Header.t list;
-}
+type interim_response = { status : Status.informational; headers : Headers.t }
 
 type 'context t =
   [ `Interim of interim_response | `Final of 'context final_response ]
@@ -25,14 +23,15 @@ let status (t : _ t) =
 let headers (t : _ t) =
   match t with `Interim r -> r.headers | `Final r -> r.headers
 
-let create (status : Status.t) (headers : Header.t list) :
+let create ?(headers = Headers.empty) (status : Status.t) :
     'context final_response =
   { status; headers; body_writer = None }
 
-let create_interim (status : Status.informational) (headers : Header.t list) :
+let create_interim ?(headers = Headers.empty) (status : Status.informational) :
     interim_response =
   { status; headers }
 
-let create_with_streaming ~(body_writer : 'context writer) (status : Status.t)
-    (headers : Header.t list) : 'context final_response =
+let create_with_streaming ?(headers = Headers.empty)
+    ~(body_writer : 'context writer) (status : Status.t) :
+    'context final_response =
   { status; headers; body_writer = Some body_writer }

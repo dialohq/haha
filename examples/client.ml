@@ -22,7 +22,7 @@ let body_writer : context Body.writer =
         on_flush = ignore;
         context = (count + 1, false);
       }
-  | true -> { payload = `End (None, []); on_flush = ignore; context }
+  | true -> { payload = `End (None, Headers.empty); on_flush = ignore; context }
   | false -> Eio.Fiber.await_cancel ()
 in
 
@@ -58,10 +58,10 @@ let inputs =
   [
     Client.Request
       (Request.create_with_streaming ~body_writer ~context:(0, true) ~on_close
-         ~error_handler ~response_handler ~headers:[] POST "/stream");
+         ~error_handler ~response_handler POST "/stream");
     Request
       (Request.create_with_streaming ~body_writer ~context:(0, true) ~on_close
-         ~error_handler ~response_handler ~headers:[] POST "/stream");
+         ~error_handler ~response_handler POST "/stream");
     Shutdown;
   ]
 in

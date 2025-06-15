@@ -1,4 +1,5 @@
 module AU = Angstrom.Unbuffered
+open H2kit
 
 type continue =
   Bigstringaf.t ->

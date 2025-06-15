@@ -1,39 +1,29 @@
-module Error_code = Error_code
+module Error_code = H2kit.Error_code
 
 module Error : sig
-  type connection_error =
-    | ProtocolViolation of (Error_code.t * string)
-    | PeerError of (Error_code.t * string)
-    | Exn of exn
-        (** The type of connection error. Caused by a valiation of the protocol
-            from the other side of connection, or an exception. *)
-
-  type stream_error = int32 * Error_code.t
-  type t = ConnectionError of connection_error | StreamError of stream_error
+  type connection_error = H2kit.Error.connection_error
+  type stream_error = H2kit.Error.stream_error
+  type t = H2kit.Error.t
 end
 
-module Header : sig
-  type t = { name : string; value : string }
-  (** The type of header *)
+module Headers : sig
+  type t
+  (** Type representing a set of header fields *)
 
-  val of_list : (string * string) list -> t list
-  (** [of_list assoc] is list of header fields defined by a association list
-      [assoc]. *)
-
-  val to_list : t list -> (string * string) list
-  (** [to_list l] is a association list of header fields contained in the list
-      of headers [l]. *)
-
-  val find_opt : string -> t list -> string option
-  (** [find_opt name l] returns the first header from list of headers [l] with
-      name [name], or [None] if no header name is present. *)
+  val empty : t
+  val of_list : (string * string) list -> t
+  val to_list : t -> (string * string) list
+  val iter : (string * string -> unit) -> t -> unit
+  val find_opt : string -> t -> string option
+  val length : t -> int
+  val join : t list -> t
 end
 
 module Body : sig
-  type reader_payload = [ `Data of Cstruct.t | `End of Header.t list ]
+  type reader_payload = [ `Data of Cstruct.t | `End of Headers.t ]
 
   type 'context writer_payload =
-    [ `Data of Cstruct.t list | `End of Cstruct.t list option * Header.t list ]
+    [ `Data of Cstruct.t list | `End of Cstruct.t list option * Headers.t ]
 
   type 'context writer_result = {
     payload : 'context writer_payload;
@@ -92,14 +82,16 @@ module Response : sig
   (** The type of the callback function for writing response [t]. *)
 
   val status : 'context t -> Status.t
-  val headers : 'context t -> Header.t list
-  val create : Status.t -> Header.t list -> 'context final_response
-  val create_interim : Status.informational -> Header.t list -> interim_response
+  val headers : 'context t -> Headers.t
+  val create : ?headers:Headers.t -> Status.t -> 'context final_response
+
+  val create_interim :
+    ?headers:Headers.t -> Status.informational -> interim_response
 
   val create_with_streaming :
+    ?headers:Headers.t ->
     body_writer:'context writer ->
     Status.t ->
-    Header.t list ->
     'context final_response
 end
 
@@ -111,16 +103,16 @@ module Request : sig
   val meth : t -> Method.t
   val scheme : t -> string
   val authority : t -> string option
-  val headers : t -> Header.t list
+  val headers : t -> Headers.t
 
   val create :
     ?authority:string ->
     ?scheme:string ->
     ?on_close:('context -> unit) ->
+    ?headers:Headers.t ->
     context:'context ->
     response_handler:'context Response.handler ->
     error_handler:('context -> Error.t -> 'context) ->
-    headers:Header.t list ->
     Method.t ->
     string ->
     t
@@ -129,11 +121,11 @@ module Request : sig
     ?authority:string ->
     ?scheme:string ->
     ?on_close:('context -> unit) ->
+    ?headers:Headers.t ->
     context:'context ->
     body_writer:'context Body.writer ->
     response_handler:'context Response.handler ->
     error_handler:('context -> Error.t -> 'context) ->
-    headers:Header.t list ->
     Method.t ->
     string ->
     t
@@ -148,7 +140,7 @@ module Reqd : sig
   val meth : t -> Method.t
   val scheme : t -> string
   val authority : t -> string option
-  val headers : t -> Header.t list
+  val headers : t -> Headers.t
 
   val handle :
     ?on_close:('a -> unit) ->
@@ -162,6 +154,29 @@ module Reqd : sig
   val pp_hum : Format.formatter -> t -> unit
 end
 
+module Settings : sig
+  type t = {
+    header_table_size : int;
+    enable_push : bool;
+    max_concurrent_streams : int32;
+    initial_window_size : int32;
+    max_frame_size : int;
+    max_header_list_size : int option;
+  }
+
+  val octets_per_setting : int
+  val minimal_frame_size_allowed : int
+  val default : t
+
+  type setting =
+    | HeaderTableSize of int
+    | EnablePush of int
+    | MaxConcurrentStreams of int32
+    | InitialWindowSize of int32
+    | MaxFrameSize of int
+    | MaxHeaderListSize of int
+end
+
 module Server : sig
   val connection_handler :
     'context.
@@ -173,9 +188,6 @@ module Server : sig
     Eio.Net.Sockaddr.stream ->
     unit
 end
-
-(* TODO: shouldn't be exposed in whole *)
-module Settings = Settings
 
 module Client : sig
   type iter_input = Shutdown | Request of Request.t

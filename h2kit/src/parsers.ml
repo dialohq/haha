@@ -126,7 +126,8 @@ let parse_ping_frame ({ Frame.payload_length; _ } as headers) =
   match Frame.validate_header headers with
   | Error _ as err -> advance payload_length >>| fun () -> err
   | Ok _ ->
-      lift (fun bs -> Ok (Frame.Ping bs)) (take_bigstring_unsafe payload_length)
+      take_bigstring_unsafe payload_length >>| fun bs ->
+      Ok (Frame.Ping (Cstruct.of_bigarray bs))
 
 let parse_go_away_frame ({ Frame.payload_length; _ } as headers) =
   match Frame.validate_header headers with

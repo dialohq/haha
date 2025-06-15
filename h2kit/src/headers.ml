@@ -1,9 +1,12 @@
 type header = { name : string; value : string }
 type t = header list
 
+let empty = []
 let of_list = List.map (fun header -> { name = fst header; value = snd header })
 let to_list = List.map (fun header -> (header.name, header.value))
 let iter f = List.iter (fun header -> f (header.name, header.value))
+let length = List.length
+let join = List.concat
 
 let make_response_headers ?(extra = []) status =
   of_list @@ ((":status", string_of_int status) :: extra)
@@ -21,7 +24,7 @@ module Pseudo = struct
     authority : string option;
   }
 
-  type response_pseudos = { status : string }
+  type response_pseudos = { status : int }
   type pseudo = Request of request_pseudos | Response of response_pseudos
   type validation_result = NotPresent | Valid of pseudo | Invalid of string
 
@@ -89,7 +92,7 @@ module Pseudo = struct
                     Invalid
                       "Missing mandatory request pseudo-headers (:method, \
                        :scheme, or :path)")
-            | None, Some status ->
+            | None, Some status -> (
                 if
                   List.exists
                     (fun name ->
@@ -97,7 +100,9 @@ module Pseudo = struct
                         (request_mandatory_pseudos @ [ ":authority" ]))
                     pseudo_names
                 then Invalid "Response contains request-specific pseudo-headers"
-                else Valid (Response { status })
+                else
+                  try Valid (Response { status = int_of_string status })
+                  with _ -> Invalid "Status should be a number")
             | Some _, Some _ ->
                 Invalid
                   "Header list contains both request and response \
@@ -107,3 +112,6 @@ module Pseudo = struct
                   "Pseudo-headers present but missing mandatory :method or \
                    :status")
 end
+
+let filter_out_pseudo =
+  List.filter (fun { name; _ } -> not (Pseudo.is_pseudo_header_name name))

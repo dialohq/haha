@@ -1,9 +1,11 @@
+open H2kit
+
 type t = {
   meth : Method.t;
   path : string;
   scheme : string;
   authority : string option;
-  headers : Header.t list;
+  headers : Headers.t;
 }
 
 type handler_result =

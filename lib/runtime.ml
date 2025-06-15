@@ -1,3 +1,4 @@
+open H2kit
 open Writer
 open State
 
@@ -21,9 +22,7 @@ let handle_connection_error ?(last_peer_stream = Int32.zero) ~writer error =
 
   codemsg_opt
   |> Option.iter @@ fun (code, msg) ->
-     let debug_data =
-       Bigstringaf.of_string ~off:0 ~len:(String.length msg) msg
-     in
+     let debug_data = Cstruct.of_string ~off:0 ~len:(String.length msg) msg in
      write_goaway ~debug_data writer last_peer_stream code
 
 let handle_stream_error (state : _ State.t) stream_id code =
@@ -110,8 +109,7 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
   in
   parse_loop 0 0 0 None
 
-let process_data_frame :
-    'a t -> Frame.frame_header -> Bigstringaf.t -> 'a t step =
+let process_data_frame : 'a t -> Frame.frame_header -> Cstruct.t -> 'a t step =
  fun state { Frame.flags; stream_id; _ } data ->
   let send_update =
     write_window_update state.writer Stream_identifier.connection
@@ -128,7 +126,7 @@ let process_data_frame :
           streams;
           flow =
             Flow_control.receive_data state.flow ~send_update
-              (Bigstringaf.length data |> Int32.of_int);
+              (Cstruct.length data |> Int32.of_int);
         }
   | Error err -> { iter_result = ConnectionError err; state }
 
@@ -139,7 +137,7 @@ let frame_handler ~process_complete_headers (frame : Frame.t)
   let process_data_frame = process_data_frame state in
 
   let decompress_headers_block bs ~len hpack_decoder =
-    let hpack_parser = Hpackv.Decoder.decode_headers hpack_decoder in
+    let hpack_parser = Hpack.Decoder.decode_headers hpack_decoder in
     let error' ?msg () =
       Stdlib.Error
         (match msg with
@@ -157,12 +155,12 @@ let frame_handler ~process_complete_headers (frame : Frame.t)
             Result.map_error
               (fun _ -> "Decompression error, hpack error")
               result'
-            |> Result.map
-                 (List.map (fun hpack_header ->
-                      {
-                        Header.name = hpack_header.Hpackv.name;
-                        value = hpack_header.value;
-                      })))
+            |> Result.map (fun l ->
+                   Headers.of_list
+                   @@ List.rev_map
+                        (fun hpack_header ->
+                          (hpack_header.Hpack.name, hpack_header.value))
+                        l))
   in
 
   let process_headers_frame frame_header bs =

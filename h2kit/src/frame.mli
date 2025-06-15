@@ -39,7 +39,7 @@ type frame_payload =
   | RSTStream of Error_code.t
   | Settings of Settings.setting list
   | PushPromise of Stream_identifier.t * Bigstringaf.t
-  | Ping of Bigstringaf.t
+  | Ping of Cstruct.t
   | GoAway of (Stream_identifier.t * Error_code.t * Bigstringaf.t)
   | WindowUpdate of Window_size.t
   | Continuation of Bigstringaf.t

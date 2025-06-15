@@ -12,11 +12,10 @@ let[@inline] clear_bit_int32 x i =
 
 let split_cstructs cstructs max_bytes =
   let rec build_group remaining current_group current_size max_bytes =
-    if current_size = max_bytes then
-      (List.rev current_group, remaining, current_size)
+    if current_size = max_bytes then (List.rev current_group, remaining)
     else
       match remaining with
-      | [] -> (List.rev current_group, [], current_size)
+      | [] -> (List.rev current_group, [])
       | c :: rest ->
           let len = Cstruct.length c in
           if len <= max_bytes - current_size then
@@ -25,15 +24,13 @@ let split_cstructs cstructs max_bytes =
             let take = max_bytes - current_size in
             let s1 = Cstruct.sub c 0 take in
             let s2 = Cstruct.sub c take (len - take) in
-            (List.rev (s1 :: current_group), s2 :: rest, current_size + take)
+            (List.rev (s1 :: current_group), s2 :: rest)
   in
   let rec build_all_groups remaining =
     if remaining = [] then []
     else
-      let group, new_remaining, group_size =
-        build_group remaining [] 0 max_bytes
-      in
-      (group, group_size) :: build_all_groups new_remaining
+      let group, new_remaining = build_group remaining [] 0 max_bytes in
+      group :: build_all_groups new_remaining
   in
   build_all_groups cstructs
 
