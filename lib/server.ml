@@ -238,7 +238,7 @@ let connection_handler :
         | Error _ as err -> err
         | Ok (peer_settings, rest_to_parse, writer) ->
             Ok
-              ( State.initial ~user_settings:config ~peer_settings ~writer,
+              ( State.initial_server ~user_settings:config ~peer_settings ~writer,
                 rest_to_parse ))
   in
 

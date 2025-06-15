@@ -200,7 +200,7 @@ let connect : 'c. ?config:Settings.t -> _ Eio.Resource.t -> iteration =
         | Error _ as err -> err
         | Ok (peer_settings, rest_to_parse, writer) ->
             Ok
-              ( State.initial ~user_settings ~peer_settings ~writer,
+              ( State.initial_client ~user_settings ~peer_settings ~writer,
                 rest_to_parse ))
     | Error exn -> Error (Exn exn)
   in

@@ -70,15 +70,15 @@ type 'peer t = {
   last_local_stream : Stream_identifier.t;
 }
 
-(* TODO: should manage last_*_stream values differently to avoid this. Should probobly be held in the general state or smth *)
+(* NOTE: should manage last_*_stream values differently to avoid this. Should probobly be held in the general state or smth *)
 let last_peer_stream : _ t -> int32 = fun t -> t.last_peer_stream
 
-let initial : unit -> _ t =
- fun () ->
+let initial : Stream_identifier.initial -> _ t =
+ fun initials ->
   {
     map = StreamMap.empty;
-    last_peer_stream = Stream_identifier.connection;
-    last_local_stream = Stream_identifier.connection;
+    last_peer_stream = initials.initial_remote;
+    last_local_stream = initials.initial_local;
   }
 
 let count_active : _ t -> int = fun { map; _ } -> StreamMap.cardinal map
@@ -129,19 +129,32 @@ let find_stream : Stream_identifier.t -> 'p t -> 'p Stream.t =
   | None -> State Closed
   | Some stream -> stream
 
+let update_last_id : Stream_identifier.t -> 'p t -> 'p t =
+ fun id ({ last_peer_stream; last_local_stream; _ } as t) ->
+  let open Stream_identifier in
+  match
+    (is_client id, is_client last_peer_stream, is_client last_local_stream)
+  with
+  | true, true, false | false, false, true ->
+      { t with last_peer_stream = Int32.max last_peer_stream id }
+  | true, false, true | false, true, false ->
+      { t with last_local_stream = Int32.max last_local_stream id }
+  | _, true, true | _, false, false ->
+      (* initially we set odd and even values for those so this is unreachable *)
+      assert false
+
 let stream_transition : Stream_identifier.t -> 'p Stream.t -> 'p t -> 'p t =
  fun id stream t ->
   let map =
     StreamMap.update id
       (function
-        (* TODO: update the last local/remote id *)
         | None -> Some stream
         | Some _ when stream = State Closed -> None
-        | Some old -> Some old)
+        | Some _ -> Some stream)
       t.map
   in
 
-  { t with map }
+  { t with map } |> update_last_id id
 
 let update_stream_state :
     Stream_identifier.t ->
@@ -150,6 +163,8 @@ let update_stream_state :
     ('p t, Error.connection_error) result =
  fun id update t ->
   (*
+  TODO: could make a custom Map.update function that with handler that returns (_ option, err) result to avchive that
+
   let map =
     StreamMap.update id
       (fun x ->
@@ -798,15 +813,6 @@ let receive_response :
 
   update_stream_state id f t
 
-(* FIXME: nahh *)
-let get_next_id t = function
-  | `Client ->
-      if Stream_identifier.is_connection t.last_local_stream then 1l
-      else Int32.add t.last_local_stream 2l
-  | `Server ->
-      if Stream_identifier.is_connection t.last_local_stream then 2l
-      else Int32.add t.last_local_stream 2l
-
 let write_request :
     writer:Writer.t -> request:Request.t -> client_peer t -> client_peer t =
  fun ~writer ~request t ->
@@ -821,7 +827,7 @@ let write_request :
          } as request) =
     request
   in
-  let id = get_next_id t `Client in
+  let id = Int32.add t.last_local_stream 2l in
   Writer.writer_request_headers writer id request;
   Writer.write_window_update writer id Flow_control.WindowSize.initial_increment;
   let stream_state : _ Stream.t =
