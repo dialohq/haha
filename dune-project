@@ -19,6 +19,9 @@
   (yojson :with-test)
   (hex :with-test)))
 
+(package 
+  (name h2kit))
+
 (package
  (name haha)
  (synopsis

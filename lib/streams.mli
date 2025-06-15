@@ -29,7 +29,8 @@ end
 type 'peer t
 
 val last_peer_stream : _ t -> int32
-val initial : Stream_identifier.initial -> _ t
+val initial_client : unit -> _ t
+val initial_server : unit -> _ t
 val count_active : _ t -> int
 val close_stream : ?err:Error.t -> Stream_identifier.t -> 'p t -> 'p t
 val close_all : ?err:Error.t -> _ t -> unit

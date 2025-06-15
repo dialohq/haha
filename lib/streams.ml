@@ -73,13 +73,13 @@ type 'peer t = {
 (* NOTE: should manage last_*_stream values differently to avoid this. Should probobly be held in the general state or smth *)
 let last_peer_stream : _ t -> int32 = fun t -> t.last_peer_stream
 
-let initial : Stream_identifier.initial -> _ t =
- fun initials ->
-  {
-    map = StreamMap.empty;
-    last_peer_stream = initials.initial_remote;
-    last_local_stream = initials.initial_local;
-  }
+let initial_client : unit -> _ t =
+ fun () ->
+  { map = StreamMap.empty; last_peer_stream = 0l; last_local_stream = -1l }
+
+let initial_server : unit -> _ t =
+ fun () ->
+  { map = StreamMap.empty; last_peer_stream = -1l; last_local_stream = 0l }
 
 let count_active : _ t -> int = fun { map; _ } -> StreamMap.cardinal map
 

@@ -1,0 +1,4 @@
+(library
+ (name h2kit)
+ (public_name h2kit)
+ (libraries faraday angstrom cstruct hpack))

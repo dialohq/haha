@@ -16,7 +16,19 @@ with pkgs.ocamlPackages; rec {
     propagatedBuildInputs = [angstrom faraday];
   };
 
-  # default = pkgs.callPackage ./default.nix {ocamlPackages = pkgs.ocamlPackages;};
+  h2kit = buildDunePackage {
+    pname = "h2kit";
+    version = "0.0.1";
+
+    src = with nix-filter.lib;
+      filter {
+        root = ./..;
+        include = ["dune-project" "h2kit" "h2kit.opam"];
+      };
+
+    propagatedBuildInputs = [angstrom faraday cstruct hpack];
+  };
+
   default = buildDunePackage {
     pname = "haha";
     version = "0.0.1";
