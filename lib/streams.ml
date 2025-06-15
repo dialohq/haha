@@ -162,35 +162,23 @@ let update_stream_state :
     'p t ->
     ('p t, Error.connection_error) result =
  fun id update t ->
-  (*
-  TODO: could make a custom Map.update function that with handler that returns (_ option, err) result to avchive that
-
-  let map =
-    StreamMap.update id
-      (fun x ->
-        let stream : _ Stream.t =
-          match x with
-          | None when id > t.last_local_stream && id > t.last_peer_stream ->
-              State Idle
-          | None -> State Closed
-          | Some stream -> stream
-        in
-
-        match update stream with
-        | Ok new_stream -> Some new_stream
-        | Error (StreamError _ as err) ->
-            finalize_stream ~err stream;
-            None
-        | Error (ConnectionError err) -> None)
-      t.map
+  let x = StreamMap.find_opt id t.map in
+  let stream : _ Stream.t =
+    match x with
+    | None when id > t.last_local_stream && id > t.last_peer_stream ->
+        State Idle
+    | None -> State Closed
+    | Some stream -> stream
   in
-  *)
-  let stream_state = find_stream id t in
-
-  match update stream_state with
-  | Ok new_state -> Ok (stream_transition id new_state t)
-  | Error (StreamError _ as err) -> Ok (close_stream ~err id t)
-  | Error (ConnectionError err) -> Error err
+  let map =
+    match update stream with
+    | Ok new_stream -> Ok (StreamMap.add id new_stream t.map)
+    | Error (StreamError _ as err) ->
+        finalize_stream ~err stream;
+        Ok (StreamMap.remove id t.map)
+    | Error (ConnectionError err) -> Error err
+  in
+  Result.map (fun map -> { t with map }) map
 
 let read_data :
     end_stream:bool ->
@@ -857,46 +845,3 @@ let write_request :
   in
 
   stream_transition id stream_state t
-
-let _update_last_peer_stream ?(strict = false) t stream_id =
-  {
-    t with
-    last_peer_stream =
-      (if strict then stream_id else Int32.max stream_id t.last_peer_stream);
-  }
-
-let _update_last_local_stream id t =
-  { t with last_local_stream = Int32.max id t.last_local_stream }
-
-(*let _update_stream_flow t stream_id new_flow =
-  let map =
-    StreamMap.update stream_id
-      (function
-        | None -> None
-        | Some (old : _ Stream.t) -> Some { old with flow = new_flow })
-      t.map
-  in
-
-  { t with map }*)
-
-(*let _update_flow_on_data ~send_update id n t =
-  let map =
-    StreamMap.update id
-      (function
-        | None -> None
-        | Some o ->
-            Some
-              {
-                o with
-                Stream.flow =
-                  Flow_control.receive_data ~send_update o.Stream.flow n;
-              })
-      t.map
-  in
-
-  { t with map }*)
-
-(*let _flow_of_id t stream_id =
-  match StreamMap.find_opt stream_id t.map with
-  | None -> Flow_control.initial
-  | Some stream -> stream.flow*)
