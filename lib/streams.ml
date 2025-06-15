@@ -475,14 +475,12 @@ let make_response_writer_transition :
             write_headers_response writer id response;
             match response with
             | `Final { body_writer = Some body_writer; _ } ->
-                write_window_update writer id
-                  Flow_control.WindowSize.initial_increment;
+                write_window_update writer id Flow_control.initial_increment;
                 stream_transition id
                   (State (Open { state' with writers = BodyWriter body_writer }))
                   t
             | `Final { body_writer = None; _ } ->
-                write_window_update writer id
-                  Flow_control.WindowSize.initial_increment;
+                write_window_update writer id Flow_control.initial_increment;
                 stream_transition id
                   (State
                      (HalfClosed
@@ -503,16 +501,14 @@ let make_response_writer_transition :
             write_headers_response writer id response;
             match response with
             | `Final { body_writer = Some body_writer; _ } ->
-                write_window_update writer id
-                  Flow_control.WindowSize.initial_increment;
+                write_window_update writer id Flow_control.initial_increment;
                 stream_transition id
                   (State
                      (HalfClosed
                         (Remote { state' with writers = BodyWriter body_writer })))
                   t
             | `Final { body_writer = None; _ } ->
-                write_window_update writer id
-                  Flow_control.WindowSize.initial_increment;
+                write_window_update writer id Flow_control.initial_increment;
                 on_close context;
                 stream_transition id (State Closed) t
             | `Interim _ -> t)
@@ -828,7 +824,7 @@ let write_request :
   in
   let id = Int32.add t.last_local_stream 2l in
   Writer.writer_request_headers writer id request;
-  Writer.write_window_update writer id Flow_control.WindowSize.initial_increment;
+  Writer.write_window_update writer id Flow_control.initial_increment;
   let stream_state : _ Stream.t =
     match body_writer with
     | Some body_writer ->

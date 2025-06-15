@@ -94,7 +94,7 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
         | None -> ());
         write_settings_ack writer;
         write_window_update writer Stream_identifier.connection
-          Flow_control.WindowSize.initial_increment;
+          Flow_control.initial_increment;
         write writer socket
         |> Result.map_error (fun exn -> Error.Exn exn)
         |> Result.map (fun () ->

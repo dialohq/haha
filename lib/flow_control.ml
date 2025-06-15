@@ -1,28 +1,24 @@
-module WindowSize = struct
-  type t = int32
-
-  let default_initial_window_size = 65535l
-  let max_window_size = Int32.max_int
-  let initial_increment = Int32.sub max_window_size default_initial_window_size
-  let is_window_overflow n = Util.test_bit_int32 n 31
-end
+open H2kit
 
 type t = {
-  out_flow : WindowSize.t;
-  sent : WindowSize.t;
-  received : WindowSize.t;
+  out_flow : Window_size.t;
+  sent : Window_size.t;
+  received : Window_size.t;
 }
+
+let initial_increment =
+  Int32.sub Window_size.max_size Window_size.default_initial
 
 let initial = { out_flow = 0l; sent = 0l; received = 0l }
 
 let receive_data ~(send_update : int32 -> unit) t n =
   let open Int32 in
-  let in_window = sub WindowSize.max_window_size t.received in
+  let in_window = sub Window_size.max_size t.received in
 
   let new_in_window = sub in_window n in
 
-  if compare (div WindowSize.max_window_size 2l) new_in_window > 0 then (
-    let increment = sub WindowSize.max_window_size new_in_window in
+  if compare (div Window_size.max_size 2l) new_in_window > 0 then (
+    let increment = sub Window_size.max_size new_in_window in
     send_update increment;
     { t with received = 0l })
   else { t with received = add t.received n }
