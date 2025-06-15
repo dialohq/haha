@@ -19,7 +19,7 @@ type 'peer t = {
   prev_iter_ignore : Stream_identifier.t list;
 }
 
-let initial ~initial_ids ~writer ~peer_settings ~user_settings =
+let initial ~streams ~writer ~peer_settings ~user_settings =
   {
     peer_settings;
     writer;
@@ -35,7 +35,7 @@ let initial ~initial_ids ~writer ~peer_settings ~user_settings =
     *)
     local_settings = Settings.default;
     settings_status = Syncing Settings.(to_settings_list user_settings);
-    streams = Streams.initial initial_ids;
+    streams;
     shutdown = false;
     headers_state = Idle;
     parse_state = None;
@@ -46,12 +46,14 @@ let initial ~initial_ids ~writer ~peer_settings ~user_settings =
   }
 
 let initial_client ~writer ~peer_settings ~user_settings =
-  initial ~initial_ids:Stream_identifier.initial_client ~writer ~peer_settings
-    ~user_settings
+  initial
+    ~streams:(Streams.initial_client ())
+    ~writer ~peer_settings ~user_settings
 
 let initial_server ~writer ~peer_settings ~user_settings =
-  initial ~initial_ids:Stream_identifier.initial_server ~writer ~peer_settings
-    ~user_settings
+  initial
+    ~streams:(Streams.initial_server ())
+    ~writer ~peer_settings ~user_settings
 
 let active_streams t = Streams.count_active t.streams
 let error_all err t = Streams.close_all ~err:(ConnectionError err) t.streams
