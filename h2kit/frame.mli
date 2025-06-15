@@ -55,7 +55,8 @@ val validate_header : frame_header -> (unit, Error.t) result
     state (e.g. checking if the connection-level-only frames have their stream
     id equal to 0).
 
-    Returns an appropriate {!Error.t} if the validation fails. *)
+    @return A appropriate {!Error.t} if the validation fails or unit on success.
+*)
 
 val pp_hum : Format.formatter -> t -> unit
 (** Human-readable formatter for the [t] type. Useful for debbugging. *)

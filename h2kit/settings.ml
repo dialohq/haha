@@ -73,20 +73,3 @@ let to_settings_list settings =
   in
   settings_list
 *)
-
-(*
-let write_settings_payload t settings_list =
-  let open Faraday in
-  List.iter
-    (fun setting ->
-      BE.write_uint16 t (serialize_key setting);
-      match setting with
-      | MaxConcurrentStreams value | InitialWindowSize value ->
-          BE.write_uint32 t value
-      | HeaderTableSize value
-      | EnablePush value
-      | MaxFrameSize value
-      | MaxHeaderListSize value ->
-          BE.write_uint32 t (Int32.of_int value))
-    settings_list
-*)
