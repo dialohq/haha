@@ -39,7 +39,8 @@ let parse_data_frame ({ Frame.payload_length; _ } as frame_header) =
   | Error _ as err -> advance payload_length >>| fun () -> err
   | Ok _ ->
       let parse_data length =
-        lift (fun bs -> Ok (Frame.Data bs)) (take_bigstring_unsafe length)
+        take_bigstring_unsafe length >>| fun bs ->
+        Ok (Frame.Data (Cstruct.of_bigarray bs))
       in
       parse_padded_payload frame_header parse_data
 

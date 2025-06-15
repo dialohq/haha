@@ -15,6 +15,7 @@ module FrameType : sig
     | WindowUpdate
     | Continuation
     | Unknown of int
+  [@@deriving show { with_path = false }, eq]
 
   val to_int : t -> int
   val of_int : int -> t
@@ -27,11 +28,12 @@ type frame_header = {
   stream_id : Stream_identifier.t;
   frame_type : FrameType.t;
 }
+[@@deriving show, eq]
 (** Type representing the frame's header *)
 
 (** Type representing the frame's payload according to the type of frame *)
 type frame_payload =
-  | Data of Bigstringaf.t
+  | Data of Cstruct.t
   | Headers of Bigstringaf.t
   | Priority
   | RSTStream of Error_code.t
@@ -42,8 +44,11 @@ type frame_payload =
   | WindowUpdate of Window_size.t
   | Continuation of Bigstringaf.t
   | Unknown of int * Bigstringaf.t
+[@@deriving show { with_path = false }, eq]
 
 type t = { frame_header : frame_header; frame_payload : frame_payload }
+[@@deriving show, eq]
+
 (** Type representing a HTTP/2 frame *)
 
 val validate_header : frame_header -> (unit, Error.t) result

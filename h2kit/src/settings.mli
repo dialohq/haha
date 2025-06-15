@@ -18,6 +18,7 @@ type setting =
   | InitialWindowSize of int32
   | MaxFrameSize of int
   | MaxHeaderListSize of int
+[@@deriving show { with_path = false }, eq]
 
 val serialize_key : setting -> int
 val update_with_list : t -> setting list -> t

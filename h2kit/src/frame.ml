@@ -1,3 +1,18 @@
+module Bigstringaf = struct
+  include Bigstringaf
+
+  let pp fmt b = Format.fprintf fmt "%S" (to_string b)
+
+  let equal b1 b2 =
+    Cstruct.equal (Cstruct.of_bigarray b1) (Cstruct.of_bigarray b2)
+end
+
+module Cstruct = struct
+  include Cstruct
+
+  let pp fmt b = Format.fprintf fmt "%S" (to_string b)
+end
+
 let connection_preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 
 module FrameType = struct
@@ -13,6 +28,7 @@ module FrameType = struct
     | WindowUpdate
     | Continuation
     | Unknown of int
+  [@@deriving show { with_path = false }, eq]
 
   let to_int = function
     | Data -> 0
@@ -62,9 +78,10 @@ type frame_header = {
   stream_id : Stream_identifier.t;
   frame_type : FrameType.t;
 }
+[@@deriving show, eq]
 
 type frame_payload =
-  | Data of Bigstringaf.t
+  | Data of Cstruct.t
   | Headers of Bigstringaf.t
   | Priority
   | RSTStream of Error_code.t
@@ -75,8 +92,10 @@ type frame_payload =
   | WindowUpdate of Window_size.t
   | Continuation of Bigstringaf.t
   | Unknown of int * Bigstringaf.t
+[@@deriving show { with_path = false }, eq]
 
 type t = { frame_header : frame_header; frame_payload : frame_payload }
+[@@deriving show, eq]
 
 let validate_header
     ({ frame_type; payload_length; flags; stream_id } : frame_header) :

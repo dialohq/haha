@@ -26,7 +26,7 @@ with pkgs.ocamlPackages; rec {
         include = ["dune-project" "h2kit" "h2kit.opam"];
       };
 
-    propagatedBuildInputs = [angstrom faraday cstruct hpack];
+    propagatedBuildInputs = [angstrom faraday cstruct hpack alcotest ppx_deriving];
   };
 
   default = buildDunePackage {

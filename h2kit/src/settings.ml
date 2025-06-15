@@ -27,6 +27,7 @@ type setting =
   | InitialWindowSize of int32
   | MaxFrameSize of int
   | MaxHeaderListSize of int
+[@@deriving show { with_path = false }, eq]
 
 let serialize_key = function
   | HeaderTableSize _ -> 0x1

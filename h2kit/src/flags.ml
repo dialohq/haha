@@ -1,4 +1,4 @@
-type t = int
+type t = int [@@deriving show, eq]
 
 let[@inline] test_bit x i = x land (1 lsl i) <> 0
 let[@inline] set_bit x i = x lor (1 lsl i)

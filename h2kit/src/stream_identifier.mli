@@ -1,4 +1,4 @@
-type t = int32
+type t = int32 [@@deriving show, eq]
 
 val ( === ) : t -> t -> bool
 val connection : t

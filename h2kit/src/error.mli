@@ -22,6 +22,7 @@ type stream_error = Stream_identifier.t * Error_code.t
 
 (** Type representing all kinds of errors *)
 type t = ConnectionError of connection_error | StreamError of stream_error
+[@@deriving show { with_path = false }, eq]
 
 val conn_prot_err : Error_code.t -> ('a, unit, string, t) format4 -> 'a
 (** [conn_prot_err code format arg1 ... argN] is like

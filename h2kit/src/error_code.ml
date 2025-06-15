@@ -14,6 +14,7 @@ type t =
   | InadequateSecurity
   | HTTP_1_1_Required
   | UnknownError_code of int32
+[@@deriving show { with_path = false }, eq]
 
 let serialize = function
   | NoError -> 0x0l

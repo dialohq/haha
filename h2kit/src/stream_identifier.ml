@@ -1,4 +1,4 @@
-type t = int32
+type t = int32 [@@deriving show, eq]
 
 let ( === ) = Int32.equal
 let connection = Int32.zero

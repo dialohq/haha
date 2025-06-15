@@ -1,4 +1,4 @@
-type t
+type t [@@deriving show, eq]
 
 val default_flags : t
 val test_end_stream : t -> bool
