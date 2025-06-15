@@ -183,10 +183,6 @@ let connect : 'c. ?config:Settings.t -> _ Eio.Resource.t -> iteration =
  fun ?(config = Settings.default) socket ->
   let frame_handler = frame_handler ~process_complete_headers in
 
-  let user_events_handlers state =
-    match state.State.shutdown with false -> [] | true -> []
-  in
-
   let initial_writer =
     Writer.create ~header_table_size:Settings.default.header_table_size
       Settings.default.max_frame_size
@@ -209,5 +205,5 @@ let connect : 'c. ?config:Settings.t -> _ Eio.Resource.t -> iteration =
     | Error exn -> Error (Exn exn)
   in
 
-  start ~frame_handler ~receive_buffer ~initial_state_result
-    ~user_events_handlers ~input_handler socket
+  start ~frame_handler ~receive_buffer ~initial_state_result ~input_handler
+    socket

@@ -6,6 +6,7 @@ type state = Streams.server_peer State.t
 type interation = iter_input Types.iteration
 type stream_state = Streams.server_peer Streams.Stream.t
 
+(*
 let process_request :
     Reqd.handler ->
     state ->
@@ -85,62 +86,31 @@ let process_request :
   | HalfClosed (Remote _) | Closed ->
       connection_error Error_code.StreamClosed
         "HEADERS received on closed stream"
+*)
 
 let process_complete_headers :
     Reqd.handler -> state -> Frame.frame_header -> Header.t list -> state step =
- fun request_handler state { Frame.flags; stream_id; _ } header_list ->
-  let connection_error = step_connection_error state in
+ fun request_handler state { Frame.flags; stream_id; _ } headers ->
   let stream_error = step_stream_error state in
-  let pseudo_validation = Header.Pseudo.validate_request header_list in
-
-  let (State stream_state) = Streams.state_of_id state.streams stream_id in
+  let pseudo_validation = Header.Pseudo.validate_request headers in
 
   match (Flags.test_end_stream flags, pseudo_validation) with
   | _, Invalid | false, No_pseudo ->
       stream_error stream_id Error_code.ProtocolError
   | true, No_pseudo -> (
-      match stream_state with
-      | Open
-          {
-            readers = BodyReader reader;
-            writers;
-            error_handler;
-            on_close;
-            context;
-          } ->
-          let new_context = reader context (`End header_list) in
-          step InProgress
-            {
-              state with
-              streams =
-                Streams.stream_transition state.streams stream_id
-                  (State
-                     (HalfClosed
-                        (Remote
-                           {
-                             writers;
-                             error_handler;
-                             on_close;
-                             context = new_context;
-                           })));
-            }
-      | HalfClosed (Local { readers = BodyReader reader; on_close; context; _ })
-        ->
-          let new_context = reader context (`End header_list) in
-          let streams =
-            Streams.(stream_transition state.streams stream_id (State Closed))
-          in
-          on_close new_context;
-          step InProgress { state with streams }
-      | Reserved _ -> stream_error stream_id Error_code.StreamClosed
-      | Idle -> stream_error stream_id Error_code.ProtocolError
-      | Closed | HalfClosed (Remote _) ->
-          connection_error Error_code.StreamClosed
-            "HEADERS received on a closed stream")
-  | end_stream, Valid pseudo ->
-      process_request request_handler state pseudo end_stream header_list
-        (State stream_state) stream_id
+      match Streams.receive_trailers ~headers stream_id state.streams with
+      | Error err -> step (ConnectionError err) state
+      | Ok streams -> step InProgress { state with streams })
+  | end_stream, Valid pseudo -> (
+      match
+        Streams.receive_request ~request_handler ~pseudo ~end_stream ~headers
+          ~max_streams:state.local_settings.max_concurrent_streams stream_id
+          state.streams
+      with
+      | Error err -> step (ConnectionError err) state
+      | Ok streams -> step InProgress { state with streams })
 
+(*
 let make_response_writer_handler :
     Streams.server_peer Streams.Stream.t ->
     Stream_identifier.t ->
@@ -221,15 +191,21 @@ let make_response_writer_handler :
                 }
             | `Interim _ -> state)
   | _ -> None
+*)
 
-let get_response_writers : state -> (unit -> state -> state) list =
- fun state ->
-  Streams.StreamMap.fold
-    (fun id stream acc ->
-      match make_response_writer_handler stream id with
-      | Some event -> event :: acc
-      | None -> acc)
-    state.streams.map []
+let user_goaway_handler ~f =
+ fun () ->
+  f ();
+  fun state ->
+    Writer.write_goaway state.State.writer
+      (Streams.last_peer_stream state.streams)
+      Error_code.NoError;
+    { iter_result = InProgress; state = { state with shutdown = true } }
+
+let get_response_writers : state -> (unit -> state -> state step) list =
+ fun { writer; streams; _ } ->
+  Streams.response_writers_transitions ~writer streams
+  |> map_streams_transitions
 
 let connection_handler :
     'c.
@@ -244,14 +220,6 @@ let connection_handler :
   let frame_handler =
     frame_handler
       ~process_complete_headers:(process_complete_headers request_handler)
-  in
-
-  let user_events_handlers state =
-    let writers = List.concat [ get_response_writers state ] in
-    (match (state.shutdown, goaway_writer) with
-    | true, _ | _, None -> writers
-    | false, Some f -> user_goaway_handler ~f :: writers)
-    |> List.map map_event
   in
 
   let receive_buffer = Cstruct.create (9 + config.max_frame_size) in
@@ -276,9 +244,16 @@ let connection_handler :
 
   let input_handler = fun s _ -> s in
 
+  let extra_events_handlers state =
+    let writers = List.concat [ get_response_writers state ] in
+    match (state.shutdown, goaway_writer) with
+    | true, _ | _, None -> writers
+    | false, Some f -> user_goaway_handler ~f :: writers
+  in
+
   let initial_step =
-    start ~receive_buffer ~frame_handler ~initial_state_result
-      ~user_events_handlers ~input_handler socket
+    start ~extra_events_handlers ~receive_buffer ~frame_handler
+      ~initial_state_result ~input_handler socket
   in
 
   let rec loop : interation -> unit =

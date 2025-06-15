@@ -47,8 +47,19 @@ let step_stream_error state id code =
 let map_transition : ('a t -> 'a t) -> 'a t -> 'a t step =
  fun f state -> step InProgress (f state)
 
-let map_event : (unit -> 'a t -> 'a t) -> unit -> 'a t -> 'a t step =
- fun f () -> map_transition (f ())
+let map_streams_transitions :
+    (unit -> 'p Streams.t -> 'p Streams.t) list ->
+    (unit -> 'p t -> 'p t step) list =
+ fun transitions ->
+  List.map
+    (fun tran () ->
+      let f = tran () in
+      fun state ->
+        {
+          iter_result = InProgress;
+          state = { state with streams = f state.streams };
+        })
+    transitions
 
 let process_preface_settings ?user_settings ~socket ~receive_buffer () =
   let rec parse_loop read_off total_consumed total_read continue_opt =
@@ -418,15 +429,6 @@ let frame_handler ~process_complete_headers (frame : Frame.t)
         "unexpected frame other than CONTINUATION in the middle of headers \
          block"
 
-let user_goaway_handler ~f =
- fun () ->
-  f ();
-  fun state ->
-    write_goaway state.State.writer
-      (Streams.last_peer_stream state.streams)
-      Error_code.NoError;
-    { state with shutdown = true }
-
 let parse_and_handle ~frame_handler (state : _ State.t) cs =
   match Parse.read_frames cs state.parse_state with
   | Ok (consumed, frames, continue_opt) ->
@@ -515,31 +517,20 @@ let finalize_iteration :
 
 let get_body_writers : 'peer t -> (unit -> 'peer t -> 'peer t step) list =
  fun { writer; peer_settings; streams; _ } ->
-  let transitions =
-    Streams.body_writers_transitions ~writer
-      ~max_frame_size:peer_settings.max_frame_size streams
-  in
-
-  List.map
-    (fun tran () ->
-      let f = tran () in
-      fun state ->
-        {
-          iter_result = InProgress;
-          state = { state with streams = f state.streams };
-        })
-    transitions
+  Streams.body_writers_transitions ~writer
+    ~max_frame_size:peer_settings.max_frame_size streams
+  |> map_streams_transitions
 
 let start :
     'peer.
+    ?extra_events_handlers:('peer t -> (unit -> 'peer t -> 'peer t step) list) ->
     initial_state_result:('peer t * Cstruct.t, Error.connection_error) result ->
     frame_handler:(Frame.t -> 'peer t -> 'peer t step) ->
     receive_buffer:Cstruct.t ->
-    user_events_handlers:('peer t -> (unit -> 'peer t -> 'peer t step) list) ->
     input_handler:('peer t -> 't -> 'peer t) ->
     _ Eio.Resource.t ->
     'i Types.iteration =
- fun ~initial_state_result ~frame_handler ~receive_buffer ~user_events_handlers
+ fun ?extra_events_handlers ~initial_state_result ~frame_handler ~receive_buffer
      ~input_handler socket ->
   let process_inputs : 'i list -> 'peer t -> 'peer t step =
    fun inputs ->
@@ -551,7 +542,10 @@ let start :
      | [] ->
          let events =
            read_loop ~receive_buffer ~socket ~frame_handler state.read_off
-           :: List.concat [ user_events_handlers state; get_body_writers state ]
+           ::
+           (match extra_events_handlers with
+           | None -> get_body_writers state
+           | Some extra -> List.concat [ get_body_writers state; extra state ])
          in
 
          let next_step = Eio.Fiber.any ~combine:combine_steps events in

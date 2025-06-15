@@ -69,8 +69,23 @@ val receive_response :
   client_peer t ->
   (client_peer t, Error.connection_error) result
 
+val receive_request :
+  request_handler:Reqd.handler ->
+  pseudo:Header.Pseudo.request_pseudo ->
+  end_stream:bool ->
+  headers:Header.t list ->
+  max_streams:int32 ->
+  Stream_identifier.t ->
+  server_peer t ->
+  (server_peer t, Error.connection_error) result
+
 val write_request :
   writer:Writer.t -> request:Request.t -> client_peer t -> client_peer t
 
 val body_writers_transitions :
   writer:Writer.t -> max_frame_size:int -> 'p t -> (unit -> 'p t -> 'p t) list
+
+val response_writers_transitions :
+  writer:Writer.t ->
+  server_peer t ->
+  (unit -> server_peer t -> server_peer t) list

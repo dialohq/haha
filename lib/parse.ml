@@ -22,7 +22,7 @@ let magic_parse bs ~off ~len =
       | Done (consumed, _) -> Ok consumed)
 
 let parsing_error msg consumed =
-  `Fail (consumed, Error.conn_prot_err Error_code.ProtocolError msg)
+  `Fail (consumed, Error.conn_prot_err Error_code.ProtocolError "%s" msg)
 
 let continue_frame_parse state =
   match state with
