@@ -1,5 +1,6 @@
 open Angstrom
 open H2kit
+open Utils
 
 module Testable = struct
   let h2_frame =
@@ -13,30 +14,19 @@ module Testable = struct
   let parse_result = Alcotest.result h2_frame h2_error
 end
 
-let set_uint24 buf offset value =
-  let open Cstruct in
-  if offset + 2 >= Cstruct.length buf then
-    invalid_arg "Cstruct.set_uint24: buffer too small";
-  if value < 0 || value > 0xFFFFFF then
-    invalid_arg "Cstruct.set_uint24: value out of range";
-  set_uint8 buf offset ((value lsr 16) land 0xFF);
-  set_uint8 buf (offset + 1) ((value lsr 8) land 0xFF);
-  set_uint8 buf (offset + 2) (value land 0xFF)
-
 let build_frame ?(flags = Flags.default_flags) ~stream_id frame_type payload_str
     =
-  let payload_len = String.length payload_str in
-  let header_cs = Cstruct.create 9 in
-  set_uint24 header_cs 0 payload_len;
-  Cstruct.set_uint8 header_cs 3 (Frame.FrameType.to_int frame_type);
-  Cstruct.set_uint8 header_cs 4 (Flags.to_int flags);
-  Cstruct.BE.set_uint32 header_cs 5 stream_id;
+  let header_cs =
+    make_header_cs ~stream_id ~frame_type
+      ~payload_length:(String.length payload_str)
+      ~flags
+  in
   Cstruct.to_string header_cs ^ payload_str
 
 let run_parser p s =
   let bs = Bigstringaf.of_string ~off:0 ~len:(String.length s) s in
   match parse_bigstring ~consume:All p bs with
-  | Ok res -> res (* res is already (Frame.t, Error.t) result *)
+  | Ok res -> res
   | Error msg -> Alcotest.failf "Internal Angstrom parser failure: %s" msg
 
 (*******************************************************************************)
