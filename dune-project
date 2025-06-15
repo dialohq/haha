@@ -4,21 +4,6 @@
 
 (name haha)
 
-(package
- (name hpackv)
- (synopsis
-  "An HPACK (Header Compression for HTTP/2) implementation in OCaml")
- (description
-  "hpack is an implementation of the HPACK: Header Compression for HTTP/2 specification (RFC7541) written in OCaml. It uses Angstrom and Faraday for parsing and serialization, respectively.")
- (depends
-  (ocaml
-   (>= "4.08.0"))
-  angstrom
-  (faraday
-   (>= "0.7.3"))
-  (yojson :with-test)
-  (hex :with-test)))
-
 (package 
   (name h2kit))
 

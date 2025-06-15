@@ -8,3 +8,5 @@ module Serializers = Serializers
 module Settings = Settings
 module Stream_identifier = Stream_identifier
 module Window_size = Window_size
+module Status = Status
+module Method = Method

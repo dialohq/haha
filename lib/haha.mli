@@ -46,8 +46,8 @@ module Types : sig
   and 'input iteration = { state : 'input state; active_streams : int }
 end
 
-module Method = Method
-module Status = Status
+module Method = H2kit.Method
+module Status = H2kit.Status
 
 module Response : sig
   open Body

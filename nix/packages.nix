@@ -3,19 +3,6 @@
   pkgs,
 }:
 with pkgs.ocamlPackages; rec {
-  hpackv = buildDunePackage {
-    pname = "hpackv";
-    version = "0.0.1";
-
-    src = with nix-filter.lib;
-      filter {
-        root = ./..;
-        include = ["dune-project" "hpackv" "hpackv.opam"];
-      };
-
-    propagatedBuildInputs = [angstrom faraday];
-  };
-
   h2kit = buildDunePackage {
     pname = "h2kit";
     version = "0.0.1";
@@ -43,7 +30,7 @@ with pkgs.ocamlPackages; rec {
       eio_main
       angstrom
       faraday
-      hpackv
+      h2kit
     ];
   };
 
@@ -59,7 +46,6 @@ with pkgs.ocamlPackages; rec {
 
     buildInputs = [
       default
-      hpackv
 
       eio_main
       uri
