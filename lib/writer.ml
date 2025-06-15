@@ -1,13 +1,22 @@
 open Serializes
 
-type t = { faraday : Faraday.t; buffer : Bigstringaf.t }
+type t = {
+  faraday : Faraday.t;
+  buffer : Bigstringaf.t;
+  hpack_encoder : Hpackv.Encoder.t;
+}
 
 let pp_hum fmt t =
   Format.fprintf fmt "<length %i>" (Bigstringaf.length t.buffer)
 
-let create capacity =
+let create ~header_table_size capacity =
   let buffer = Bigstringaf.create capacity in
-  { buffer; faraday = Faraday.of_bigstring buffer }
+
+  let hpack_encoder =
+    Hpackv.Encoder.create
+      (Int.min header_table_size Settings.default.header_table_size)
+  in
+  { buffer; faraday = Faraday.of_bigstring buffer; hpack_encoder }
 
 let write t socket =
   let op = Faraday.operation t.faraday in
@@ -82,8 +91,7 @@ let write_headers_response ?padding_length ?(end_header = true) t hpack_encoder
   write_response_headers t.faraday hpack_encoder frame_info (Some status)
     headers
 
-let write_trailers ?padding_length ?(end_header = true) t hpack_encoder
-    stream_id headers =
+let write_trailers ?padding_length ?(end_header = true) t stream_id headers =
   let flags =
     if end_header then
       Flags.default_flags |> Flags.set_end_header |> Flags.set_end_stream
@@ -92,10 +100,10 @@ let write_trailers ?padding_length ?(end_header = true) t hpack_encoder
 
   let frame_info = create_frame_info ?padding_length ~flags stream_id in
 
-  write_response_headers t.faraday hpack_encoder frame_info None headers
+  write_response_headers t.faraday t.hpack_encoder frame_info None headers
 
-let writer_request_headers ?padding_length ?(end_header = true) t hpack_encoder
-    stream_id (request : Request.t) =
+let writer_request_headers ?padding_length ?(end_header = true) t stream_id
+    (request : Request.t) =
   let (Request { meth; path; scheme; authority; headers; body_writer; _ }) =
     request
   in
@@ -107,8 +115,8 @@ let writer_request_headers ?padding_length ?(end_header = true) t hpack_encoder
   let end_stream = Option.is_none body_writer in
   let flags = Flags.create ~end_stream ~end_header () in
   let frame_info = create_frame_info ?padding_length ~flags stream_id in
-  write_request_headers ?authority t.faraday hpack_encoder frame_info meth path
-    scheme headers
+  write_request_headers ?authority t.faraday t.hpack_encoder frame_info meth
+    path scheme headers
 
 let write_connection_preface t = write_connection_preface t.faraday
 let write_rst_stream t = write_rst_stream_frame t.faraday

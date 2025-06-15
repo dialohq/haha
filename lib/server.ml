@@ -4,7 +4,7 @@ open Types
 type iter_input = Shutdown
 type state = Streams.server_peer State.t
 type interation = iter_input Types.iteration
-type stream_state = Streams.server_peer Streams.Stream.state
+type stream_state = Streams.server_peer Streams.Stream.t
 
 let process_request :
     Reqd.handler ->
@@ -91,12 +91,11 @@ let process_complete_headers :
  fun request_handler state { Frame.flags; stream_id; _ } header_list ->
   let connection_error = step_connection_error state in
   let stream_error = step_stream_error state in
-  let end_stream = Flags.test_end_stream flags in
   let pseudo_validation = Header.Pseudo.validate_request header_list in
 
   let (State stream_state) = Streams.state_of_id state.streams stream_id in
 
-  match (end_stream, pseudo_validation) with
+  match (Flags.test_end_stream flags, pseudo_validation) with
   | _, Invalid | false, No_pseudo ->
       stream_error stream_id Error_code.ProtocolError
   | true, No_pseudo -> (

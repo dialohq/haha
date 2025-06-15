@@ -8,7 +8,7 @@ type 'peer t = {
   settings_status : settings_sync;
   headers_state : headers_state;
   streams : 'peer Streams.t;
-  hpack_encoder : Hpackv.Encoder.t;
+  (* hpack_encoder : Hpackv.Encoder.t; *)
   hpack_decoder : Hpackv.Decoder.t;
   shutdown : bool;
   writer : Writer.t;
@@ -27,10 +27,12 @@ let initial ~writer ~peer_settings ~user_settings =
       Hpackv.Decoder.create
         (Int.min peer_settings.header_table_size
            Settings.default.header_table_size);
+    (*
     hpack_encoder =
       Hpackv.Encoder.create
         (Int.min peer_settings.header_table_size
            Settings.default.header_table_size);
+    *)
     local_settings = Settings.default;
     settings_status = Syncing Settings.(to_settings_list user_settings);
     streams = Streams.initial ();
@@ -44,7 +46,7 @@ let initial ~writer ~peer_settings ~user_settings =
   }
 
 let active_streams t = Streams.count_active t.streams
-let error_all err t = Streams.error_all err t.streams
+let error_all err t = Streams.close_all ~err:(ConnectionError err) t.streams
 
 let do_flush t =
   t.flush_thunk ();
@@ -75,7 +77,7 @@ let update_state_with_local_settings (t : _ t) settings_list =
     match list with
     | [] -> Ok state
     | Settings.HeaderTableSize x :: l ->
-        Hpackv.Encoder.set_capacity state.hpack_encoder x;
+        Hpackv.Encoder.set_capacity state.writer.hpack_encoder x;
         loop l state
     | MaxFrameSize _ :: l -> loop l state
     | MaxHeaderListSize _ :: l -> loop l state

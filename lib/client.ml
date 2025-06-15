@@ -3,8 +3,9 @@ open Runtime
 type iter_input = Shutdown | Request of Request.t
 type state = Streams.client_peer State.t
 type iteration = iter_input Types.iteration
-type stream_state = Streams.client_peer Streams.Stream.state
+type stream_state = Streams.client_peer Streams.Stream.t
 
+(*
 let process_response :
     state ->
     Header.Pseudo.response_pseudo ->
@@ -141,122 +142,42 @@ let process_response :
   | HalfClosed (Remote _), _ | Closed, _ ->
       connection_error Error_code.StreamClosed
         "HEADERS received on closed stream"
+*)
 
 let process_complete_headers :
     state -> Frame.frame_header -> Header.t list -> state step =
- fun state { Frame.flags; stream_id; _ } header_list ->
-  let connection_error = step_connection_error state in
+ fun state { Frame.flags; stream_id; _ } headers ->
   let stream_error = step_stream_error state in
-  let end_stream = Flags.test_end_stream flags in
-  let pseudo_validation = Header.Pseudo.validate_response header_list in
+  let pseudo_validation = Header.Pseudo.validate_response headers in
 
-  let (State stream_state) = Streams.state_of_id state.streams stream_id in
-
-  match (end_stream, pseudo_validation) with
+  match (Flags.test_end_stream flags, pseudo_validation) with
   | _, Invalid | false, No_pseudo ->
       stream_error stream_id Error_code.ProtocolError
   | true, No_pseudo -> (
-      match stream_state with
-      | Open
-          {
-            readers = BodyReader reader;
-            writers;
-            error_handler;
-            on_close;
-            context;
-          } ->
-          let new_context = reader context (`End header_list) in
-          step InProgress
-            {
-              state with
-              streams =
-                Streams.stream_transition state.streams stream_id
-                  (State
-                     (HalfClosed
-                        (Remote
-                           {
-                             writers;
-                             error_handler;
-                             on_close;
-                             context = new_context;
-                           })));
-            }
-      | HalfClosed (Local { readers = BodyReader reader; on_close; context; _ })
-        ->
-          let new_context = reader context (`End header_list) in
-
-          let streams =
-            Streams.(stream_transition state.streams stream_id (State Closed))
-          in
-          on_close new_context;
-          step InProgress { state with streams }
-      | Reserved _ -> stream_error stream_id Error_code.StreamClosed
-      | Idle -> stream_error stream_id Error_code.ProtocolError
-      | Closed | HalfClosed (Remote _) ->
-          connection_error Error_code.StreamClosed
-            "HEADERS received on a closed stream"
-      | Open _ | HalfClosed (Local _) ->
-          connection_error Error_code.ProtocolError
-            (Format.sprintf
-               "received first HEADERS in stream %li with no pseudo-headers"
-               stream_id))
-  | end_stream, Valid pseudo ->
-      process_response state pseudo end_stream header_list (State stream_state)
-        stream_id
+      match Streams.receive_trailers ~headers stream_id state.streams with
+      | Error err -> step (ConnectionError err) state
+      | Ok streams -> step InProgress { state with streams })
+  | end_stream, Valid pseudo -> (
+      match
+        Streams.receive_response ~pseudo ~end_stream ~headers
+          ~writer:state.writer stream_id state.streams
+      with
+      | Error err -> step (ConnectionError err) state
+      | Ok streams -> step InProgress { state with streams })
 
 let input_handler : state -> iter_input -> state =
- fun state input ->
-  if state.shutdown then
+ fun ({ shutdown; writer; streams; _ } as state) input ->
+  if shutdown then
     invalid_arg "HTTP/2 iteration: cannot pass inputs after Shutdown";
   match input with
   | Shutdown ->
-      Writer.write_goaway state.writer state.streams.last_peer_stream
+      Writer.write_goaway writer
+        (Streams.last_peer_stream streams)
         Error_code.NoError;
       let new_state = { state with shutdown = true } in
       new_state
-  | Request
-      (Request.Request
-         {
-           response_handler;
-           body_writer;
-           error_handler;
-           initial_context;
-           on_close;
-           _;
-         } as request) ->
-      let id = Streams.get_next_id state.streams `Client in
-      Writer.writer_request_headers state.writer state.hpack_encoder id request;
-      Writer.write_window_update state.writer id
-        Flow_control.WindowSize.initial_increment;
-      let stream_state : stream_state =
-        match body_writer with
-        | Some body_writer ->
-            State
-              (Open
-                 {
-                   readers = AwaitingResponse response_handler;
-                   writers = BodyWriter body_writer;
-                   error_handler;
-                   context = initial_context;
-                   on_close;
-                 })
-        | None ->
-            State
-              (HalfClosed
-                 (Local
-                    {
-                      readers = AwaitingResponse response_handler;
-                      error_handler;
-                      context = initial_context;
-                      on_close;
-                    }))
-      in
-      {
-        state with
-        streams =
-          Streams.stream_transition state.streams id stream_state
-          |> Streams.update_last_local_stream id;
-      }
+  | Request request ->
+      { state with streams = Streams.write_request ~writer ~request streams }
 
 let connect : 'c. ?config:Settings.t -> _ Eio.Resource.t -> iteration =
  fun ?(config = Settings.default) socket ->
@@ -266,7 +187,10 @@ let connect : 'c. ?config:Settings.t -> _ Eio.Resource.t -> iteration =
     match state.State.shutdown with false -> [] | true -> []
   in
 
-  let initial_writer = Writer.create Settings.default.max_frame_size in
+  let initial_writer =
+    Writer.create ~header_table_size:Settings.default.header_table_size
+      Settings.default.max_frame_size
+  in
   let receive_buffer = Cstruct.create (9 + config.max_frame_size) in
   let user_settings = config in
 
