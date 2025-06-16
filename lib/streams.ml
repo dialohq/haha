@@ -211,7 +211,13 @@ let read_data :
              context;
              flow;
            } as state') ->
-          let new_context = reader context (`Data (Cstruct.of_bigarray data)) in
+          let new_context =
+            match (end_stream, Cstruct.is_empty data) with
+            | false, _ -> reader context (`Data data)
+            | true, false ->
+                reader (reader context (`Data data)) (`End Headers.empty)
+            | true, true -> reader context (`End Headers.empty)
+          in
           let flow =
             Flow_control.receive_data ~send_update flow
               (Bigstringaf.length data |> Int32.of_int)
@@ -225,7 +231,7 @@ let read_data :
                      writers;
                      error_handler;
                      on_close;
-                     context = reader new_context (`End []);
+                     context = new_context;
                      flow;
                    })
             else Open { state' with flow; context = new_context }
@@ -236,7 +242,13 @@ let read_data :
           (Local
              ({ readers = BodyReader reader; on_close; context; flow; _ } as
               state')) ->
-          let new_context = reader context (`Data (Cstruct.of_bigarray data)) in
+          let new_context =
+            match (end_stream, Cstruct.is_empty data) with
+            | false, _ -> reader context (`Data data)
+            | true, false ->
+                reader (reader context (`Data data)) (`End Headers.empty)
+            | true, true -> reader context (`End Headers.empty)
+          in
           let flow =
             Flow_control.receive_data ~send_update flow
               (Bigstringaf.length data |> Int32.of_int)
@@ -244,7 +256,7 @@ let read_data :
 
           let new_state : _ Stream.state =
             if end_stream then (
-              on_close (reader new_context (`End []));
+              on_close new_context;
               Closed)
             else HalfClosed (Local { state' with flow; context = new_context })
           in
