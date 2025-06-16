@@ -111,11 +111,8 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
 
 let process_data_frame : 'a t -> Frame.frame_header -> Cstruct.t -> 'a t step =
  fun state { Frame.flags; stream_id; _ } data ->
-  let send_update =
-    write_window_update state.writer Stream_identifier.connection
-  in
   match
-    Streams.read_data ~send_update
+    Streams.read_data ~writer:state.writer
       ~end_stream:(Flags.test_end_stream flags)
       ~data stream_id state.streams
   with
@@ -125,7 +122,9 @@ let process_data_frame : 'a t -> Frame.frame_header -> Cstruct.t -> 'a t step =
           state with
           streams;
           flow =
-            Flow_control.receive_data state.flow ~send_update
+            Flow_control.receive_data state.flow
+              ~send_update:
+                (write_window_update state.writer Stream_identifier.connection)
               (Cstruct.length data |> Int32.of_int);
         }
   | Error err -> { iter_result = ConnectionError err; state }
@@ -370,7 +369,7 @@ let finalize_iteration :
         ~writer:state.writer err
   | _ -> ());
   let write_result = write state.writer socket in
-  let state = do_flush state in
+  let state = do_flush state |> update_closing_streams in
   let active_streams = active_streams state in
 
   match (iter_result, write_result) with

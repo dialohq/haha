@@ -5,7 +5,6 @@ open Types
 type iter_input = Shutdown
 type state = Streams.server_peer State.t
 type interation = iter_input Types.iteration
-type stream_state = Streams.server_peer Streams.Stream.t
 
 let process_complete_headers :
     Reqd.handler -> state -> Frame.frame_header -> Headers.t -> state step =
@@ -17,12 +16,16 @@ let process_complete_headers :
   | _, Invalid _ | false, NotPresent | _, Valid (Response _) ->
       stream_error stream_id Error_code.ProtocolError
   | true, NotPresent -> (
-      match Streams.receive_trailers ~headers stream_id state.streams with
+      match
+        Streams.receive_trailers ~writer:state.writer ~headers stream_id
+          state.streams
+      with
       | Error err -> step (ConnectionError err) state
       | Ok streams -> step InProgress { state with streams })
   | end_stream, Valid (Request pseudo) -> (
       match
-        Streams.receive_request ~request_handler ~pseudo ~end_stream
+        Streams.receive_request ~writer:state.writer ~request_handler ~pseudo
+          ~end_stream
           ~headers:(Headers.filter_out_pseudo headers)
           ~max_streams:state.local_settings.max_concurrent_streams stream_id
           state.streams

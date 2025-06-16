@@ -60,6 +60,9 @@ let initial_server ~writer ~peer_settings ~user_settings =
 let active_streams t = Streams.count_active t.streams
 let error_all err t = Streams.close_all ~err:(ConnectionError err) t.streams
 
+let update_closing_streams t =
+  { t with streams = Streams.update_closing_streams t.streams }
+
 let do_flush t =
   t.flush_thunk ();
   { t with flush_thunk = ignore }

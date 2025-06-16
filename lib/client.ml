@@ -4,7 +4,6 @@ open Runtime
 type iter_input = Shutdown | Request of Request.t
 type state = Streams.client_peer State.t
 type iteration = iter_input Types.iteration
-type stream_state = Streams.client_peer Streams.Stream.t
 
 let process_complete_headers :
     state -> Frame.frame_header -> Headers.t -> state step =
@@ -16,7 +15,10 @@ let process_complete_headers :
   | _, Invalid _ | false, NotPresent | _, Valid (Request _) ->
       stream_error stream_id Error_code.ProtocolError
   | true, NotPresent -> (
-      match Streams.receive_trailers ~headers stream_id state.streams with
+      match
+        Streams.receive_trailers ~writer:state.writer ~headers stream_id
+          state.streams
+      with
       | Error err -> step (ConnectionError err) state
       | Ok streams -> step InProgress { state with streams })
   | end_stream, Valid (Response pseudo) -> (
