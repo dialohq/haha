@@ -1,5 +1,3 @@
-open H2kit
-
 type client_peer
 type server_peer
 type 'peer t

@@ -1,5 +1,3 @@
-open H2kit
-
 type t = {
   out_flow : Window_size.t;
   sent : Window_size.t;

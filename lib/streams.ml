@@ -1,4 +1,3 @@
-open H2kit
 module StreamMap = Map.Make (Int32)
 
 type client_peer = private Client [@warning "-37"]

@@ -1,5 +1,4 @@
-open H2kit.Serializers
-open H2kit
+open Serializers
 
 type t = {
   faraday : Faraday.t;

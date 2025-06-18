@@ -1,4 +1,3 @@
-open H2kit
 open Runtime
 
 type iter_input = Shutdown | Request of Request.t

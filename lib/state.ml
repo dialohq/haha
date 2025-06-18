@@ -1,5 +1,3 @@
-open H2kit
-
 type settings_sync = Syncing of Settings.setting list | Idle
 type headers_state = Idle | InProgress of Bigstringaf.t * int
 type 'context final_contexts = (Stream_identifier.t * 'context) list

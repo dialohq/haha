@@ -1,5 +1,3 @@
-open H2kit
-
 type t = {
   meth : Method.t;
   path : string;

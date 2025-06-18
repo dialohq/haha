@@ -1,5 +1,3 @@
-open H2kit
-
 type reader_payload = [ `Data of Cstruct.t | `End of Headers.t ]
 
 type 'context writer_payload =

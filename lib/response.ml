@@ -1,5 +1,4 @@
 open Body
-open H2kit
 
 type 'context final_response = {
   status : Status.t;
