@@ -61,50 +61,56 @@ let map_streams_transitions :
 
 let process_preface_settings ?user_settings ~socket ~receive_buffer () =
   let rec parse_loop read_off total_consumed total_read continue_opt =
-    let read_len =
-      Eio.Flow.single_read socket
-        (Cstruct.sub receive_buffer read_off
-           (Cstruct.length receive_buffer - read_off))
-    in
+    try
+      let read_len =
+        Eio.Flow.single_read socket
+          (Cstruct.sub receive_buffer read_off
+             (Cstruct.length receive_buffer - read_off))
+      in
 
-    match
-      Parse.parse_frame
-        (Cstruct.sub receive_buffer read_off read_len)
-        continue_opt
+      match
+        Parse.parse_frame
+          (Cstruct.sub receive_buffer read_off read_len)
+          continue_opt
+      with
+      | `Fail _ ->
+          Stdlib.Error
+            (Error.ProtocolViolation (ProtocolError, "invalid client preface"))
+      | `Partial (consumed, continue) ->
+          parse_loop consumed
+            (total_consumed + consumed)
+            (total_read + read_len) (Some continue)
+      | `Complete (consumed, { Frame.frame_payload = Settings settings_list; _ })
+        ->
+          let peer_settings =
+            Settings.(update_with_list default settings_list)
+          in
+          let open Writer in
+          let writer =
+            create ~header_table_size:peer_settings.header_table_size
+              (peer_settings.max_frame_size + 9)
+          in
+
+          (match user_settings with
+          | Some user_settings -> write_settings writer user_settings
+          | None -> ());
+          write_settings_ack writer;
+          write_window_update writer Stream_identifier.connection
+            Flow_control.initial_increment;
+          write writer socket
+          |> Result.map_error (fun exn -> Error.Exn exn)
+          |> Result.map (fun () ->
+                 let rest_off = read_off + total_consumed + consumed in
+                 let rest_len = total_read + read_len - rest_off in
+
+                 ( peer_settings,
+                   Cstruct.sub receive_buffer rest_off rest_len,
+                   writer ))
+      | `Complete (_, _) ->
+          Error (ProtocolViolation (ProtocolError, "invalid client preface"))
     with
-    | `Fail _ ->
-        Stdlib.Error
-          (Error.ProtocolViolation (ProtocolError, "invalid client preface"))
-    | `Partial (consumed, continue) ->
-        parse_loop consumed
-          (total_consumed + consumed)
-          (total_read + read_len) (Some continue)
-    | `Complete (consumed, { Frame.frame_payload = Settings settings_list; _ })
-      ->
-        let peer_settings = Settings.(update_with_list default settings_list) in
-        let open Writer in
-        let writer =
-          create ~header_table_size:peer_settings.header_table_size
-            (peer_settings.max_frame_size + 9)
-        in
-
-        (match user_settings with
-        | Some user_settings -> write_settings writer user_settings
-        | None -> ());
-        write_settings_ack writer;
-        write_window_update writer Stream_identifier.connection
-          Flow_control.initial_increment;
-        write writer socket
-        |> Result.map_error (fun exn -> Error.Exn exn)
-        |> Result.map (fun () ->
-               let rest_off = read_off + total_consumed + consumed in
-               let rest_len = total_read + read_len - rest_off in
-
-               ( peer_settings,
-                 Cstruct.sub receive_buffer rest_off rest_len,
-                 writer ))
-    | `Complete (_, _) ->
-        Error (ProtocolViolation (ProtocolError, "invalid client preface"))
+    | Eio.Cancel.Cancelled _ as e -> raise e
+    | exn -> Error (Exn exn)
   in
   parse_loop 0 0 0 None
 
