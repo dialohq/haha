@@ -204,14 +204,16 @@ let read_data :
       | Closed Terminating -> Ok (State state)
       | Idle | HalfClosed (Remote _) ->
           Error
-            (conn_prot_err StreamClosed "DATA frame received on closed stream!")
+            (conn_prot_err StreamClosed
+               "DATA frame received on closed stream! Stream ID %li" id)
       | Reserved _ ->
           Error
             (conn_prot_err ProtocolError
-               "DATA frame received on reserved stream")
+               "DATA frame received on reserved stream. Stream ID %li" id)
       | Closed Terminated ->
           Error
-            (conn_prot_err StreamClosed "DATA frame received on closed stream!")
+            (conn_prot_err StreamClosed
+               "DATA frame received on closed stream! Stream ID %li" id)
       | Open
           ({
              readers = BodyReader reader;
