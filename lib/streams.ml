@@ -82,7 +82,12 @@ let initial_server : unit -> _ t =
  fun () ->
   { map = StreamMap.empty; last_peer_stream = -1l; last_local_stream = 0l }
 
-let count_active : _ t -> int = fun { map; _ } -> StreamMap.cardinal map
+let count_active : _ t -> int =
+ fun { map; _ } ->
+  StreamMap.fold
+    (fun _ (v : _ Stream.t) acc ->
+      match v with State (Closed _ | Idle) -> acc | _ -> acc + 1)
+    map 0
 
 let count_open t =
   StreamMap.fold
