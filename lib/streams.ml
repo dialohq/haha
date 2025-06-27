@@ -3,6 +3,8 @@ module StreamMap = Map.Make (Int32)
 type client_peer = private Client [@warning "-37"]
 type server_peer = private Server [@warning "-37"]
 
+let rng = Random.State.make_self_init ()
+
 type (_, 'c) writers =
   | BodyWriter : 'c Body.writer -> ('peer, 'c) writers
   | WritingResponse : 'c Response.response_writer -> (server_peer, 'c) writers
@@ -21,6 +23,7 @@ module Stream = struct
     on_close : 'c -> unit;
     context : 'c;
     flow : Flow_control.t;
+    uid : string;
   }
 
   type ('peer, 'c) half_closed =
@@ -30,6 +33,7 @@ module Stream = struct
         on_close : 'c -> unit;
         context : 'c;
         flow : Flow_control.t;
+        uid : string;
       }
     | Local of {
         readers : ('peer, 'c) readers;
@@ -37,6 +41,7 @@ module Stream = struct
         on_close : 'c -> unit;
         context : 'c;
         flow : Flow_control.t;
+        uid : string;
       }
 
   type 'context reserved =
@@ -45,12 +50,14 @@ module Stream = struct
         on_close : 'context -> unit;
         context : 'context;
         flow : Flow_control.t;
+        uid : string;
       } [@warning "-37"]
     | Local of {
         error_handler : 'context error_handler;
         on_close : 'context -> unit;
         context : 'context;
         flow : Flow_control.t;
+        uid : string;
       } [@warning "-37"]
 
   type closed = Terminating | Terminated
@@ -64,7 +71,151 @@ module Stream = struct
 
   type 'peer t = State : ('peer, _) state -> 'peer t
   type 'p transition = 'p t -> ('p t, Error.t) result
+
+  let to_string fmt (State state) =
+    let open Format in
+    match state with
+    | Idle -> fprintf fmt "idle"
+    | Reserved (Remote { uid; _ }) -> fprintf fmt "%s (reserved (remote))" uid
+    | Reserved (Local { uid; _ }) -> fprintf fmt "%s (reserved (local))" uid
+    | Open { uid; _ } -> fprintf fmt "%s (open)" uid
+    | HalfClosed (Remote { uid; _ }) ->
+        fprintf fmt "%s (half-closed (remote))" uid
+    | HalfClosed (Local { uid; _ }) ->
+        fprintf fmt "%s (half-closed (local))" uid
+    | Closed Terminated -> fprintf fmt "closed-terminated"
+    | Closed Terminating -> fprintf fmt "closed-terminating"
 end
+
+type creating_event = Request | Reqd
+
+type receive_event =
+  | Rst
+  | Trailers
+  | Response of { end_stream : bool; is_final : bool }
+
+type on_close_loc =
+  | ReadData
+  | Finalize
+  | BodyWriter
+  | Trailers
+  | Response
+  | ResponseWriter
+
+type stream_event =
+  | Create of creating_event
+  | Finalize
+  | Close
+  | Receive of receive_event
+  | WriteResponse of bool
+  | OnClose of on_close_loc
+  | StreamError of Error_code.t * bool
+
+let event_json : stream_event -> Yojson.Safe.t = function
+  | Create Request ->
+      `Assoc
+        [
+          ("name", `String "create");
+          ("meta", `Assoc [ ("type", `String "request") ]);
+        ]
+  | Create Reqd ->
+      `Assoc
+        [
+          ("name", `String "create");
+          ("meta", `Assoc [ ("type", `String "reqd") ]);
+        ]
+  | Finalize -> `Assoc [ ("name", `String "finalize") ]
+  | Close -> `Assoc [ ("name", `String "close") ]
+  | OnClose ReadData ->
+      `Assoc
+        [
+          ("name", `String "on-close");
+          ("meta", `Assoc [ ("loc", `String "read-data") ]);
+        ]
+  | OnClose Finalize ->
+      `Assoc
+        [
+          ("name", `String "on-close");
+          ("meta", `Assoc [ ("loc", `String "finalize") ]);
+        ]
+  | OnClose BodyWriter ->
+      `Assoc
+        [
+          ("name", `String "on-close");
+          ("meta", `Assoc [ ("loc", `String "body-writer") ]);
+        ]
+  | OnClose ResponseWriter ->
+      `Assoc
+        [
+          ("name", `String "on-close");
+          ("meta", `Assoc [ ("loc", `String "response-writer") ]);
+        ]
+  | OnClose Response ->
+      `Assoc
+        [
+          ("name", `String "on-close");
+          ("meta", `Assoc [ ("loc", `String "response") ]);
+        ]
+  | OnClose Trailers ->
+      `Assoc
+        [
+          ("name", `String "on-close");
+          ("meta", `Assoc [ ("loc", `String "trailers") ]);
+        ]
+  | Receive Trailers ->
+      `Assoc
+        [
+          ("name", `String "receive");
+          ("meta", `Assoc [ ("type", `String "trailers") ]);
+        ]
+  | Receive Rst ->
+      `Assoc
+        [
+          ("name", `String "receive");
+          ("meta", `Assoc [ ("type", `String "rst") ]);
+        ]
+  | Receive (Response { end_stream; is_final }) ->
+      `Assoc
+        [
+          ("name", `String "receive");
+          ( "meta",
+            `Assoc
+              [
+                ("type", `String "response");
+                ("end_stream", `Bool end_stream);
+                ("is_final", `Bool is_final);
+              ] );
+        ]
+  | WriteResponse with_body ->
+      `Assoc
+        [
+          ("name", `String "write-response");
+          ("meta", `Assoc [ ("body", `Bool with_body) ]);
+        ]
+  | StreamError (code, received) ->
+      `Assoc
+        [
+          ("name", `String "stream-error");
+          ( "meta",
+            `Assoc
+              [
+                ("received", `Bool received);
+                ("code", `String (Error_code.to_string code));
+              ] );
+        ]
+
+let log ~id ~stream event =
+  let json : Yojson.Safe.t =
+    `Assoc
+      [
+        ("src", `String "haha");
+        ("id", `String (id |> Int32.to_string));
+        ("state", `String (Format.asprintf "%a" Stream.to_string stream));
+        ("event", event_json event);
+      ]
+  in
+
+  print_endline @@ Yojson.Safe.to_string json
 
 type 'peer t = {
   map : 'peer Stream.t StreamMap.t;
@@ -95,8 +246,9 @@ let count_open t =
       match v with State (Open _) | State (HalfClosed _) -> acc + 1 | _ -> acc)
     t.map 0
 
-let finalize_stream : ?err:Error.t -> 'p Stream.t -> unit =
- fun ?err (State s) ->
+let finalize_stream :
+    ?err:Error.t -> id:Stream_identifier.t -> 'p Stream.t -> unit =
+ fun ?err ~id (State s as st) ->
   match s with
   | Open { on_close; context; error_handler; _ }
   | HalfClosed
@@ -105,9 +257,11 @@ let finalize_stream : ?err:Error.t -> 'p Stream.t -> unit =
   | Reserved
       ( Local { on_close; context; error_handler; _ }
       | Remote { on_close; context; error_handler; _ } ) ->
+      log ~id ~stream:st Finalize;
       let final_ctx =
         match err with Some err -> error_handler context err | None -> context
       in
+      log ~id ~stream:st (OnClose Finalize);
       on_close final_ctx
   | _ -> ()
 
@@ -116,7 +270,11 @@ let close_stream : ?err:Error.t -> Stream_identifier.t -> 'p t -> 'p t =
   let map =
     StreamMap.update id
       (fun s ->
-        Option.iter (finalize_stream ?err) s;
+        Option.iter
+          (fun s ->
+            log ~id ~stream:s Close;
+            finalize_stream ~id ?err s)
+          s;
         None)
       t.map
   in
@@ -124,7 +282,7 @@ let close_stream : ?err:Error.t -> Stream_identifier.t -> 'p t -> 'p t =
   { t with map }
 
 let close_all : ?err:Error.t -> _ t -> unit =
- fun ?err { map; _ } -> StreamMap.iter (fun _ -> finalize_stream ?err) map
+ fun ?err { map; _ } -> StreamMap.iter (fun id -> finalize_stream ~id ?err) map
 
 let update_closing_streams : _ t -> _ t =
  fun t ->
@@ -184,10 +342,11 @@ let update_stream_state :
     match update stream with
     | Ok new_stream -> Ok (StreamMap.add id new_stream t.map)
     | Error (StreamError (id, code) as err) ->
+        log ~id ~stream (StreamError (code, Option.is_none writer));
         Option.iter
           (fun writer -> Writer.write_rst_stream writer id code)
           writer;
-        finalize_stream ~err stream;
+        finalize_stream ~id ~err stream;
         Ok (StreamMap.add id (Stream.State (Closed Terminating)) t.map)
     | Error (ConnectionError err) -> Error err
   in
@@ -203,7 +362,7 @@ let read_data :
  fun ~end_stream ~writer ~data id ->
   let f : _ Stream.transition =
     let open Error in
-    fun (State state) ->
+    fun (State state as st) ->
       let send_update = Writer.write_window_update writer id in
       match state with
       | Closed Terminating -> Ok (State state)
@@ -227,6 +386,7 @@ let read_data :
              on_close;
              context;
              flow;
+             uid;
            } as state') ->
           let new_context =
             match (end_stream, Cstruct.is_empty data) with
@@ -250,6 +410,7 @@ let read_data :
                      on_close;
                      context = new_context;
                      flow;
+                     uid;
                    })
             else Open { state' with flow; context = new_context }
           in
@@ -273,6 +434,7 @@ let read_data :
 
           let new_state : _ Stream.state =
             if end_stream then (
+              log ~id ~stream:st (OnClose ReadData);
               on_close new_context;
               Closed Terminating)
             else HalfClosed (Local { state' with flow; context = new_context })
@@ -292,7 +454,8 @@ let receive_rst :
  fun ~error_code id ->
   let open Error in
   let f : _ Stream.transition =
-   fun (State state) ->
+   fun (State state as st) ->
+    log ~id ~stream:st (Receive Rst);
     match state with
     | Closed Terminating -> Ok (State state)
     | Idle ->
@@ -408,14 +571,22 @@ let body_writer_handler (type p) :
         distributed;
 
       if send_trailers then Writer.write_trailers writer id trailers;
-      (match state_on_end with State (Closed _) -> on_close () | _ -> ());
+      (match state_on_end with
+      | State (Closed _) ->
+          log ~id ~stream:state_on_end (OnClose BodyWriter);
+          on_close ()
+      | _ -> ());
 
       stream_transition id state_on_end t
   | `End (None, trailers) ->
       let send_trailers = Headers.length trailers > 0 in
       if send_trailers then Writer.write_trailers writer id trailers
       else Writer.write_data ~end_stream:true writer id [ Cstruct.empty ];
-      (match state_on_end with State (Closed _) -> on_close () | _ -> ());
+      (match state_on_end with
+      | State (Closed _) ->
+          log ~id ~stream:state_on_end (OnClose BodyWriter);
+          on_close ()
+      | _ -> ());
 
       stream_transition id state_on_end t
 
@@ -435,6 +606,7 @@ let make_body_writer_transition (type p) :
          context;
          on_close;
          flow;
+         uid;
        } as state') ->
       Some
         (fun () ->
@@ -447,7 +619,8 @@ let make_body_writer_transition (type p) :
             ~state_on_end:
               (State
                  (HalfClosed
-                    (Local { context; error_handler; readers; on_close; flow })))
+                    (Local
+                       { context; error_handler; readers; on_close; flow; uid })))
             payload id on_flush
             (fun () -> on_close context))
   | HalfClosed
@@ -472,7 +645,7 @@ let make_response_writer_transition :
     server_peer Stream.t ->
     Stream_identifier.t ->
     (unit -> server_peer t -> server_peer t) option =
- fun ~writer (State state) id ->
+ fun ~writer (State state as st) id ->
   match state with
   | Open
       ({
@@ -482,6 +655,7 @@ let make_response_writer_transition :
          on_close;
          context;
          flow;
+         uid;
        } as state') ->
       Some
         (fun () ->
@@ -492,17 +666,26 @@ let make_response_writer_transition :
             write_headers_response writer id response;
             match response with
             | `Final { body_writer = Some body_writer; _ } ->
+                log ~id ~stream:st (WriteResponse true);
                 write_window_update writer id Flow_control.initial_increment;
                 stream_transition id
                   (State (Open { state' with writers = BodyWriter body_writer }))
                   t
             | `Final { body_writer = None; _ } ->
+                log ~id ~stream:st (WriteResponse false);
                 write_window_update writer id Flow_control.initial_increment;
                 stream_transition id
                   (State
                      (HalfClosed
                         (Local
-                           { readers; error_handler; on_close; context; flow })))
+                           {
+                             readers;
+                             error_handler;
+                             on_close;
+                             context;
+                             flow;
+                             uid;
+                           })))
                   t
             | `Interim _ -> t)
   | HalfClosed
@@ -518,6 +701,7 @@ let make_response_writer_transition :
             write_headers_response writer id response;
             match response with
             | `Final { body_writer = Some body_writer; _ } ->
+                log ~id ~stream:st (WriteResponse true);
                 write_window_update writer id Flow_control.initial_increment;
                 stream_transition id
                   (State
@@ -525,7 +709,9 @@ let make_response_writer_transition :
                         (Remote { state' with writers = BodyWriter body_writer })))
                   t
             | `Final { body_writer = None; _ } ->
+                log ~id ~stream:st (WriteResponse false);
                 write_window_update writer id Flow_control.initial_increment;
+                log ~id ~stream:st (OnClose ResponseWriter);
                 on_close context;
                 stream_transition id (State (Closed Terminated)) t
             | `Interim _ -> t)
@@ -563,7 +749,8 @@ let receive_trailers :
  fun ~writer ~headers id t ->
   let f : _ Stream.transition =
     let open Error in
-    fun (State state) ->
+    fun (State state as st) ->
+      log ~stream:st ~id (Receive Trailers);
       match state with
       | Closed Terminating -> Ok (State state)
       | Open
@@ -574,6 +761,7 @@ let receive_trailers :
             on_close;
             context;
             flow;
+            uid;
           } ->
           let new_context = reader context (`End headers) in
           Ok
@@ -586,11 +774,13 @@ let receive_trailers :
                        on_close;
                        context = new_context;
                        flow;
+                       uid;
                      })))
       | HalfClosed (Local { readers = BodyReader reader; on_close; context; _ })
         ->
           let new_context = reader context (`End headers) in
 
+          log ~id ~stream:st (OnClose Trailers);
           on_close new_context;
           Ok (State (Closed Terminated))
       | Reserved _ -> Error (stream_prot_err id Error_code.StreamClosed)
@@ -625,7 +815,7 @@ let receive_request :
       | Closed Terminating -> Ok (State state)
       | Idle ->
           let open_streams = count_open t in
-          if open_streams < Int32.to_int max_streams then
+          if open_streams < Int32.to_int max_streams then (
             let reqd =
               {
                 Reqd.meth = Method.of_string pseudo.meth;
@@ -646,6 +836,7 @@ let receive_request :
                    }) =
               request_handler reqd
             in
+            let uid = Uuidm.v4_gen rng () |> Uuidm.to_string in
 
             let new_stream_state : server_peer Stream.t =
               if end_stream then
@@ -658,6 +849,7 @@ let receive_request :
                           on_close;
                           context;
                           flow = Flow_control.initial;
+                          uid;
                         }))
               else
                 State
@@ -669,10 +861,13 @@ let receive_request :
                        on_close;
                        context;
                        flow = Flow_control.initial;
+                       uid;
                      })
             in
 
-            Ok new_stream_state
+            log ~id ~stream:new_stream_state (Create Reqd);
+
+            Ok new_stream_state)
           else
             Error
               (conn_prot_err Error_code.ProtocolError
@@ -713,7 +908,8 @@ let receive_response :
 
   let f : client_peer Stream.transition =
     let open Error in
-    fun (State state) ->
+    fun (State state as st) ->
+      log ~id ~stream:st (Receive (Response { end_stream; is_final }));
       match (state, is_final) with
       | Closed Terminating, _ -> Ok (State state)
       | ( Open
@@ -739,6 +935,7 @@ let receive_response :
               on_close;
               context;
               flow;
+              uid;
             },
           true ) ->
           let body_reader, context = response_handler context @@ response () in
@@ -759,6 +956,7 @@ let receive_response :
                           on_close;
                           context;
                           flow;
+                          uid;
                         }))
             | Some body_reader, false ->
                 State
@@ -770,6 +968,7 @@ let receive_response :
                        on_close;
                        context;
                        flow;
+                       uid;
                      })
           in
 
@@ -782,6 +981,7 @@ let receive_response :
                  context;
                  on_close;
                  flow;
+                 uid;
                }),
           true ) ->
           let body_reader, context = response_handler context @@ response () in
@@ -790,6 +990,7 @@ let receive_response :
             match (end_stream, body_reader) with
             | false, None ->
                 Writer.write_rst_stream writer id NoError;
+                log ~id ~stream:st (OnClose Response);
                 on_close context;
                 State (Closed Terminating)
             | false, Some body_reader ->
@@ -802,8 +1003,10 @@ let receive_response :
                           on_close;
                           context;
                           flow;
+                          uid;
                         }))
             | true, _ ->
+                log ~id ~stream:st (OnClose Response);
                 on_close context;
                 State (Closed Terminated)
           in
@@ -844,6 +1047,7 @@ let write_request :
          } as request) =
     request
   in
+  let uid = Uuidm.v4_gen rng () |> Uuidm.to_string in
   let id = Int32.add t.last_local_stream 2l in
   Writer.writer_request_headers writer id request;
   Writer.write_window_update writer id Flow_control.initial_increment;
@@ -859,6 +1063,7 @@ let write_request :
                context = initial_context;
                on_close;
                flow = Flow_control.initial;
+               uid;
              })
     | None ->
         State
@@ -870,7 +1075,10 @@ let write_request :
                   context = initial_context;
                   on_close;
                   flow = Flow_control.initial;
+                  uid;
                 }))
   in
+
+  log ~id ~stream:stream_state (Create Request);
 
   stream_transition id stream_state t

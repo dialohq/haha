@@ -1,6 +1,6 @@
 (library
  (name haha)
  (public_name haha)
- (libraries eio_main angstrom faraday hpack h2kit)
+ (libraries eio_main angstrom faraday hpack h2kit uuidm yojson)
  (flags
   (:standard -open H2kit)))

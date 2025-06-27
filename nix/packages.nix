@@ -31,6 +31,8 @@ with pkgs.ocamlPackages; rec {
       angstrom
       faraday
       h2kit
+      yojson
+      uuidm
     ];
   };
 
