@@ -4,13 +4,15 @@
 
 (name haha)
 
-(package 
-  (name h2kit))
+(package
+ (name h2kit))
+
+(package
+ (name h2inspect))
 
 (package
  (name haha)
- (synopsis
-  "Performance-first HTTP/2 implementation in OCaml")
+ (synopsis "Performance-first HTTP/2 implementation in OCaml")
  (depends
   (ocaml
    (>= "4.08.0"))
@@ -20,13 +22,9 @@
    (>= "0.7.3"))
   (bigstringaf
    (>= "0.5.0"))
-  hpackv
-  ))
+  hpackv))
 
 (package
  (name haha-examples)
- (synopsis
-  "Examples for Haha library")
- (depends
-  haha
-  uri))
+ (synopsis "Examples for Haha library")
+ (depends haha uri))

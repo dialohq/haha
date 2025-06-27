@@ -1,0 +1,5 @@
+(executable
+ (name h2inspect)
+ (public_name h2inspect)
+ (package h2inspect)
+ (libraries h2kit eio_main))
