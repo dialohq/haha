@@ -1,6 +1,7 @@
 type t [@@deriving show, eq]
 
 val default_flags : t
+val test_empty : t -> bool
 val test_end_stream : t -> bool
 val set_end_stream : t -> t
 val test_ack : t -> bool

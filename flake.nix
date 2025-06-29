@@ -26,7 +26,7 @@
       packages = pkgs.callPackage ./nix/packages.nix {inherit nix-filter pkgs;};
       devShells = {
         default = pkgs.mkShell {
-          inputsFrom = [packages.default packages.h2kit packages.examples];
+          inputsFrom = [packages.default packages.h2kit packages.examples packages.h2inspect];
           buildInputs = with pkgs;
           with ocamlPackages; [
             ocamlformat

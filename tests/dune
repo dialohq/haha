@@ -1,0 +1,3 @@
+(executable
+ (name conformance)
+ (libraries haha h2inspect))

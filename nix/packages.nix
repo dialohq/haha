@@ -13,7 +13,23 @@ with pkgs.ocamlPackages; rec {
         include = ["dune-project" "h2kit" "h2kit.opam"];
       };
 
-    propagatedBuildInputs = [angstrom faraday cstruct hpack alcotest ppx_deriving];
+    doCheck = true;
+    checkInputs = [alcotest];
+
+    propagatedBuildInputs = [cstruct hpack ppx_deriving];
+  };
+
+  h2inspect = buildDunePackage {
+    pname = "h2inspect";
+    version = "0.0.1";
+
+    src = with nix-filter.lib;
+      filter {
+        root = ./..;
+        include = ["dune-project" "h2inspect" "h2inspect.opam"];
+      };
+
+    propagatedBuildInputs = [ocolor ppx_deriving eio_main h2kit];
   };
 
   default = buildDunePackage {
@@ -46,6 +62,7 @@ with pkgs.ocamlPackages; rec {
 
     buildInputs = [
       default
+      h2kit
 
       eio_main
       uri

@@ -2,9 +2,6 @@ open Eio
 open H2kit
 open Angstrom
 
-type element = [ `Frame of (Frame.t, Error.t) result | `Magic | `Malformed ]
-[@@deriving show { with_path = false }]
-
 type 'a continue = Cstruct.t -> 'a Unbuffered.state
 type 'a state = { off : int; continue : 'a continue option }
 
@@ -24,37 +21,39 @@ let parse : _ t -> Cstruct.t -> _ Unbuffered.state =
       continue buffer ~off ~len Incomplete
   | state -> state
 
-let run ~sw flow =
-  Fiber.fork ~sw @@ fun () ->
-  let parser : element t =
-    Parsers.connection_preface
-    >>| (fun _ -> `Magic)
-    <|> (Parsers.parse_frame >>| fun f -> `Frame f)
-  in
+let magic_parser = Parsers.connection_preface >>| fun _ -> Element.Magic
 
-  let buff = Cstruct.create Settings.default.max_frame_size in
+let frame_parser =
+  Parsers.parse_frame >>| function
+  | Ok frame -> Element.Frame frame
+  | Error err -> ValidationFailed err
 
-  let read : _ state -> element list * _ state option =
-   fun { off; continue } ->
+let parser : Element.t t =
+  (* NOTE: we should do some smarter parsing to choose between magic and frames *)
+  peek_string 3 >>= function "PRI" -> magic_parser | _ -> frame_parser
+
+let read :
+    flow:_ Eio.Resource.t ->
+    buffer:Cstruct.t ->
+    parser:_ t ->
+    _ state ->
+    Element.t list * _ state option =
+ fun ~flow ~buffer:buff ~parser { off; continue } ->
+  try
     let read =
       Flow.single_read flow Cstruct.(sub buff off (length buff - off))
     in
 
     let to_parse = Cstruct.(sub buff 0 (off + read)) in
-    Printf.printf "%i bytes to parse:\n%!" @@ Cstruct.length to_parse;
-    Cstruct.hexdump to_parse;
 
     let rec aux :
-        element list ->
+        Element.t list ->
         int ->
         _ Unbuffered.state ->
-        element list * _ state option =
+        Element.t list * _ state option =
      fun acc consumed -> function
-       | Fail _ ->
-           Printf.printf "Fail\n%!";
-           (acc @ [ `Malformed ], None)
+       | Fail _ -> (acc @ [ Malformed ], None)
        | Partial { committed; continue } ->
-           Printf.printf "Partial\n%!";
            let consumed = consumed + committed in
            let left = Cstruct.length to_parse - consumed in
 
@@ -62,30 +61,33 @@ let run ~sw flow =
 
            (acc, Some { off = left; continue = Some (map_continue continue) })
        | Done (c, el) ->
-           Printf.printf "Done, consumed %i\n%!" c;
            let new_consumed = consumed + c in
            let to_parse = Cstruct.shift to_parse new_consumed in
-           Printf.printf "Rest to parse length %i\n%!"
-           @@ Cstruct.length to_parse;
            aux (acc @ [ el ]) new_consumed (parse parser to_parse)
     in
 
     let parse = Option.value ~default:(parse parser) continue in
 
     aux [] 0 (parse to_parse)
-  in
+  with End_of_file -> ([ EOF ], None)
 
-  let rec aux state =
-    let open Format in
-    let l, next = read state in
+let run : sw:Switch.t -> _ Resource.t -> ((unit -> Element.t) -> 'a) -> 'a =
+ fun ~sw flow f ->
+  let stream = Stream.create max_int in
+  let stop_promise, stop_resolver = Promise.create () in
+  Fiber.fork ~sw (fun () ->
+      Fiber.first
+        (fun () -> Promise.await stop_promise)
+        (fun () ->
+          let buffer = Cstruct.create Settings.default.max_frame_size in
 
-    printf "%a@."
-      (pp_print_list ~pp_sep:(fun fmt () -> fprintf fmt " ") pp_element)
-      l;
+          let rec aux state =
+            let l, next = read ~flow ~buffer ~parser state in
+            List.iter (Stream.add stream) l;
+            Option.iter aux next
+          in
 
-    Option.iter aux next
-  in
+          aux { off = 0; continue = None }));
 
-  aux { off = 0; continue = None };
-
-  Printf.printf "End of read\n%!"
+  f (fun () -> Stream.take stream);
+  Promise.resolve stop_resolver ()

@@ -3,6 +3,7 @@ type t = int [@@deriving show, eq]
 let[@inline] test_bit x i = x land (1 lsl i) <> 0
 let[@inline] set_bit x i = x lor (1 lsl i)
 let default_flags = 0x0
+let test_empty x = x = 0x0
 let test_end_stream x = test_bit x 0
 let set_end_stream x = set_bit x 0
 let test_ack x = test_bit x 0
