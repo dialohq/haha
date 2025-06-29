@@ -30,3 +30,9 @@ val write_goaway_frame :
 
 val write_window_update_frame : t -> Stream_identifier.t -> int32 -> unit
 (** Serializer for WINDOW_UPDATE frame *)
+
+val write_frame_header : t -> Frame.frame_header -> unit
+(** Serializer for frame header alone
+
+    This is normally called for you internally in each frame's serializer, but
+    can be useful as a seprate function for tests. *)
