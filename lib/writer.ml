@@ -1,4 +1,4 @@
-open Serializers
+open Serializers.Make (Faraday)
 
 type t = {
   faraday : Faraday.t;

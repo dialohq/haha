@@ -1,5 +1,6 @@
 open H2kit
 open Utils
+module Serializers = Serializers.Make (Faraday)
 
 module Testable = struct
   let pp_cs fmt cs = Format.fprintf fmt "%s" (Cstruct.to_string cs)
