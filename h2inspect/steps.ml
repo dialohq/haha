@@ -94,3 +94,14 @@ module Write = struct
         write_goaway_frame bw 0l NoError;
         Buf_write.flush bw)
 end
+
+module Sets = struct
+  let preface : step list =
+    [
+      Expect.magic;
+      Expect.settings;
+      Write.settings;
+      Write.settings_ack;
+      Expect.settings_ack;
+    ]
+end

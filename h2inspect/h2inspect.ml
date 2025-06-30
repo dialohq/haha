@@ -3,13 +3,14 @@ open Steps
 module I = Ignore
 module E = Expect
 module W = Write
+module S = Sets
 
 let run_server_tests ~sw net =
   Fiber.fork ~sw @@ fun () ->
   Switch.run @@ fun sw ->
-  let connection_level_group : Runner.test_group =
+  let preface : Runner.test_group =
     {
-      label = "Connection-level";
+      label = "Connection preface";
       tests =
         [
           {
@@ -42,26 +43,24 @@ let run_server_tests ~sw net =
               Some
                 {|[Section 3.4. of RFC9113] "The SETTINGS frames received from a peer as part of the connection preface MUST be acknowledged (see Section 6.5.3) @{<ul>after@} sending the connection preface. [...] Clients and servers MUST treat an invalid connection preface as a connection error (Section 5.4.1) of type PROTOCOL_ERROR."|};
           };
+        ];
+    }
+  in
+
+  let frame_header_validation : Runner.test_group =
+    {
+      label = "Frame header validation";
+      tests =
+        [
           {
-            label = "Ping-pong";
-            steps =
-              [
-                I.window_update;
-                E.magic;
-                E.settings;
-                W.settings;
-                E.settings_ack;
-                W.settings_ack;
-                W.ping;
-                E.ping;
-                W.goaway;
-              ];
+            label = "Server sends a frame with invalid payload size";
+            steps = List.concat [ S.preface; [] ];
             description = None;
           };
         ];
     }
   in
 
-  let groups : Runner.test_group list = [ connection_level_group ] in
+  let groups : Runner.test_group list = [ preface ] in
 
   Runner.run_groups ~sw ~net groups
