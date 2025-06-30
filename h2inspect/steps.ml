@@ -1,63 +1,79 @@
 open H2kit
 
-type expect_action = Element.t -> (unit, string) result
-type write_action = Buf_write.t -> unit
-type action = Expect of expect_action | Write of write_action
-type step = unit -> action
+type expect_step = Element.t -> string option
+type write_step = Buf_write.t -> unit
+type ignore_step = Add of (Element.t -> bool) | Reset
+
+type step =
+  | Expect of expect_step
+  | Write of write_step
+  | Ignore of ignore_step
+
+module Ignore = struct
+  let ( + ) t1 t2 = fun el -> t1 el || t2 el
+  let deafult : Element.t -> bool = fun _ -> false
+  let reset : step = Ignore Reset
+
+  let window_update : step =
+    Ignore
+      (Add
+         (function
+         | Element.Frame { frame_payload = WindowUpdate _; _ } -> true
+         | _ -> false))
+end
 
 module Expect = struct
-  let magic =
-   fun () ->
+  let magic : step =
     Expect
-      (function Magic -> Ok () | _ -> Error "Expected preface magic string")
+      (function Magic -> None | _ -> Some "Expected preface magic string")
 
-  let settings =
-   fun () ->
+  let settings : step =
     Expect
       (function
       | Frame { frame_payload = Settings _; frame_header = { flags; _ } } ->
-          if Flags.test_empty flags then Ok ()
-          else Error "Expected SETTINGS frame without any flags set"
-      | _ -> Error "Expected SETTINGS frame")
+          if Flags.test_empty flags then None
+          else Some "Expected SETTINGS frame without any flags set"
+      | _ -> Some "Expected SETTINGS frame")
 
-  let settings_ack =
-   fun () ->
+  let settings_ack : step =
     Expect
       (function
       | Frame { frame_payload = Settings _; frame_header = { flags; _ } } ->
-          if Flags.test_ack flags then Ok ()
-          else Error "Expected SETTINGS frame with ACK flag set"
-      | _ -> Error "Expected SETTINGS frame with ACK flag set")
+          if Flags.test_ack flags then None
+          else Some "Expected SETTINGS frame with ACK flag set"
+      | _ -> Some "Expected SETTINGS frame with ACK flag set")
 
-  let ping =
-   fun () ->
+  let ping : step =
     Expect
       (function
       | Frame { frame_payload = Ping cs; _ } ->
-          if Cstruct.to_string cs = "12345678" then Ok ()
-          else Error "Expected PING frame with payload \"12345678\""
-      | _ -> Error "Expected PING frame")
+          if Cstruct.to_string cs = "12345678" then None
+          else Some "Expected PING frame with payload \"12345678\""
+      | _ -> Some "Expected PING frame")
 
-  let window_update =
-   fun () ->
+  let window_update : step =
     Expect
       (function
-      | Frame { frame_payload = WindowUpdate _; _ } -> Ok ()
-      | _ -> Error "Expected WINDOW_UPDATE frame")
+      | Frame { frame_payload = WindowUpdate _; _ } -> None
+      | _ -> Some "Expected WINDOW_UPDATE frame")
+
+  let goaway : step =
+    Expect
+      (function
+      | Frame { frame_payload = GoAway _; _ } -> None
+      | _ -> Some "Expected GOAWAY frame")
 end
 
 module Write = struct
   open Serializers.Make (Buf_write)
 
-  let setting =
-   fun () ->
+  let settings =
     Write
       (fun bw ->
         write_settings_frame bw [] (create_frame_info 0l);
         Buf_write.flush bw)
 
   let settings_ack =
-   fun () ->
     Write
       (fun bw ->
         write_settings_frame bw []
@@ -65,7 +81,6 @@ module Write = struct
         Buf_write.flush bw)
 
   let ping =
-   fun () ->
     Write
       (fun bw ->
         write_ping_frame bw
@@ -74,7 +89,6 @@ module Write = struct
         Buf_write.flush bw)
 
   let goaway =
-   fun () ->
     Write
       (fun bw ->
         write_goaway_frame bw 0l NoError;

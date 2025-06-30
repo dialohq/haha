@@ -164,5 +164,5 @@ let validate_header
   | Unknown _ -> Ok ()
 
 let pp_hum fmt t =
-  Format.fprintf fmt "%a [%li]" FrameType.pp_hum t.frame_header.frame_type
+  Format.fprintf fmt "%a[%li]" FrameType.pp_hum t.frame_header.frame_type
     t.frame_header.stream_id
