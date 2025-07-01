@@ -93,42 +93,67 @@ end
 
 module type S = sig
   type t
-  type frame_info
+
+  type frame_info = {
+    flags : Flags.t;
+    stream_id : Stream_identifier.t;
+    padding_length : int;
+  }
 
   val create_frame_info :
     ?flags:Flags.t -> ?padding_length:int -> int32 -> frame_info
 
+  (** Module for writing individual parts of specific frames.
+
+      Those are normally called for you internally in each frame's serializer,
+      but can be useful as seprate functions for tests (e.g. when you want to
+      write an invalid frame). *)
+  module LowLevel : sig
+    val write_frame_header : Frame.frame_header -> t -> unit
+    (** Serializer for frame header *)
+
+    val write_data_frame_payload : Cstruct.t list -> t -> unit
+    (** Serializer for DATA frame payload *)
+
+    val write_rst_stream_frame_payload : Error_code.t -> t -> unit
+    (** Serializer for RST_STREAM frame payload *)
+
+    val write_settings_frame_payload : Settings.setting list -> t -> unit
+    (** Serializer for SETTINGS frame payload *)
+
+    val write_goaway_frame_payload :
+      ?debug_data:Cstruct.t -> int32 -> Error_code.t -> t -> unit
+    (** Serializer for GOAWAY frame payload *)
+
+    val write_window_update_frame_payload : int32 -> t -> unit
+    (** Serializer for WINDOW_UPDATE frame payload *)
+  end
+
   val write_connection_preface : t -> unit
   (** Serializer for magic string of client's connection preface *)
 
-  val write_data_frame : t -> Cstruct.t list -> frame_info -> unit
+  val write_data_frame : Cstruct.t list -> frame_info -> t -> unit
   (** Serializer for DATA frame *)
 
   val write_headers_frame :
-    t -> Hpack.Encoder.t -> Headers.t -> frame_info -> unit
+    Hpack.Encoder.t -> Headers.t -> frame_info -> t -> unit
   (** Serializer for HEADERS frame *)
 
-  val write_rst_stream_frame : t -> Stream_identifier.t -> Error_code.t -> unit
+  val write_rst_stream_frame : Stream_identifier.t -> Error_code.t -> t -> unit
   (** Serializer for RST_STREAM frame *)
 
-  val write_settings_frame : t -> Settings.setting list -> frame_info -> unit
+  val write_settings_frame : Settings.setting list -> frame_info -> t -> unit
   (** Serializer for SETTINGS frame *)
 
-  val write_ping_frame : t -> Cstruct.t -> frame_info -> unit
+  val write_ping_frame : Cstruct.t -> frame_info -> t -> unit
   (** Serializer for PING frame *)
 
   val write_goaway_frame :
-    ?debug_data:Cstruct.t -> t -> Stream_identifier.t -> Error_code.t -> unit
+    ?debug_data:Cstruct.t -> Stream_identifier.t -> Error_code.t -> t -> unit
   (** Serializer for GOAWAY frame *)
 
-  val write_window_update_frame : t -> Stream_identifier.t -> int32 -> unit
+  val write_window_update_frame : Stream_identifier.t -> int32 -> t -> unit
   (** Serializer for WINDOW_UPDATE frame *)
-
-  val write_frame_header : t -> Frame.frame_header -> unit
-  (** Serializer for frame header alone
-
-      This is normally called for you internally in each frame's serializer, but
-      can be useful as a seprate function for tests. *)
 end
 
 (** The {!Make} functor takes a module [BufWriter] that conforms to the

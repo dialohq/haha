@@ -41,7 +41,7 @@ let write t socket =
 
 let write_settings t settings =
   let frame_info = create_frame_info Stream_identifier.connection in
-  write_settings_frame t.faraday (Settings.to_settings_list settings) frame_info
+  write_settings_frame (Settings.to_settings_list settings) frame_info t.faraday
 
 let write_settings_ack t =
   let frame_info =
@@ -49,7 +49,7 @@ let write_settings_ack t =
       ~flags:Flags.(set_ack default_flags)
       Stream_identifier.connection
   in
-  write_settings_frame t.faraday Settings.(to_settings_list default) frame_info
+  write_settings_frame Settings.(to_settings_list default) frame_info t.faraday
 
 let write_ping t payload ~(ack : bool) =
   let frame_info =
@@ -57,7 +57,7 @@ let write_ping t payload ~(ack : bool) =
       ~flags:Flags.(if ack then set_ack default_flags else default_flags)
       Stream_identifier.connection
   in
-  write_ping_frame t.faraday payload frame_info
+  write_ping_frame payload frame_info t.faraday
 
 let write_data ?(padding_length = 0) ~end_stream t stream_id cs_list =
   let frame_info =
@@ -68,7 +68,7 @@ let write_data ?(padding_length = 0) ~end_stream t stream_id cs_list =
       ~padding_length stream_id
   in
 
-  write_data_frame t.faraday cs_list frame_info
+  write_data_frame cs_list frame_info t.faraday
 
 let write_headers_response ?padding_length ?(end_header = true) t stream_id
     (response : _ Response.t) =
@@ -91,7 +91,7 @@ let write_headers_response ?padding_length ?(end_header = true) t stream_id
 
   let frame_info = create_frame_info ?padding_length ~flags stream_id in
 
-  write_headers_frame t.faraday t.hpack_encoder headers frame_info
+  write_headers_frame t.hpack_encoder headers frame_info t.faraday
 
 let write_trailers ?padding_length ?(end_header = true) t stream_id headers =
   let flags =
@@ -102,7 +102,7 @@ let write_trailers ?padding_length ?(end_header = true) t stream_id headers =
 
   let frame_info = create_frame_info ?padding_length ~flags stream_id in
 
-  write_headers_frame t.faraday t.hpack_encoder headers frame_info
+  write_headers_frame t.hpack_encoder headers frame_info t.faraday
 
 let writer_request_headers ?padding_length ?(end_header = true) t stream_id
     (request : Request.t) =
@@ -135,9 +135,13 @@ let writer_request_headers ?padding_length ?(end_header = true) t stream_id
   let end_stream = Option.is_none body_writer in
   let flags = Flags.create ~end_stream ~end_header () in
   let frame_info = create_frame_info ?padding_length ~flags stream_id in
-  write_headers_frame t.faraday t.hpack_encoder headers frame_info
+  write_headers_frame t.hpack_encoder headers frame_info t.faraday
 
 let write_connection_preface t = write_connection_preface t.faraday
-let write_rst_stream t = write_rst_stream_frame t.faraday
-let write_goaway ?debug_data t = write_goaway_frame ?debug_data t.faraday
-let write_window_update t = write_window_update_frame t.faraday
+let write_rst_stream t id code = write_rst_stream_frame id code t.faraday
+
+let write_goaway ?debug_data t id code =
+  write_goaway_frame ?debug_data id code t.faraday
+
+let write_window_update t id increment =
+  write_window_update_frame id increment t.faraday

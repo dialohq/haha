@@ -29,6 +29,18 @@ let test_connection_preface () =
   Alcotest.(check Testable.string)
     "Connection preface serialization" expected result
 
+let test_data_frame_payload () =
+  let data1 = "hello" in
+  let data2 = " world" in
+  let cs_list = [ Cstruct.of_string data1; Cstruct.of_string data2 ] in
+  let result =
+    serialize_to_cstruct (Serializers.LowLevel.write_data_frame_payload cs_list)
+  in
+
+  let expected = Cstruct.of_string (data1 ^ data2) in
+
+  Alcotest.check Testable.cstruct "DATA frame payload" expected result
+
 let test_data_frame_simple () =
   let stream_id = 1l in
   let data = "mangerzzz" in
@@ -36,7 +48,7 @@ let test_data_frame_simple () =
   let info = Serializers.create_frame_info stream_id in
 
   let result =
-    serialize_to_cstruct (fun f -> Serializers.write_data_frame f [ cs ] info)
+    serialize_to_cstruct (fun f -> Serializers.write_data_frame [ cs ] info f)
   in
 
   let expected_header =
@@ -58,7 +70,7 @@ let test_data_frame_with_padding () =
 
   let result =
     serialize_to_cstruct (fun f ->
-        Serializers.write_data_frame f [ cs_data ] info)
+        Serializers.write_data_frame [ cs_data ] info f)
   in
 
   let expected_header =
@@ -86,7 +98,7 @@ let test_data_frame_multiple_cstructs () =
   let info = Serializers.create_frame_info stream_id in
 
   let result =
-    serialize_to_cstruct (fun f -> Serializers.write_data_frame f cs_list info)
+    serialize_to_cstruct (fun f -> Serializers.write_data_frame cs_list info f)
   in
 
   let total_length = String.length data1 + String.length data2 in
@@ -100,13 +112,26 @@ let test_data_frame_multiple_cstructs () =
   Alcotest.(check Testable.cstruct)
     "DATA frame from multiple cstructs" expected result
 
+let test_rst_stream_frame_payload () =
+  let error_code = Error_code.InternalError in
+
+  let result =
+    serialize_to_cstruct
+      (Serializers.LowLevel.write_rst_stream_frame_payload error_code)
+  in
+
+  let expected = Cstruct.create 4 in
+  Cstruct.BE.set_uint32 expected 0 (Error_code.serialize error_code);
+
+  Alcotest.check Testable.cstruct "RST_STREAM frame payload" expected result
+
 let test_rst_stream_frame () =
   let stream_id = 7l in
   let error_code = Error_code.Cancel in
 
   let result =
     serialize_to_cstruct (fun f ->
-        Serializers.write_rst_stream_frame f stream_id error_code)
+        Serializers.write_rst_stream_frame stream_id error_code f)
   in
 
   let expected_header =
@@ -121,6 +146,33 @@ let test_rst_stream_frame () =
 
   Alcotest.(check Testable.cstruct) "RST_STREAM frame" expected result
 
+let test_settings_frame_payload () =
+  let settings =
+    [
+      Settings.EnablePush 0;
+      Settings.MaxConcurrentStreams 2048l;
+      Settings.InitialWindowSize 100_000l;
+    ]
+  in
+
+  let result =
+    serialize_to_cstruct
+      (Serializers.LowLevel.write_settings_frame_payload settings)
+  in
+
+  let expected = Cstruct.create (List.length settings * 6) in
+  Cstruct.BE.set_uint16 expected 0
+    (Settings.serialize_key (Settings.EnablePush 0));
+  Cstruct.BE.set_uint32 expected 2 0l;
+  Cstruct.BE.set_uint16 expected 6
+    (Settings.serialize_key (Settings.MaxConcurrentStreams 2048l));
+  Cstruct.BE.set_uint32 expected 8 2048l;
+  Cstruct.BE.set_uint16 expected 12
+    (Settings.serialize_key (Settings.InitialWindowSize 100_000l));
+  Cstruct.BE.set_uint32 expected 14 100_000l;
+
+  Alcotest.check Testable.cstruct "SETTINGS frame payload" expected result
+
 let test_settings_frame () =
   let stream_id = 0l in
   let settings = [ Settings.HeaderTableSize 4096; Settings.EnablePush 1 ] in
@@ -128,7 +180,7 @@ let test_settings_frame () =
 
   let result =
     serialize_to_cstruct (fun f ->
-        Serializers.write_settings_frame f settings info)
+        Serializers.write_settings_frame settings info f)
   in
 
   let expected_header =
@@ -155,7 +207,7 @@ let test_settings_ack_frame () =
   let info = Serializers.create_frame_info ~flags stream_id in
 
   let result =
-    serialize_to_cstruct (fun f -> Serializers.write_settings_frame f [] info)
+    serialize_to_cstruct (fun f -> Serializers.write_settings_frame [] info f)
   in
 
   let expected_header =
@@ -172,7 +224,7 @@ let test_ping_frame () =
   let info = Serializers.create_frame_info stream_id in
 
   let result =
-    serialize_to_cstruct (fun f -> Serializers.write_ping_frame f cs_data info)
+    serialize_to_cstruct (fun f -> Serializers.write_ping_frame cs_data info f)
   in
 
   let expected_header =
@@ -195,7 +247,7 @@ let test_ping_ack_frame () =
   let info = Serializers.create_frame_info ~flags stream_id in
 
   let result =
-    serialize_to_cstruct (fun f -> Serializers.write_ping_frame f cs_data info)
+    serialize_to_cstruct (fun f -> Serializers.write_ping_frame cs_data info f)
   in
 
   let expected_header =
@@ -210,6 +262,25 @@ let test_ping_ack_frame () =
 
   Alcotest.(check Testable.cstruct) "PING ACK frame" expected result
 
+let test_goaway_frame_payload () =
+  let last_stream_id = 11l in
+  let error_code = Error_code.CompressionError in
+  let debug_data = "oh no!" in
+  let cs_debug = Cstruct.of_string debug_data in
+
+  let result =
+    serialize_to_cstruct
+      (Serializers.LowLevel.write_goaway_frame_payload ~debug_data:cs_debug
+         last_stream_id error_code)
+  in
+
+  let expected = Cstruct.create (8 + String.length debug_data) in
+  Cstruct.BE.set_uint32 expected 0 last_stream_id;
+  Cstruct.BE.set_uint32 expected 4 (Error_code.serialize error_code);
+  Cstruct.blit_from_string debug_data 0 expected 8 (String.length debug_data);
+
+  Alcotest.check Testable.cstruct "GOAWAY frame payload" expected result
+
 let test_goaway_frame () =
   let last_stream_id = 15l in
   let error_code = Error_code.ProtocolError in
@@ -218,8 +289,8 @@ let test_goaway_frame () =
 
   let result =
     serialize_to_cstruct (fun f ->
-        Serializers.write_goaway_frame ~debug_data:cs_debug f last_stream_id
-          error_code)
+        Serializers.write_goaway_frame ~debug_data:cs_debug last_stream_id
+          error_code f)
   in
 
   let expected_header =
@@ -246,7 +317,7 @@ let test_goaway_frame_no_debug () =
 
   let result =
     serialize_to_cstruct (fun f ->
-        Serializers.write_goaway_frame f last_stream_id error_code)
+        Serializers.write_goaway_frame last_stream_id error_code f)
   in
 
   let expected_header =
@@ -263,13 +334,26 @@ let test_goaway_frame_no_debug () =
   Alcotest.(check Testable.cstruct)
     "GOAWAY frame without debug data" expected result
 
+let test_window_update_frame_payload () =
+  let increment = 500_000l in
+
+  let result =
+    serialize_to_cstruct
+      (Serializers.LowLevel.write_window_update_frame_payload increment)
+  in
+
+  let expected = Cstruct.create 4 in
+  Cstruct.BE.set_uint32 expected 0 increment;
+
+  Alcotest.check Testable.cstruct "WINDOW_UPDATE frame payload" expected result
+
 let test_window_update_frame () =
   let stream_id = 1l in
   let increment = 1000l in
 
   let result =
     serialize_to_cstruct (fun f ->
-        Serializers.write_window_update_frame f stream_id increment)
+        Serializers.write_window_update_frame stream_id increment f)
   in
 
   let expected_header =
@@ -290,7 +374,7 @@ let test_window_update_connection_level () =
 
   let result =
     serialize_to_cstruct (fun f ->
-        Serializers.write_window_update_frame f stream_id increment)
+        Serializers.write_window_update_frame stream_id increment f)
   in
 
   let expected_header =
@@ -314,7 +398,7 @@ let test_roundtrip_data_frame () =
 
   let serialized =
     serialize_to_string (fun f ->
-        Serializers.write_data_frame f [ cs_data ] info)
+        Serializers.write_data_frame [ cs_data ] info f)
   in
 
   let bs =
@@ -349,7 +433,7 @@ let test_roundtrip_rst_stream_frame () =
 
   let serialized =
     serialize_to_string (fun f ->
-        Serializers.write_rst_stream_frame f stream_id error_code)
+        Serializers.write_rst_stream_frame stream_id error_code f)
   in
 
   let bs =
@@ -384,6 +468,14 @@ let () =
     [
       ( "Connection",
         [ test_case "Connection Preface" `Quick test_connection_preface ] );
+      ( "Frame payloads",
+        [
+          test_case "DATA" `Quick test_data_frame_payload;
+          test_case "RST_STREAM" `Quick test_rst_stream_frame_payload;
+          test_case "SETTINGS" `Quick test_settings_frame_payload;
+          test_case "GOAWAY" `Quick test_goaway_frame_payload;
+          test_case "WINDOW_UPDATE" `Quick test_window_update_frame_payload;
+        ] );
       ( "DATA Frames",
         [
           test_case "DATA" `Quick test_data_frame_simple;
