@@ -6,3 +6,4 @@ type t =
   | ValidationFailed of Error.t
   | Magic
   | EOF
+  | Timeout

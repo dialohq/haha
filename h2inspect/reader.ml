@@ -71,8 +71,13 @@ let read :
     aux [] 0 (parse to_parse)
   with End_of_file -> ([ EOF ], None)
 
-let run : sw:Switch.t -> _ Resource.t -> ((unit -> Element.t) -> 'a) -> 'a =
- fun ~sw flow f ->
+let run :
+    sw:Switch.t ->
+    clock:float Eio.Time.clock_ty Eio.Resource.t ->
+    _ Resource.t ->
+    ((unit -> Element.t) -> 'a) ->
+    'a =
+ fun ~sw ~clock flow f ->
   let stream = Stream.create max_int in
   let stop_promise, stop_resolver = Promise.create () in
   Fiber.fork ~sw (fun () ->
@@ -89,5 +94,10 @@ let run : sw:Switch.t -> _ Resource.t -> ((unit -> Element.t) -> 'a) -> 'a =
 
           aux { off = 0; continue = None }));
 
-  f (fun () -> Stream.take stream);
+  f (fun () ->
+      Fiber.first
+        (fun () -> Stream.take stream)
+        (fun () ->
+          Time.sleep clock 1.;
+          Timeout));
   Promise.resolve stop_resolver ()
