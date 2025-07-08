@@ -31,3 +31,5 @@ val conn_prot_err : Error_code.t -> ('a, unit, string, t) format4 -> 'a
 
 val stream_prot_err : Stream_identifier.t -> Error_code.t -> t
 (** [stream_prot_err id code] is [StreamError (id, code)] *)
+
+val pp_hum : Format.formatter -> t -> unit

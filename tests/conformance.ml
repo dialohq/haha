@@ -51,4 +51,6 @@ let () =
   Time.sleep env#clock 0.01;
   connect 16 8002;
   Time.sleep env#clock 0.01;
-  connect 8 8003
+  connect 8 8003;
+  Time.sleep env#clock 0.01;
+  connect 1 8004

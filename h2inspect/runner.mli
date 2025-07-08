@@ -1,71 +1,39 @@
 open H2kit
 
-type t
+type 'a t
 
-val ( >> ) : t -> t -> t
-val ( *> ) : t -> t -> t
-val ( <* ) : t -> t -> t
-
-module Ignore : sig
-  val reset : t
-  val window_update : t
-  val stream_frames : t
-end
-
-module Expect : sig
-  val magic : t
-  val settings : t
-  val settings_ack : t
-  val ping : t
-  val window_update : t
-  val goaway : t
-  val headers : t
-  val conn_error : Error_code.t -> t
-  val eof : t
-end
-
-module Write : sig
-  val settings : Settings.setting list -> t
-  val settings_ack : t
-
-  val custom_header_settings :
-    ?flags:Flags.t -> ?len:int -> ?id:int32 -> unit -> t
-
-  val unknown_setting : t
-  val ping : t
-  val custom_header_ping : ?flags:Flags.t -> ?len:int -> ?id:int32 -> unit -> t
-  val goaway : Error_code.t -> t
-
-  val custom_header_goaway :
-    ?flags:Flags.t -> ?len:int -> ?id:int32 -> unit -> t
-
-  val window_update : ?flags:Flags.t -> ?len:int -> ?id:int32 -> int32 -> t
-  val unknown : t
-
-  val headers :
-    ?flags:Flags.t ->
-    ?len:int ->
-    ?id:int32 ->
-    ?pad_len:int ->
-    [ `Block of Cstruct.t | `List of (string * string) list ] ->
-    t
-
-  val rst_stream : ?flags:Flags.t -> ?len:int -> ?id:int32 -> Error_code.t -> t
-end
+val ( *> ) : _ t -> 'a t -> 'a t
+val ( >>= ) : 'a t -> ('a -> 'b t) -> 'b t
+val ( let* ) : 'a t -> ('a -> 'b t) -> 'b t
+val ( >>| ) : 'a t -> ('a -> 'b) -> 'b t
+val ( +> ) : (Writer.t -> unit) -> 'a t -> 'a t
+val ( ++ ) : (Writer.t -> unit) -> (Writer.t -> unit) -> Writer.t -> unit
+val return : 'a -> 'a t
+val fail : string -> _ t
+val register_ignore : Ignore.t -> unit t
+val reset_ignore : unit t
+val frame_header : Frame.frame_header t
+val magic : unit t
+val settings : Settings.setting list t
+val settings_ack : unit t
+val ping : Cstruct.t t
+val window_update : int32 t
+val goaway : (int32 * Error_code.t * Cstruct.t) t
+val headers : Cstruct.t t
+val conn_error : Error_code.t -> unit t
+val eof : unit t
 
 module Sets : sig
-  val preface : t
-  val conn_only : t
+  val preface : unit t
+  val conn_only : unit t
 end
 
 module I = Ignore
-module E = Expect
-module W = Write
 module S = Sets
 
 type test = {
   label : string;
-  runner : t;
+  runner : unit t;
   description : (string, Format.formatter, unit, string) format4 option;
 }
 

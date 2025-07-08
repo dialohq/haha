@@ -1,279 +1,140 @@
 open H2kit
 module Serializers = Serializers.Make (Buf_write)
-open Format
+
+exception Fail of string
 
 type state = {
   next_element : unit -> Element.t;
-  writer : Buf_write.t;
-  hpack_encoder : Hpack.Encoder.t;
-  mutable ignore : Element.t -> bool;
+  writer : Writer.t;
+  mutable ignore : Ignore.t;
 }
 
-type verdict = Pass | Fail of string
-type t = state -> verdict
+type 'a t = state -> 'a
 
-let ( >> ) : t -> t -> t =
- fun t1 t2 state -> match t1 state with Pass -> t2 state | x -> x
-
-let ( *> ) : t -> t -> t =
+let ( *> ) : _ t -> _ t -> _ t =
  fun t1 t2 state ->
   ignore (t1 state);
   t2 state
 
-let ( <* ) : t -> t -> t =
- fun t1 t2 state ->
-  let v = t1 state in
-  ignore (t2 state);
-  v
+let ( >>= ) : 'a t -> ('a -> 'b t) -> 'b t =
+ fun t f state -> (f (t state)) state
 
-let with_writer : (Buf_write.t -> unit) -> t =
- fun f { writer; _ } ->
-  f writer;
-  Buf_write.flush writer;
-  Pass
+let ( let* ) = ( >>= )
+let ( >>| ) : 'a t -> ('a -> 'b) -> 'b t = fun t f state -> f (t state)
 
-let with_hpack : (Buf_write.t -> Hpack.Encoder.t -> unit) -> t =
- fun f { writer; hpack_encoder; _ } ->
-  f writer hpack_encoder;
-  Buf_write.flush writer;
-  Pass
+let ( +> ) : (Writer.t -> unit) -> 'a t -> 'a t =
+ fun f t state ->
+  f state.writer;
+  t state
 
-let with_ignore : (Element.t -> verdict) -> t =
+let ( ++ ) : (Writer.t -> unit) -> (Writer.t -> unit) -> Writer.t -> unit =
+ fun f1 f2 w ->
+  f1 w;
+  f2 w
+
+let return : 'a -> 'a t = fun x _ -> x
+let fail : string -> _ t = fun msg _ -> raise (Fail msg)
+
+let register_ignore : Ignore.t -> unit t =
+ fun ign state ->
+  state.ignore <- Ignore.(state.ignore + ign);
+  ()
+
+let reset_ignore : unit t =
+ fun state ->
+  state.ignore <- Ignore.nothing;
+  ()
+
+let with_ignore : (Element.t -> 'a) -> 'a t =
  fun f { next_element; ignore; _ } ->
   let rec aux () =
     let el = next_element () in
-    match (f el, ignore el) with
-    | Pass, _ -> Pass
-    | fail, false -> fail
-    | _, true -> aux ()
+    if ignore el then aux () else f el
   in
+
   aux ()
 
-module Ignore = struct
-  let ( + ) t1 t2 = fun el -> t1 el || t2 el
-  let default : Element.t -> bool = fun _ -> false
+let raise_with_expected : string -> Element.t -> _ =
+ fun msg el -> raise (Fail (Element.make_msg msg el))
 
-  let reset : t =
-   fun t ->
-    t.ignore <- default;
-    Pass
+let frame_header : Frame.frame_header t =
+  with_ignore @@ function
+  | Frame { frame_header; _ } -> frame_header
+  | el -> raise_with_expected "any frame" el
 
-  let window_update : t =
-   fun t ->
-    let ig = function
-      | Element.Frame { frame_payload = WindowUpdate _; _ } -> true
-      | _ -> false
-    in
-    t.ignore <- t.ignore + ig;
-    Pass
+let magic : unit t =
+  with_ignore @@ function
+  | Magic -> ()
+  | el -> raise_with_expected "preface magic string" el
 
-  let stream_frames : t =
-   fun t ->
-    let ig = function
-      | Element.Frame
-          {
-            frame_payload =
-              Headers _ | Data _ | RSTStream _ | PushPromise _ | Continuation _;
-            _;
-          } ->
-          true
-      | _ -> false
-    in
-    t.ignore <- t.ignore + ig;
-    Pass
-end
+let settings : Settings.setting list t =
+  with_ignore @@ function
+  | Frame { frame_payload = Settings l; frame_header = { flags; _ } } as el ->
+      if not (Flags.test_empty flags) then
+        raise_with_expected "SETTINGS frame without any flags set" el
+      else l
+  | el -> raise_with_expected "Expected SETTINGS frame" el
 
-module Expect = struct
-  let magic : t =
-    with_ignore @@ function
-    | Magic -> Pass
-    | _ -> Fail "Expected preface magic string"
+let settings_ack : unit t =
+  frame_header >>= function
+  | { frame_type = Settings; flags; _ } when Flags.test_ack flags -> return ()
+  | { frame_type; _ } ->
+      fail
+        (Format.asprintf "SETTINGS with ACK flag set but got frame type %a"
+           Frame.FrameType.pp frame_type)
 
-  let settings : t =
-    with_ignore @@ function
-    | Frame { frame_payload = Settings _; frame_header = { flags; _ } } ->
-        if Flags.test_empty flags then Pass
-        else Fail "Expected SETTINGS frame without any flags set"
-    | _ -> Fail "Expected SETTINGS frame"
+let ping : Cstruct.t t =
+  with_ignore @@ function
+  | Frame { frame_payload = Ping cs; _ } -> cs
+  | el -> raise_with_expected "PING frame" el
 
-  let settings_ack : t =
-    with_ignore @@ function
-    | Frame { frame_payload = Settings _; frame_header = { flags; _ } } ->
-        if Flags.test_ack flags then Pass
-        else Fail "Expected SETTINGS frame with ACK flag set"
-    | _ -> Fail "Expected SETTINGS frame with ACK flag set"
+let window_update : int32 t =
+  with_ignore @@ function
+  | Frame { frame_payload = WindowUpdate incre; _ } -> incre
+  | el -> raise_with_expected "WINDOW_UPDATE frame" el
 
-  let ping : t =
-    with_ignore @@ function
-    | Frame { frame_payload = Ping cs; _ } ->
-        if Cstruct.to_string cs = "12345678" then Pass
-        else Fail "Expected PING frame with payload \"12345678\""
-    | _ -> Fail "Expected PING frame"
+let goaway : (int32 * Error_code.t * Cstruct.t) t =
+  with_ignore @@ function
+  | Frame { frame_payload = GoAway (id, code, bs); _ } ->
+      (id, code, Cstruct.of_bigarray bs)
+  | el -> raise_with_expected "GOAWAY frame" el
 
-  let window_update : t =
-    with_ignore @@ function
-    | Frame { frame_payload = WindowUpdate _; _ } -> Pass
-    | _ -> Fail "Expected WINDOW_UPDATE frame"
+let headers : Cstruct.t t =
+  with_ignore @@ function
+  | Frame { frame_payload = Headers block; _ } -> Cstruct.of_bigarray block
+  | el -> raise_with_expected "HEADERS frame" el
 
-  let goaway : t =
-    with_ignore @@ function
-    | Frame { frame_payload = GoAway _; _ } -> Pass
-    | _ -> Fail "Expected GOAWAY frame"
+let conn_error : Error_code.t -> unit t =
+ fun code ->
+  goaway >>= fun (_, code', _) ->
+  if code <> code' then
+    fail
+      (Format.asprintf "Expected GOAWAY with error code %s"
+         (Error_code.to_string code))
+  else return ()
 
-  let headers : t =
-    with_ignore @@ function
-    | Frame { frame_payload = Headers _; _ } -> Pass
-    | _ -> Fail "Expected HEADERS frame"
-
-  let conn_error : Error_code.t -> t =
-   fun code ->
-    with_ignore @@ function
-    | Frame { frame_payload = GoAway (_, received_code, _); _ }
-      when code = received_code ->
-        Pass
-    | _ ->
-        Fail
-          (Format.asprintf "Expected GOAWAY frame with error code %s"
-             (Error_code.to_string code))
-
-  let eof : t =
-    with_ignore @@ function
-    | EOF -> Pass
-    | _ -> Fail "Expected TCP connection to close"
-end
-
-module Write = struct
-  open Serializers
-
-  let settings settings =
-    with_writer @@ write_settings_frame settings (create_frame_info 0l)
-
-  let settings_ack =
-    with_writer
-    @@ write_settings_frame []
-         (create_frame_info ~flags:H2kit.Flags.(default_flags |> set_ack) 0l)
-
-  let custom_header_settings ?(flags = Flags.default_flags) ?(len = 6)
-      ?(id = 0l) () =
-    with_writer @@ fun w ->
-    LowLevel.write_frame_header
-      { flags; payload_length = len; stream_id = id; frame_type = Settings }
-      w;
-    LowLevel.write_settings_frame_payload [ EnablePush 0 ] w
-
-  let unknown_setting =
-    with_writer @@ fun w ->
-    LowLevel.write_frame_header
-      {
-        flags = Flags.default_flags;
-        payload_length = 12;
-        stream_id = 0l;
-        frame_type = Settings;
-      }
-      w;
-    LowLevel.write_settings_frame_payload [ EnablePush 0 ] w;
-    Buf_write.BE.write_uint16 w 7;
-    Buf_write.BE.write_uint32 w 10l
-
-  let ping =
-    with_writer
-    @@ write_ping_frame (Cstruct.of_string "12345678") (create_frame_info 0l)
-
-  let custom_header_ping ?(flags = Flags.default_flags) ?(len = 8) ?(id = 0l) ()
-      =
-    with_writer @@ fun w ->
-    LowLevel.write_frame_header
-      { flags; payload_length = len; stream_id = id; frame_type = Ping }
-      w;
-    Buf_write.schedule_cstruct w (Cstruct.of_string "12345678")
-
-  let goaway code = with_writer @@ write_goaway_frame 0l code
-
-  let custom_header_goaway ?(flags = Flags.default_flags) ?(len = 0) ?(id = 0l)
-      () =
-    with_writer @@ fun w ->
-    LowLevel.write_frame_header
-      { flags; payload_length = len; stream_id = id; frame_type = GoAway }
-      w;
-    LowLevel.write_goaway_frame_payload 0l NoError w
-
-  let window_update ?(flags = Flags.default_flags) ?(len = 4) ?(id = 0l) incr =
-    with_writer @@ fun w ->
-    LowLevel.write_frame_header
-      { flags; payload_length = len; stream_id = id; frame_type = WindowUpdate }
-      w;
-    LowLevel.write_window_update_frame_payload incr w
-
-  let unknown =
-    with_writer @@ fun w ->
-    LowLevel.write_frame_header
-      {
-        flags = Flags.default_flags;
-        stream_id = 0l;
-        frame_type = Unknown 20;
-        payload_length = 8;
-      }
-      w;
-    Buf_write.schedule_cstruct w (Cstruct.of_string "12345678")
-
-  let headers
-      ?(flags = Flags.(default_flags |> set_end_header |> set_end_stream)) ?len
-      ?(id = 1l) ?pad_len headers =
-    with_hpack @@ fun w encoder ->
-    let tmp_faraday = Faraday.create 1_000 in
-
-    (match headers with
-    | `Block { Cstruct.off; len; buffer } ->
-        Faraday.write_bigstring tmp_faraday ~off ~len buffer
-    | `List headers ->
-        let headers = Headers.of_list headers in
-        Headers.iter
-          (fun (name, value) ->
-            Hpack.Encoder.encode_header encoder tmp_faraday
-              { Hpack.name; value; sensitive = false })
-          headers);
-
-    let length = Faraday.pending_bytes tmp_faraday in
-
-    LowLevel.write_frame_header
-      {
-        flags;
-        payload_length = Option.value ~default:length len;
-        stream_id = id;
-        frame_type = Headers;
-      }
-      w;
-    Option.iter (Buf_write.uint8 w) pad_len;
-    Buf_write.schedule_bigstring w (Faraday.serialize_to_bigstring tmp_faraday);
-    Option.iter
-      (fun pad_len ->
-        let padding = Cstruct.create pad_len in
-        Cstruct.memset padding 0;
-        Buf_write.cstruct w padding)
-      pad_len
-
-  let rst_stream ?(flags = Flags.default_flags) ?(len = 4) ?(id = 1l) code =
-    with_writer @@ fun w ->
-    LowLevel.write_frame_header
-      { flags; payload_length = len; stream_id = id; frame_type = RSTStream }
-      w;
-    LowLevel.write_rst_stream_frame_payload code w
-end
+let eof : unit t =
+  with_ignore @@ function
+  | EOF -> ()
+  | _ -> raise (Fail "Expected TCP connection to close")
 
 module Sets = struct
   let preface =
-    Expect.magic >> Expect.settings >> Write.settings [] >> Write.settings_ack
-    >> Expect.settings_ack
+    register_ignore Ignore.(frame_type WindowUpdate)
+    *> magic *> settings
+    *> (Writer.settings []
+       ++ Writer.settings ~flags:Flags.(default_flags |> set_ack) []
+       +> settings_ack)
 
-  let conn_only = Ignore.window_update >> Ignore.stream_frames
+  let conn_only =
+    preface *> register_ignore Ignore.(stream_frames + frame_type WindowUpdate)
 end
 
 module I = Ignore
-module E = Expect
-module W = Write
 module S = Sets
 
 let print_wrapped_sentence ~indent sentence =
+  let open Format in
   set_margin 100;
 
   pp_open_hovbox std_formatter indent;
@@ -291,7 +152,7 @@ let print_wrapped_sentence ~indent sentence =
 
 type test = {
   label : string;
-  runner : t;
+  runner : unit t;
   description : (string, Format.formatter, unit, string) format4 option;
 }
 
@@ -303,24 +164,25 @@ let run_test :
     int ->
     test ->
     unit =
- fun ~next_element ~writer i { runner; label; description } ->
-  let state =
-    {
-      next_element;
-      writer;
-      ignore = Ignore.default;
-      hpack_encoder = Hpack.Encoder.create 1000;
-    }
+ fun ~next_element ~writer:writer' i { runner; label; description } ->
+  let writer =
+    Writer.create ~writer:writer' ~hpack:(Hpack.Encoder.create 1000)
   in
-  match runner state with
-  | Pass ->
+  let state = { next_element; writer; ignore = Ignore.nothing } in
+  match
+    try
+      runner state;
+      None
+    with Fail msg -> Some msg
+  with
+  | None ->
       Ocolor_format.printf "  %i. @{<grey>%s@} - @{<green>@{<bold>Pass@}@}@."
         (i + 1) label
-  | Fail msg ->
+  | Some msg ->
       let open Serializers in
       write_goaway_frame ~debug_data:(Cstruct.of_string msg) 0l ProtocolError
-        writer;
-      Buf_write.flush writer;
+        writer';
+      Buf_write.flush writer';
       Ocolor_format.printf "  %i. @{<grey>%s@} - @{<red>@{<bold>Fail:@} %s@}@."
         (i + 1) label msg;
       description

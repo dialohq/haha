@@ -90,6 +90,6 @@ What should client do:
     Client should respond with a connection error of type FRAME_SIZE_ERROR
 
 ### 5. Connection-level functionalities
-- [ ] Servers sends a PING frame
+- [x] Servers sends a PING frame
     Client responds with PING frame with ACK flag and the same payload
 
