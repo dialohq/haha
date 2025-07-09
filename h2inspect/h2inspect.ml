@@ -6,9 +6,10 @@ module Serializers = Serializers.Make (Buf_write)
 let run_server_tests ~sw clock net =
   Eio.Fiber.fork ~sw @@ fun () ->
   Eio.Switch.run @@ fun sw ->
-  let preface : Runner.test_group =
+  let preface : test_group =
     {
       label = "Connection preface";
+      assume = [];
       tests =
         [
           {
@@ -49,9 +50,10 @@ let run_server_tests ~sw clock net =
     }
   in
 
-  let frame_header_validation : Runner.test_group =
+  let frame_header_validation : test_group =
     {
       label = "Frame header validation";
+      assume = [];
       tests =
         [
           {
@@ -75,9 +77,10 @@ let run_server_tests ~sw clock net =
     }
   in
 
-  let connection_frames_validation : Runner.test_group =
+  let connection_frames_validation : test_group =
     {
       label = "Parsing and validating connection-level frames";
+      assume = [];
       tests =
         [
           {
@@ -266,12 +269,13 @@ let run_server_tests ~sw clock net =
     }
   in
 
-  let stream_frames_validation : Runner.test_group =
+  let stream_frames_validation : test_group =
     let start =
       register_ignore I.(frame_type WindowUpdate) *> S.preface *> headers
     in
     {
       label = "Parsing and validating stream-level frames";
+      assume = [ GET "/" ];
       tests =
         [
           {
@@ -352,27 +356,362 @@ let run_server_tests ~sw clock net =
               *> (W.rst_stream ~len:3 NoError +> conn_error FrameSizeError)
               *> eof;
           };
+          {
+            label = "Server sends a DATA frame";
+            description = None;
+            runner =
+              start
+              *> (W.headers
+                    ~flags:Flags.(default_flags |> set_end_header)
+                    (`List [ (":status", "200") ])
+                 ++ W.data
+                      ~flags:Flags.(default_flags |> set_end_stream)
+                      (Cstruct.of_string "data")
+                 ++ W.goaway NoError +> eof);
+          };
         ];
     }
   in
 
-  let connection_functionalities : Runner.test_group =
-    let runner1 =
-      let payload = "12345678" in
-      S.conn_only
-      *> ( W.ping payload +> ping >>= function
-           | cs when cs = Cstruct.of_string payload -> return ()
-           | _ -> fail "Expected PING with payload \"12345678\"" )
-      *> (W.goaway NoError +> eof)
-    in
+  let connection_functionalities : test_group =
+    let ping_payload = "12345678" in
     {
       label = "Connection-level functionalities";
+      assume = [];
       tests =
         [
           {
             label = "Servers sends a PING frame";
             description = None;
-            runner = runner1;
+            runner =
+              S.conn_only
+              *> ( W.ping ping_payload +> ping >>= function
+                   | cs when cs = Cstruct.of_string ping_payload -> return ()
+                   | _ -> fail "Expected PING with payload \"12345678\"" )
+              *> (W.goaway NoError +> eof);
+          };
+        ];
+    }
+  in
+
+  let stream_states_idle : test_group =
+    {
+      label = "Stream states - Idle";
+      assume = [];
+      tests =
+        [
+          {
+            label = "Server sends DATA frame on idle stream";
+            description = None;
+            runner =
+              register_ignore I.(frame_type WindowUpdate)
+              *> S.preface
+              *> (W.data Cstruct.empty +> conn_error ProtocolError)
+              *> eof;
+          };
+          {
+            label = "Server sends RST_STREAM frame";
+            description = None;
+            runner =
+              register_ignore I.(frame_type WindowUpdate)
+              *> S.preface
+              *> (W.rst_stream NoError +> conn_error ProtocolError)
+              *> eof;
+          };
+          {
+            label = "Server sends WINDOW_UPDATE frame";
+            description = None;
+            runner =
+              register_ignore I.(frame_type WindowUpdate)
+              *> S.preface
+              *> (W.window_update ~id:1l 1024l +> conn_error ProtocolError)
+              *> eof;
+          };
+          {
+            label = "Server sends HEADERS frame";
+            description = None;
+            runner =
+              register_ignore I.(frame_type WindowUpdate)
+              *> S.preface
+              *> (W.headers ~id:1l (`List []) +> conn_error ProtocolError)
+              *> eof;
+          };
+        ];
+    }
+  in
+
+  let stream_states_half_closed_local : test_group =
+    let start =
+      register_ignore I.(frame_type WindowUpdate)
+      *> S.preface
+      *> (frame_header
+         >>= ( function
+         | { frame_type = Headers; flags; _ }
+           when Flags.test_end_header flags && not (Flags.test_end_stream flags)
+           ->
+             return ()
+         | _ -> fail "Expected HEADERS with only END_HEADER flag set" )
+         <+ W.headers
+              ~flags:Flags.(default_flags |> set_end_header |> set_end_stream)
+              (`List [ (":status", "200") ]))
+    in
+    {
+      label = "Stream states - Half-closed (local)";
+      assume = [ POST "/" ];
+      tests =
+        [
+          {
+            label = "Server sends RST_STREAM frame";
+            description = None;
+            runner = start *> (W.rst_stream NoError ++ W.goaway NoError +> eof);
+          };
+          {
+            label = "Server sends WINDOW_UPDATE frame";
+            description = None;
+            runner =
+              start
+              *> (W.window_update ~id:1l 1024l
+                 ++ W.rst_stream NoError ++ W.goaway NoError +> eof);
+          };
+          {
+            label = "Server sends DATA frame";
+            description = None;
+            runner =
+              start
+              *> (W.data (Cstruct.of_string "1234")
+                 +> stream_error 1l StreamClosed)
+              *> (W.goaway NoError +> eof);
+          };
+          {
+            label = "Server sends HEADERS frame";
+            description = None;
+            runner =
+              start
+              *> (W.headers (`List []) +> stream_error 1l StreamClosed)
+              *> (W.goaway NoError +> eof);
+          };
+        ];
+    }
+  in
+
+  let stream_states_half_closed_remote : test_group =
+    let start =
+      register_ignore I.(frame_type WindowUpdate)
+      *> S.preface
+      *> (frame_header
+         >>= ( function
+         | { frame_type = Headers; flags; _ }
+           when Flags.test_end_header flags && Flags.test_end_stream flags ->
+             return ()
+         | _ -> fail "Expected HEADERS with END_HEADER and END_STREAM flags set" )
+         <+ W.headers
+              ~flags:Flags.(default_flags |> set_end_header)
+              (`List [ (":status", "200") ]))
+    in
+    {
+      label = "Stream states - Half-closed (remote)";
+      assume = [ GET "/" ];
+      tests =
+        [
+          {
+            label = "Server sends RST_STREAM frame";
+            description = None;
+            runner = start *> (W.rst_stream NoError ++ W.goaway NoError +> eof);
+          };
+          {
+            label = "Server sends WINDOW_UPDATE frame";
+            description = None;
+            runner =
+              start
+              *> (W.window_update ~id:1l 1024l
+                 ++ W.rst_stream NoError ++ W.goaway NoError +> eof);
+          };
+          {
+            label = "Server sends DATA frame";
+            description = None;
+            runner =
+              start
+              *> (W.data (Cstruct.of_string "1234")
+                 ++ W.rst_stream NoError ++ W.goaway NoError +> eof);
+          };
+          {
+            label = "Server sends DATA frame with END_STREAM flag set";
+            description = None;
+            runner =
+              start
+              *> (W.data
+                    ~flags:Flags.(default_flags |> set_end_stream)
+                    (Cstruct.of_string "1234")
+                 ++ W.goaway NoError +> eof);
+          };
+          {
+            label = "Server sends HEADERS frame with END_STREAM flag set";
+            description = None;
+            runner =
+              start
+              *> (W.headers
+                    ~flags:
+                      Flags.(default_flags |> set_end_header |> set_end_stream)
+                    (`List [])
+                 ++ W.goaway NoError +> eof);
+          };
+        ];
+    }
+  in
+
+  let stream_states_closed : test_group =
+    let start =
+      register_ignore I.(frame_type WindowUpdate)
+      *> S.preface
+      *> (frame_header
+         >>= ( function
+         | { frame_type = Headers; flags; _ }
+           when Flags.test_end_header flags && Flags.test_end_stream flags ->
+             return ()
+         | _ -> fail "Expected HEADERS with END_HEADER and END_STREAM flags set" )
+         <+ W.headers
+              ~flags:Flags.(default_flags |> set_end_header |> set_end_stream)
+              (`List [ (":status", "200") ]))
+    in
+    {
+      label = "Stream states - Closed";
+      assume = [ GET "/" ];
+      tests =
+        [
+          {
+            label = "Server sends DATA frame";
+            description = None;
+            runner =
+              start
+              *> (W.data (Cstruct.of_string "1234") +> conn_error StreamClosed)
+              *> eof;
+          };
+          {
+            label = "Server sends HEADERS frame";
+            description = None;
+            runner =
+              start *> (W.headers (`List []) +> conn_error StreamClosed) *> eof;
+          };
+          {
+            label = "Server sends WINDOW_UPDATE frame";
+            description = None;
+            runner =
+              start
+              *> (W.window_update ~id:1l 1024l +> stream_error 1l StreamClosed)
+              *> (W.goaway NoError +> eof);
+          };
+          {
+            label = "Server sends RST_STREAM frame";
+            description = None;
+            runner =
+              start
+              *> (W.rst_stream NoError +> stream_error 1l StreamClosed)
+              *> (W.goaway NoError +> eof);
+          };
+        ];
+    }
+  in
+
+  let messages : test_group =
+    let start =
+      register_ignore I.(frame_type WindowUpdate)
+      *> S.preface
+      *> ( frame_header >>= function
+           | { frame_type = Headers; flags; _ }
+             when Flags.test_end_header flags && Flags.test_end_stream flags ->
+               return ()
+           | _ ->
+               fail "Expected HEADERS with END_HEADER and END_STREAM flags set"
+         )
+    in
+    let malformed =
+      stream_error 1l ProtocolError *> (W.goaway NoError +> eof)
+    in
+    {
+      label = "Message exchange - responses";
+      assume = [ GET "/" ];
+      tests =
+        [
+          {
+            label =
+              "Server sends HEADERS frame without \":status\" pseudo-header";
+            description = None;
+            runner = start *> (W.headers (`List []) +> malformed);
+          };
+          {
+            label =
+              "Server sends HEADERS frame with duplicate \":status\" \
+               pseudo-header";
+            description = None;
+            runner =
+              start
+              *> (W.headers (`List [ (":status", "200"); (":status", "200") ])
+                 +> malformed);
+          };
+          {
+            label = "Server sends HEADERS frame with request pseudo-header";
+            description = None;
+            runner =
+              start
+              *> (W.headers
+                    ~flags:Flags.(default_flags |> set_end_header)
+                    (`List [ (":path", "/"); (":method", "POST") ])
+                 +> malformed);
+          };
+          {
+            label = "Server sends HEADERS frame with unknown pseudo-header";
+            description = None;
+            runner =
+              start *> (W.headers (`List [ (":hello", "200") ]) +> malformed);
+          };
+          {
+            label =
+              "Server sends second HEADERS (trailers) with END_HEADER flag but \
+               without END_STREAM flag";
+            description = None;
+            runner =
+              start
+              *> (W.headers
+                    ~flags:Flags.(default_flags |> set_end_header)
+                    (`List [ (":status", "200") ])
+                 ++ W.headers
+                      ~flags:Flags.(default_flags |> set_end_header)
+                      (`List [])
+                 +> malformed);
+          };
+          {
+            label =
+              "Server sends second HEADERS (trailers) with \":status\" \
+               pseudo-header";
+            description = None;
+            runner =
+              start
+              *> (W.headers
+                    ~flags:Flags.(default_flags |> set_end_header)
+                    (`List [ (":status", "200") ])
+                 ++ W.headers
+                      ~flags:
+                        Flags.(
+                          default_flags |> set_end_header |> set_end_stream)
+                      (`List [ (":status", "200") ])
+                 +> malformed);
+          };
+          {
+            label =
+              "Server sends second HEADERS (trailers) with unknown \
+               pseudo-header";
+            description = None;
+            runner =
+              start
+              *> (W.headers
+                    ~flags:Flags.(default_flags |> set_end_header)
+                    (`List [ (":status", "200") ])
+                 ++ W.headers
+                      ~flags:
+                        Flags.(
+                          default_flags |> set_end_header |> set_end_stream)
+                      (`List [ (":hello", "200") ])
+                 +> malformed);
           };
         ];
     }
@@ -385,6 +724,12 @@ let run_server_tests ~sw clock net =
       connection_frames_validation;
       stream_frames_validation;
       connection_functionalities;
+      stream_states_idle;
+      stream_states_half_closed_local;
+      stream_states_half_closed_remote;
+      stream_states_closed;
+      messages;
     ]
   in
-  Runner.run_groups ~sw ~net ~clock groups
+  Runner.run_groups ~sw ~net ~clock
+    (List.mapi (fun i gr -> (8000 + i, gr)) groups)

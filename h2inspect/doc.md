@@ -88,8 +88,82 @@ What should client do:
     Client should respond with a connection error of type PROTOCOL_ERROR
 - [x] Server sends a RST_STREAM with payload length != 4
     Client should respond with a connection error of type FRAME_SIZE_ERROR
+- [x] Server sends a DATA frame
+    Client accepts the frame
 
 ### 5. Connection-level functionalities
 - [x] Servers sends a PING frame
     Client responds with PING frame with ACK flag and the same payload
 
+### 6. Stream states
+#### Idle
+- [x] Server sends DATA frame 
+    Client responds with connection error of type PROTOCOL_ERROR
+- [x] Server sends RST_STREAM frame 
+    Client responds with connection error of type PROTOCOL_ERROR
+- [x] Server sends WINDOW_UPDATE frame 
+    Client responds with connection error of type PROTOCOL_ERROR
+- [x] Server sends HEADERS frame 
+    Client responds with connection error of type PROTOCOL_ERROR
+- [ ] Server sends CONTINUATION frame 
+    Client responds with connection error of type PROTOCOL_ERROR
+#### Half-closed (local)
+- [x] Server sends RST_STREAM frame
+    Client closes the stream
+- [x] Server sends WINDOW_UPDATE frame
+    Client accepts the frame
+- [x] Server sends DATA frame
+    Client responds with stream error of type STREAM_CLOSED
+- [x] Server sends HEADERS frame
+    Client responds with stream error of type STREAM_CLOSED
+- [ ] Server sends CONTINUATION frame
+    Client responds with stream error of type STREAM_CLOSED
+#### Half-closed (remote)
+- [x] Server sends DATA frame
+    Client accepts the frame
+- [x] Server sends WINDOW_UPDATE frame
+    Client accepts the frame
+- [x] Server sends RST_STREAM frame
+    Client closes the stream
+- [x] Server sends DATA frame with END_STREAM flag set
+    Client closes the stream
+- [x] Server sends HEADERS frame with END_STREAM flag set
+    Client closes the stream
+#### Closed
+- [x] Server sends DATA frame
+    Client responds with connection error of type STREAM_CLOSED
+- [x] Server sends HEADERS frame
+    Client responds with connection error of type STREAM_CLOSED
+- [ ] Server sends CONTINUATION frame
+    Client responds with stream error of type STREAM_CLOSED
+- [x] Server sends WINDOW_UPDATE frame
+    Client responds with stream error of type STREAM_CLOSED
+- [x] Server sends RST_STREAM frame
+    Client responds with stream error of type STREAM_CLOSED
+
+### 7. Stream flow
+- [x] Server sends HEADERS frame without ":status" pseudo-header
+    Malformed message - stream errror of type PROTOCOL_ERROR
+- [x] Server sends HEADERS frame with duplicate ":stauts" pseudo-header
+    Malformed message - stream errror of type PROTOCOL_ERROR
+- [x] Server sends HEADERS frame with request pseudo-header
+    Malformed message - stream errror of type PROTOCOL_ERROR
+- [x] Server sends HEADERS frame with unknown pseudo-header
+    Malformed message - stream errror of type PROTOCOL_ERROR
+- [x] Server sends second HEADERS (trailers) with END_HEADER flag but without END_STREAM flag
+    Malformed message - stream errror of type PROTOCOL_ERROR
+- [x] Server sends second HEADERS (trailers) with ":status" pseudo-header
+    Malformed message - stream errror of type PROTOCOL_ERROR
+- [x] Server sends second HEADERS (trailers) with unknown pseudo-header
+    Malformed message - stream errror of type PROTOCOL_ERROR
+
+### 8. Settings impact
+ checking the impact of the changed settings
+
+### 9. Flow control
+ checking stuff like overflow
+
+### 10. Race
+ sending frames deliberately erroring the stream/connection 
+
+ checking the last seens stream in GOAWAY frame

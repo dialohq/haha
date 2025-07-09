@@ -27,6 +27,12 @@ let ( +> ) : (Writer.t -> unit) -> 'a t -> 'a t =
   f state.writer;
   t state
 
+let ( <+ ) : 'a t -> (Writer.t -> unit) -> 'a t =
+ fun t f state ->
+  let v = t state in
+  f state.writer;
+  v
+
 let ( ++ ) : (Writer.t -> unit) -> (Writer.t -> unit) -> Writer.t -> unit =
  fun f1 f2 w ->
   f1 w;
@@ -104,19 +110,49 @@ let headers : Cstruct.t t =
   | Frame { frame_payload = Headers block; _ } -> Cstruct.of_bigarray block
   | el -> raise_with_expected "HEADERS frame" el
 
+let rst_stream : (int32 * Error_code.t) t =
+  with_ignore @@ function
+  | Frame { frame_payload = RSTStream code; frame_header = { stream_id; _ }; _ }
+    ->
+      (stream_id, code)
+  | el -> raise_with_expected "RST_STREAM frame" el
+
 let conn_error : Error_code.t -> unit t =
  fun code ->
   goaway >>= fun (_, code', _) ->
   if code <> code' then
     fail
-      (Format.asprintf "Expected GOAWAY with error code %s"
-         (Error_code.to_string code))
+      (Format.asprintf "Expected error code %s, got %s"
+         (Error_code.to_string code)
+         (Error_code.to_string code'))
   else return ()
+
+let stream_error : int32 -> Error_code.t -> unit t =
+ fun id code ->
+  rst_stream >>= fun (id', code') ->
+  match (id = id', code = code') with
+  | true, true -> return ()
+  | false, false ->
+      fail
+        (Format.asprintf
+           "Expected RST_STREAM[%li] with code %s, but got RST_STREAM[%li] \
+            with code %s"
+           id
+           (Error_code.to_string code)
+           id'
+           (Error_code.to_string code'))
+  | true, false ->
+      fail
+        (Format.asprintf "Expected error code %s, got %s"
+           (Error_code.to_string code)
+           (Error_code.to_string code'))
+  | false, true ->
+      fail (Format.asprintf "Expected error on stream %li, not %li" id id')
 
 let eof : unit t =
   with_ignore @@ function
   | EOF -> ()
-  | _ -> raise (Fail "Expected TCP connection to close")
+  | el -> raise_with_expected "TCP connection to close" el
 
 module Sets = struct
   let preface =
@@ -156,15 +192,17 @@ type test = {
   description : (string, Format.formatter, unit, string) format4 option;
 }
 
-type test_group = { label : string; tests : test list }
+type action = GET of string | POST of string
+type test_group = { label : string; tests : test list; assume : action list }
 
 let run_test :
     next_element:(unit -> Element.t) ->
     writer:Buf_write.t ->
     int ->
+    int ->
     test ->
     unit =
- fun ~next_element ~writer:writer' i { runner; label; description } ->
+ fun ~next_element ~writer:writer' j i { runner; label; description } ->
   let writer =
     Writer.create ~writer:writer' ~hpack:(Hpack.Encoder.create 1000)
   in
@@ -176,19 +214,19 @@ let run_test :
     with Fail msg -> Some msg
   with
   | None ->
-      Ocolor_format.printf "  %i. @{<grey>%s@} - @{<green>@{<bold>Pass@}@}@."
+      Ocolor_format.printf "%i.%i. @{<grey>%s@} - @{<green>@{<bold>Pass@}@}@." j
         (i + 1) label
   | Some msg ->
       let open Serializers in
       write_goaway_frame ~debug_data:(Cstruct.of_string msg) 0l ProtocolError
         writer';
       Buf_write.flush writer';
-      Ocolor_format.printf "  %i. @{<grey>%s@} - @{<red>@{<bold>Fail:@} %s@}@."
-        (i + 1) label msg;
+      Ocolor_format.printf "%i.%i. @{<grey>%s@} - @{<red>@{<bold>Fail:@} %s@}@."
+        j (i + 1) label msg;
       description
       |> Option.iter @@ fun description ->
          let desc =
-           Ocolor_format.asprintf "    @{<grey>@{<bold>> %s@}@}@."
+           Ocolor_format.asprintf "  @{<grey>@{<bold>> %s@}@}@."
              (Ocolor_format.asprintf description)
          in
          print_wrapped_sentence ~indent:6 desc
@@ -199,25 +237,26 @@ let run_groups :
     sw:Switch.t ->
     net:[> _ Net.ty ] Resource.t ->
     clock:float Time.clock_ty Resource.t ->
-    test_group list ->
+    (int * test_group) list ->
     unit =
  fun ~sw ~net ~clock ->
-  List.iteri @@ fun i { label; tests } ->
-  Ocolor_format.printf "%i. @{<bold>%s@}@." (i + 1) label;
+  List.iter @@ fun (port, { tests; _ }) ->
+  (* Ocolor_format.printf "%i. @{<bold>%s@}@." (i + 1) label; *)
   let server_socket =
     Net.listen ~sw ~backlog:10 ~reuse_addr:true net
-      (`Tcp (Net.Ipaddr.V4.any, 8000 + i))
+      (`Tcp (Net.Ipaddr.V4.any, port))
   in
 
+  Fiber.fork ~sw @@ fun () ->
   Switch.run @@ fun sw ->
-  let rec accept i = function
+  let rec accept j = function
     | [] -> ()
     | test :: rest ->
         Net.accept_fork ~sw ~on_error:ignore server_socket (fun flow _ ->
             Buf_write.with_flow flow @@ fun writer ->
             Reader.run ~sw ~clock flow @@ fun next_element ->
-            run_test ~writer ~next_element i test);
-        accept (i + 1) rest
+            run_test ~writer ~next_element port j test);
+        accept (j + 1) rest
   in
 
   accept 0 tests

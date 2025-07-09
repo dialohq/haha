@@ -29,3 +29,4 @@ val rst_stream :
   ?flags:Flags.t -> ?len:int -> ?id:int32 -> Error_code.t -> t -> unit
 
 val unknown : t -> unit
+val data : ?flags:Flags.t -> ?len:int -> ?id:int32 -> Cstruct.t -> t -> unit

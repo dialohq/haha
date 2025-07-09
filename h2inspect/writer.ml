@@ -106,3 +106,14 @@ let rst_stream ?(flags = Flags.default_flags) ?(len = 4) ?(id = 1l) code
     { flags; payload_length = len; stream_id = id; frame_type = RSTStream }
     w;
   LowLevel.write_rst_stream_frame_payload code w
+
+let data ?(flags = Flags.default_flags) ?len ?(id = 1l) cs { writer = w; _ } =
+  LowLevel.write_frame_header
+    {
+      flags;
+      payload_length = Option.value ~default:(Cstruct.length cs) len;
+      stream_id = id;
+      frame_type = Data;
+    }
+    w;
+  LowLevel.write_data_frame_payload [ cs ] w

@@ -7,6 +7,7 @@ val ( >>= ) : 'a t -> ('a -> 'b t) -> 'b t
 val ( let* ) : 'a t -> ('a -> 'b t) -> 'b t
 val ( >>| ) : 'a t -> ('a -> 'b) -> 'b t
 val ( +> ) : (Writer.t -> unit) -> 'a t -> 'a t
+val ( <+ ) : 'a t -> (Writer.t -> unit) -> 'a t
 val ( ++ ) : (Writer.t -> unit) -> (Writer.t -> unit) -> Writer.t -> unit
 val return : 'a -> 'a t
 val fail : string -> _ t
@@ -20,7 +21,9 @@ val ping : Cstruct.t t
 val window_update : int32 t
 val goaway : (int32 * Error_code.t * Cstruct.t) t
 val headers : Cstruct.t t
+val rst_stream : (int32 * Error_code.t) t
 val conn_error : Error_code.t -> unit t
+val stream_error : int32 -> Error_code.t -> unit t
 val eof : unit t
 
 module Sets : sig
@@ -37,11 +40,12 @@ type test = {
   description : (string, Format.formatter, unit, string) format4 option;
 }
 
-type test_group = { label : string; tests : test list }
+type action = GET of string | POST of string
+type test_group = { label : string; tests : test list; assume : action list }
 
 val run_groups :
   sw:Eio.Switch.t ->
   net:[> [ `Generic | `Unix ] Eio.Net.ty ] Eio.Resource.t ->
   clock:float Eio.Time.clock_ty Eio.Resource.t ->
-  test_group list ->
+  (int * test_group) list ->
   unit
