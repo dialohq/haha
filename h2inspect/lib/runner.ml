@@ -192,8 +192,11 @@ type test = {
   description : (string, Format.formatter, unit, string) format4 option;
 }
 
-type action = GET of string | POST of string
-type test_group = { label : string; tests : test list; assume : action list }
+type test_group = {
+  label : string;
+  tests : test list;
+  assume : Case.action list;
+}
 
 let run_test :
     next_element:(unit -> Element.t) ->
@@ -237,26 +240,34 @@ let run_groups :
     sw:Switch.t ->
     net:[> _ Net.ty ] Resource.t ->
     clock:float Time.clock_ty Resource.t ->
-    (int * test_group) list ->
-    unit =
- fun ~sw ~net ~clock ->
-  List.iter @@ fun (port, { tests; _ }) ->
-  (* Ocolor_format.printf "%i. @{<bold>%s@}@." (i + 1) label; *)
-  let server_socket =
-    Net.listen ~sw ~backlog:10 ~reuse_addr:true net
-      (`Tcp (Net.Ipaddr.V4.any, port))
+    int ->
+    test_group list ->
+    Case.case list =
+ fun ~sw ~net ~clock first_port ->
+  let rec aux port cases = function
+    | [] -> cases
+    | { label = _; tests; assume } :: rest ->
+        (* Ocolor_format.printf "%i. @{<bold>%s@}@." (i + 1) label; *)
+        let rec accept cases i = function
+          | [] -> (port + i, List.rev cases)
+          | test :: rest ->
+              let server_socket =
+                Net.listen ~sw ~backlog:10 ~reuse_addr:true net
+                  (`Tcp (Net.Ipaddr.V4.any, port + i))
+              in
+              Fiber.fork ~sw (fun () ->
+                  Switch.run @@ fun sw ->
+                  Net.accept_fork ~sw ~on_error:ignore server_socket
+                  @@ fun flow _ ->
+                  Buf_write.with_flow flow @@ fun writer ->
+                  Reader.run ~sw ~clock flow @@ fun next_element ->
+                  run_test ~writer ~next_element (port + i) i test);
+              let json_l =
+                { Case.port = port + i; scenerio = assume } :: cases
+              in
+              accept json_l (i + 1) rest
+        in
+        let next_port, cases' = accept [] 0 tests in
+        aux next_port (List.concat [ cases; cases' ]) rest
   in
-
-  Fiber.fork ~sw @@ fun () ->
-  Switch.run @@ fun sw ->
-  let rec accept j = function
-    | [] -> ()
-    | test :: rest ->
-        Net.accept_fork ~sw ~on_error:ignore server_socket (fun flow _ ->
-            Buf_write.with_flow flow @@ fun writer ->
-            Reader.run ~sw ~clock flow @@ fun next_element ->
-            run_test ~writer ~next_element port j test);
-        accept (j + 1) rest
-  in
-
-  accept 0 tests
+  aux first_port []

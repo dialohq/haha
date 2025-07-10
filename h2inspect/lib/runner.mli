@@ -40,12 +40,16 @@ type test = {
   description : (string, Format.formatter, unit, string) format4 option;
 }
 
-type action = GET of string | POST of string
-type test_group = { label : string; tests : test list; assume : action list }
+type test_group = {
+  label : string;
+  tests : test list;
+  assume : Case.action list;
+}
 
 val run_groups :
   sw:Eio.Switch.t ->
   net:[> [ `Generic | `Unix ] Eio.Net.ty ] Eio.Resource.t ->
   clock:float Eio.Time.clock_ty Eio.Resource.t ->
-  (int * test_group) list ->
-  unit
+  int ->
+  test_group list ->
+  Case.case list

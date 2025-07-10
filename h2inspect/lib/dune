@@ -1,6 +1,6 @@
 (library
  (name h2inspect)
  (public_name h2inspect)
- (libraries h2kit eio_main ocolor)
+ (libraries h2kit eio_main ocolor yojson)
  (preprocess
   (pps ppx_deriving.show)))

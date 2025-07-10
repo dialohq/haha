@@ -2,10 +2,9 @@ open Runner
 open H2kit
 module W = Writer
 module Serializers = Serializers.Make (Buf_write)
+module Case = Case
 
-let run_server_tests ~sw clock net =
-  Eio.Fiber.fork ~sw @@ fun () ->
-  Eio.Switch.run @@ fun sw ->
+let run_server_tests ?(first_port = 8050) ~sw clock net =
   let preface : test_group =
     {
       label = "Connection preface";
@@ -731,5 +730,4 @@ let run_server_tests ~sw clock net =
       messages;
     ]
   in
-  Runner.run_groups ~sw ~net ~clock
-    (List.mapi (fun i gr -> (8000 + i, gr)) groups)
+  Runner.run_groups ~sw ~net ~clock first_port (List.map (fun gr -> gr) groups)

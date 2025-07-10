@@ -29,7 +29,7 @@ with pkgs.ocamlPackages; rec {
         include = ["dune-project" "h2inspect" "h2inspect.opam"];
       };
 
-    propagatedBuildInputs = [ocolor ppx_deriving eio_main h2kit yojson];
+    propagatedBuildInputs = [ocolor ppx_deriving eio_main h2kit yojson cohttp-eio];
   };
 
   default = buildDunePackage {
