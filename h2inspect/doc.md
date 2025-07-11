@@ -158,12 +158,82 @@ What should client do:
     Malformed message - stream errror of type PROTOCOL_ERROR
 
 ### 8. Settings impact
- checking the impact of the changed settings
+#### Tester settings
+- [x] MAX_CONCURRENT_STREAMS
+    - assumption for the client to open 3 streams
+    - sends MAX_CONCURRENT_STREAMS=2
+    - waits for 2 streams to open
+    - expects a delay before 3 stream is open
+    - sends MAX_CONCCURENT_STREAMS=3 
+    - expects the 3rd stream to open
+    
+    "POST /"
+    "POST /"
+    "POST /"
+- [ ] INITIAL_WINDOW_SIZE
+    - assumption for 1 stream and 20_000 bytes of data sent
+    - sends INITIAL_WINDOW_SIZE=19_000
+    - waits for 19_000 to arrive
+    - excepts a delay before rest of the data
+    - sends INITIAL_WINDOW_SIZE=20_000 
+    - expects the rest of the data to arrive
+
+    "POST /"
+    "DATA 20000"
+- [ ] MAX_FRAME_SIZE
+    - assumption for 1 stream and 50_000 bytes of data sent
+    - sends MAX_FRAME_SIZE=20_000
+    - waits for stream to open
+    - waits for 3 DATA frames or more
+
+    "POST /"
+    "DATA 50000"
+#### Tested peer settings
+- [ ] ENABLE_PUSH
+    - assumption of ENABLE_PUSH=0
+    - send settings ack
+    - sends a PUSH_PROMISE frame
+    - expects a connection error of type PROTOCOL_ERROR
+- [ ] MAX_CONCURRENT_STREAMS
+    - assumption of MAX_CONCURRENT_STREAMS=3
+    - sends settings ack
+    - sends PUSH_PROMISE 4 times
+    - expects a connection error of any type (preperebly REFUSED_STREAM)
+- [ ] INITIAL_WINDOW_SIZE
+    - assumption of INITIAL_WINDOW_SIZE=19_000
+    - sends settings ack
+    - opens a stream and sends 19_000 bytes of data
+    - sends another 1000 bytes of data
+    - expects connection error of FLOW_CONTROL_ERROR
+- [ ] MAX_FRAME_SIZE
+    - assumption of MAX_FRAME_SIZE=20_000
+    - sends settings ack
+    - opens a stream and sends DATA frame with length of 25_000
+    - expects a connection error of FRAME_SIZE_ERROR
 
 ### 9. Flow control
- checking stuff like overflow
+- [ ] Local window overflow
+    - assumption for 1 stream and 40_000 bytes sent
+    - sends SETTINGS with INITIAL_WINDOW_SIZE=20_000
+    - expects a stream to open
+    - expects DATA frames with 20_000 bytes
+    - expects a delay before any more data
+    - sends WINDOW_UPDATE on the stream with 20_000 incremenet
+    - expects rest of the data (20_000 bytes) to arrive
+    - closes the stream
+
+    "POST /"
+    "DATA 40000"
+- [ ] Remote window overflow
 
 ### 10. Race
  sending frames deliberately erroring the stream/connection 
 
  checking the last seens stream in GOAWAY frame
+
+
+
+### Defined Actions in script
+- "GET <path>" make a GET request with no streaming to <path> target
+- "POST <path>" make a POST request with streaming - in other words, open a new stream to <path> target
+- "DATA <amount>" send <amount> bytes of data filled with zero bytes on the last open stream

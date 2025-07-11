@@ -1,3 +1,3 @@
 (executables
  (names conformance_client conformance_server)
- (libraries haha h2inspect yojson cohttp-eio))
+ (libraries haha h2inspect yojson))

@@ -41,7 +41,7 @@ let ping ?(flags = Flags.default_flags) ?(len = 8) ?(id = 0l) payload
     w;
   Buf_write.schedule_cstruct w (Cstruct.of_string payload)
 
-let goaway ?(flags = Flags.default_flags) ?(len = 0) ?(id = 0l) code
+let goaway ?(flags = Flags.default_flags) ?(len = 8) ?(id = 0l) code
     { writer; _ } =
   LowLevel.write_frame_header
     { flags; payload_length = len; stream_id = id; frame_type = GoAway }
