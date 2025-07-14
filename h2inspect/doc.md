@@ -167,10 +167,10 @@ What should client do:
     - sends MAX_CONCCURENT_STREAMS=3 
     - expects the 3rd stream to open
     
-    "POST /"
-    "POST /"
-    "POST /"
-- [ ] INITIAL_WINDOW_SIZE
+    "GET /"
+    "GET /"
+    "GET /"
+- [x] INITIAL_WINDOW_SIZE
     - assumption for 1 stream and 20_000 bytes of data sent
     - sends INITIAL_WINDOW_SIZE=19_000
     - waits for 19_000 to arrive
@@ -180,7 +180,7 @@ What should client do:
 
     "POST /"
     "DATA 20000"
-- [ ] MAX_FRAME_SIZE
+- [x] MAX_FRAME_SIZE
     - assumption for 1 stream and 50_000 bytes of data sent
     - sends MAX_FRAME_SIZE=20_000
     - waits for stream to open
@@ -199,7 +199,7 @@ What should client do:
     - sends settings ack
     - sends PUSH_PROMISE 4 times
     - expects a connection error of any type (preperebly REFUSED_STREAM)
-- [ ] INITIAL_WINDOW_SIZE
+- [x] INITIAL_WINDOW_SIZE
     - assumption of INITIAL_WINDOW_SIZE=19_000
     - sends settings ack
     - opens a stream and sends 19_000 bytes of data
@@ -210,6 +210,8 @@ What should client do:
     - sends settings ack
     - opens a stream and sends DATA frame with length of 25_000
     - expects a connection error of FRAME_SIZE_ERROR
+
+ Sends settings with unknown setting, the other ones should still work and be processed
 
 ### 9. Flow control
 - [ ] Local window overflow

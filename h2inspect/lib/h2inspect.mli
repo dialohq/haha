@@ -10,6 +10,8 @@ module Case : sig
   val yojson_of_cases : t list -> Yojson.Safe.t
 end
 
+module Event = Event
+
 val run_server_tests :
   ?first_port:int ->
   sw:Eio.Switch.t ->

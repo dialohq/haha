@@ -1,6 +1,6 @@
 open H2kit
 
-type t = Element.t -> bool
+type t = Event.t -> bool
 
 let nothing = fun _ -> false
 let add : t -> t -> t = fun f1 f2 el -> if f1 el then true else f2 el

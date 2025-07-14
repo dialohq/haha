@@ -37,6 +37,14 @@ let serialize_key = function
   | MaxFrameSize _ -> 0x5
   | MaxHeaderListSize _ -> 0x6
 
+let setting_to_string = function
+  | HeaderTableSize _ -> "HEADER_TABLE_SIZE"
+  | EnablePush _ -> "ENABLE_PUSH"
+  | MaxConcurrentStreams _ -> "MAX_CONCURRENT_STREAMS"
+  | InitialWindowSize _ -> "INITIAL_WINDOW_SIZE"
+  | MaxFrameSize _ -> "MAX_FRAME_SIZE"
+  | MaxHeaderListSize _ -> "MAX_HEADER_LIST_SIZE"
+
 let update_with_list settings new_settings =
   List.fold_left
     (fun (acc : t) item ->

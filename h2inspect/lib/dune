@@ -2,5 +2,6 @@
  (name h2inspect)
  (public_name h2inspect)
  (libraries h2kit eio_main ocolor yojson)
+ (inline_tests)
  (preprocess
-  (pps ppx_deriving.show)))
+  (pps ppx_deriving.show ppx_expect)))

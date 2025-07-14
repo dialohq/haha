@@ -12,8 +12,9 @@ let () =
       ()
   in
 
-  let connection_handler =
-    Haha.Server.connection_handler ~error_handler:ignore handler
+  let connection_handler x y =
+    Printf.printf "Received some TCP connection\n%!";
+    Haha.Server.connection_handler ~error_handler:ignore handler x y
   in
   let socket =
     Eio.Net.listen ~backlog:10 ~sw env#net (`Tcp (Eio.Net.Ipaddr.V4.any, 8080))

@@ -56,6 +56,19 @@ module FrameType = struct
     | 9 -> Continuation
     | x -> Unknown x
 
+  let to_string = function
+    | Data -> "DATA"
+    | Headers -> "HEADERS"
+    | Priority -> "PRIORITY"
+    | RSTStream -> "RST_STREAM"
+    | Settings -> "SETTINGS"
+    | PushPromise -> "PUSH_PROMISE"
+    | Ping -> "PING"
+    | GoAway -> "GO_AWAY"
+    | WindowUpdate -> "WINDOW_UPDATE"
+    | Continuation -> "CONTINUATION"
+    | Unknown x -> "UNKNOWN(" ^ string_of_int x ^ ")"
+
   let pp_hum fmt p =
     Format.fprintf fmt
       (match p with
@@ -96,6 +109,42 @@ type frame_payload =
 
 type t = { frame_header : frame_header; frame_payload : frame_payload }
 [@@deriving show, eq]
+
+let pp_frame_payload formatter payload =
+  let open Format in
+  match payload with
+  | Data cs -> fprintf formatter "    <%i bytes>" (Cstruct.length cs)
+  | Headers headers ->
+      fprintf formatter "    <%i bytes block>" (Bigstringaf.length headers)
+  | Priority -> ()
+  | RSTStream ec ->
+      fprintf formatter "    Error Code: %s" (Error_code.to_string ec)
+  | Settings settings ->
+      List.iter
+        (fun s -> fprintf formatter "    %s@." (Settings.setting_to_string s))
+        settings
+  | PushPromise (stream_id, headers) ->
+      fprintf formatter "    Promised Stream ID: %s@."
+        (Int32.to_string stream_id);
+      fprintf formatter "    <%i bytes block>" (Bigstringaf.length headers)
+  | Ping bs -> fprintf formatter "    %s" (Cstruct.to_string bs)
+  | GoAway (stream_id, ec, debug_data) ->
+      fprintf formatter "    Last Stream ID: %s@." (Int32.to_string stream_id);
+      fprintf formatter "    Error Code: %s@." (Error_code.to_string ec);
+      fprintf formatter "    Debug Data: %s" (Bigstringaf.to_string debug_data)
+  | WindowUpdate ws ->
+      fprintf formatter "    Window Size Increment: %s" (Int32.to_string ws)
+  | Continuation headers ->
+      fprintf formatter "    <%i bytes block>" (Bigstringaf.length headers)
+  | Unknown (_, bs) -> fprintf formatter "    %s" (Bigstringaf.to_string bs)
+
+let pp_hum_exact formatter { frame_header; frame_payload } =
+  let open Format in
+  fprintf formatter "%s@." (FrameType.to_string frame_header.frame_type);
+  List.iter
+    (fun flag_str -> fprintf formatter "    + %s@." flag_str)
+    (Flags.to_strings frame_header.flags);
+  pp_frame_payload formatter frame_payload
 
 let validate_header
     ({ frame_type; payload_length; flags; stream_id } : frame_header) :

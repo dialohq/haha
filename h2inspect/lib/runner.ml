@@ -1,26 +1,10 @@
-let print_wrapped_sentence ~indent sentence =
-  let open Format in
-  set_margin 100;
-
-  pp_open_hovbox std_formatter indent;
-
-  let words = String.split_on_char ' ' sentence in
-
-  List.iter
-    (fun word ->
-      pp_print_string std_formatter word;
-      pp_print_space std_formatter ())
-    words;
-
-  pp_close_box std_formatter ();
-  pp_print_newline std_formatter ()
-
 type test = {
   label : string;
-  spec : unit Spec.t;
+  branch : Branch.t;
   description : (string, Format.formatter, unit, string) format4 option;
   streams : Case.stream list option;
   settings : H2kit.Settings.setting list option;
+  ignore : Ignore.t;
 }
 
 type test_group = {
@@ -28,49 +12,54 @@ type test_group = {
   tests : test list;
   streams : Case.stream list;
   settings : H2kit.Settings.setting list;
+  ignore : Ignore.t;
 }
 
-let test ?settings ?streams ?desc label spec =
-  { label; spec; description = desc; streams; settings }
+let test ?settings ?streams ?desc ?(ignore = Ignore.nothing) label branch =
+  { label; branch; description = desc; streams; settings; ignore }
 
-let test_group ?(settings = []) ?(streams = []) label tests =
-  { label; settings; streams; tests }
+let test_group ?(settings = []) ?(streams = []) ?(ignore = Ignore.nothing) label
+    tests =
+  { label; settings; streams; tests; ignore }
 
 let run_test :
-    next_element:(unit -> Element.t) ->
+    await_event:(unit -> Event.t) ->
     writer:Buf_write.t ->
     int ->
     int ->
     test ->
     unit =
- fun ~next_element ~writer:writer' j i { spec; label; description; _ } ->
+ fun ~await_event:await_ev ~writer:writer' j i
+     { branch; label; description; ignore = ign; _ } ->
+  let rec await_event () =
+    let ev = await_ev () in
+    if ign ev then await_event () else ev
+  in
   let writer =
     Writer.create ~writer:writer' ~hpack:(Hpack.Encoder.create 1000)
   in
-  let state = Spec.make_state ~next_element ~writer in
-  match
-    try
-      spec state;
-      None
-    with Spec.Fail msg -> Some msg
-  with
-  | None ->
-      Ocolor_format.printf "%i.%i. @{<grey>%s@} - @{<green>@{<bold>Pass@}@}@." j
-        (i + 1) label
-  | Some msg ->
+
+  let run = Branch.runner ~await_event ~writer in
+  match run branch with
+  | Ok () ->
+      Ocolor_format.printf
+        "%i.%i. @{<grey>%s@}  @{<green>@{<bold>[ PASS ]@}@}@." j (i + 1) label
+  | Error (expected, received) ->
+      let reason = Util.make_msg expected received in
       let open H2kit.Serializers.Make (Buf_write) in
-      write_goaway_frame ~debug_data:(Cstruct.of_string msg) 0l ProtocolError
+      write_goaway_frame ~debug_data:(Cstruct.of_string reason) 0l ProtocolError
         writer';
       Buf_write.flush writer';
-      Ocolor_format.printf "%i.%i. @{<grey>%s@} - @{<red>@{<bold>Fail:@} %s@}@."
-        j (i + 1) label msg;
+      Ocolor_format.printf "%i.%i. @{<grey>%s@}  @{<red>@{<bold>[ FAIL ]@}@}@."
+        j (i + 1) label;
+      Ocolor_format.printf "@{<red>  %s@}@.@." reason;
       description
       |> Option.iter @@ fun description ->
          let desc =
            Ocolor_format.asprintf "  @{<grey>@{<bold>> %s@}@}@."
              (Ocolor_format.asprintf description)
          in
-         print_wrapped_sentence ~indent:6 desc
+         Util.print_wrapped_sentence ~indent:6 desc
 
 open Eio
 
@@ -84,7 +73,7 @@ let run_groups :
  fun ~sw ~net ~clock first_port ->
   let rec aux group_i port cases = function
     | [] -> cases
-    | { label = _; tests; streams; settings } :: rest ->
+    | { label = _; tests; streams; settings; ignore = ign } :: rest ->
         let rec accept : Case.t list -> int -> test list -> int * Case.t list =
          fun cases i -> function
            | [] -> (port + i, List.rev cases)
@@ -99,8 +88,13 @@ let run_groups :
                    Net.accept_fork ~sw ~on_error:ignore server_socket
                    @@ fun flow _ ->
                    Buf_write.with_flow flow @@ fun writer ->
-                   Reader.run ~sw ~clock flow @@ fun next_element ->
-                   run_test ~writer ~next_element group_i i test);
+                   Reader.run ~sw ~clock flow @@ fun await_ev ->
+                   let rec await_event () =
+                     let ev = await_ev () in
+                     if ign ev then await_event () else ev
+                   in
+
+                   run_test ~writer ~await_event group_i i test);
                let json_l =
                  {
                    Case.port = port + i;

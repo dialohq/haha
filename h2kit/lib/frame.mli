@@ -18,6 +18,7 @@ module FrameType : sig
   [@@deriving show { with_path = false }, eq]
 
   val to_int : t -> int
+  val to_string : t -> string
   val of_int : int -> t
   val pp_hum : Format.formatter -> t -> unit
 end
@@ -65,3 +66,5 @@ val validate_header : frame_header -> (unit, Error.t) result
 
 val pp_hum : Format.formatter -> t -> unit
 (** Human-readable formatter for the [t] type. Useful for debbugging. *)
+
+val pp_hum_exact : Format.formatter -> t -> unit

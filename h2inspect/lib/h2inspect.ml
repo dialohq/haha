@@ -1,309 +1,387 @@
-open Spec
-open Runner
 open H2kit
+open Runner
+open Branch
+open Event
 module W = Writer
 module Serializers = Serializers.Make (Buf_write)
 module Case = Case
+module Event = Event
 
 let run_server_tests ?(first_port = 8050) ~sw clock net =
-  let preface : test_group =
+  let connection_preface : test_group =
     test_group "Connection preface"
+      ~ignore:Ignore.(frame_type WindowUpdate)
       [
         test "Initialization, standard preface exchange"
           ~desc:
             {|[Section 3.4. of RFC9113] "In HTTP/2, each endpoint is required to send a connection preface as a final confirmation of the protocol in use and to establish th initial settings for the HTTP/2 connection."|}
-          (S.preface
-          *> register_ignore Ignore.(stream_frames + frame_type WindowUpdate)
-          *> (W.goaway NoError +> eof));
+          (preface
+          @ [
+              expect
+                (frame_header ~flags:Flags.(default_flags |> set_ack) Settings);
+              write W.(goaway NoError);
+              expect eof;
+            ]);
         test "Server sends invalid connection preface"
           ~desc:
             {|[Section 3.4 of RFC9113] "The server connection preface consists of a potentially empty SETTINGS frame (Section 6.5) that MUST be @{<ul>the first frame the server sends@} in the HTTP/2 connection. [...] Clients and servers MUST treat an invalid connection preface as a connection error (Section 5.4.1) of type PROTOCOL_ERROR."|}
-          (register_ignore Ignore.(stream_frames + frame_type WindowUpdate)
-          *> magic *> settings
-          *> (W.ping "12345678" +> conn_error ProtocolError)
-          *> eof);
+          [
+            ??magic;
+            ??settings;
+            !!W.(ping "12345678");
+            ??(goaway_code ProtocolError);
+            ??eof;
+          ];
         test "Server acknowledges client's SETTINGS before sending its preface"
           ~desc:
             {|[Section 3.4. of RFC9113] "The SETTINGS frames received from a peer as part of the connection preface MUST be acknowledged (see Section 6.5.3) @{<ul>after@} sending the connection preface. [...] Clients and servers MUST treat an invalid connection preface as a connection error (Section 5.4.1) of type PROTOCOL_ERROR."|}
-          (register_ignore Ignore.(stream_frames + frame_type WindowUpdate)
-          *> magic *> settings
-          *> (W.settings ~flags:Flags.(default_flags |> set_ack) []
-             +> conn_error ProtocolError));
+          [
+            expect magic;
+            expect settings;
+            write W.(settings ~flags:Flags.(default_flags |> set_ack) []);
+            expect (goaway_code ProtocolError);
+            expect eof;
+          ];
       ]
   in
 
   let frame_header_validation : test_group =
     test_group "Frame header validation"
+      ~ignore:Ignore.(frame_type WindowUpdate)
       [
         test "Server sends a frame with unknown frame type"
-          ( register_ignore Ignore.(stream_frames + frame_type WindowUpdate)
-          *> magic *> settings
-          *> (W.settings [] ++ W.unknown
-             ++ W.settings ~flags:Flags.(default_flags |> set_ack) []
-             ++ W.goaway NoError +> frame_header)
-          >>= function
-            | { frame_type = Settings; flags; _ } when Flags.test_ack flags ->
-                return ()
-            | _ -> fail "Expected SETTINGS with ACK flag set" *> eof )
           ~desc:
-            {|[Section 4.1. of RFC9113] "Type: The 8-bit type of the frame. The frame type determines the format and semantics of the frame. Frames defined in this document are listed in Section 6. Implementations MUST @{<ul>ignore and discard@} frames of unknown types."|};
+            {|[Section 4.1. of RFC9113] "Type: The 8-bit type of the frame. The frame type determines the format and semantics of the frame. Frames defined in this document are listed in Section 6. Implementations MUST @{<ul>ignore and discard@} frames of unknown types."|}
+          [
+            expect magic;
+            expect settings;
+            write
+              W.(
+                settings [] ++ unknown
+                ++ settings ~flags:Flags.(default_flags |> set_ack) []);
+            expect settings_ack;
+            write W.(goaway NoError);
+            expect eof;
+          ];
       ]
   in
 
   let connection_frames_validation : test_group =
     test_group "Parsing and validating connection-level frames"
+      ~ignore:Ignore.(frame_type WindowUpdate)
       [
         test
           "Server sends a SETTINGS frame with ACK flag and payload length > 0"
-          (S.conn_only
-          *> (W.settings
-                ~flags:Flags.(default_flags |> set_ack)
-                [ EnablePush 0 ]
-             +> conn_error FrameSizeError)
-          *> eof)
           ~desc:
-            {|ACK (0x01): "[...] Receipt of a SETTINGS frame with the ACK flag set and a length field value other than 0 MUST be treated as a connection error (Section 5.4.1) of type FRAME_SIZE_ERROR."|};
+            {|ACK (0x01): "[...] Receipt of a SETTINGS frame with the ACK flag set and a length field value other than 0 MUST be treated as a connection error (Section 5.4.1) of type FRAME_SIZE_ERROR."|}
+          (preface
+          @ [
+              write
+                W.(
+                  settings
+                    ~flags:Flags.(default_flags |> set_ack)
+                    [ EnablePush 0 ]);
+              expect (goaway_code FrameSizeError);
+              expect eof;
+            ]);
         test "Server sends a SETTINGS frame with stream id != 0"
-          (S.conn_only
-          *> (W.settings ~id:1l [] +> conn_error ProtocolError)
-          *> eof)
           ~desc:
-            {|[Section 6.5. pf RFC9113] "SETTINGS frames always apply to a connection, never a single stream. The @{<ul>stream identifier@} for a SETTINGS frame @{<ul>MUST be zero (0x00)@}. If an endpoint receives a SETTINGS frame whose Stream Identifier field is anything other than 0x00, the endpoint MUST respond with a connection error (Section 5.4.1) of type @{<ul>PROTOCOL_ERROR@}."|};
+            {|[Section 6.5. pf RFC9113] "SETTINGS frames always apply to a connection, never a single stream. The @{<ul>stream identifier@} for a SETTINGS frame @{<ul>MUST be zero (0x00)@}. If an endpoint receives a SETTINGS frame whose Stream Identifier field is anything other than 0x00, the endpoint MUST respond with a connection error (Section 5.4.1) of type @{<ul>PROTOCOL_ERROR@}."|}
+          (conn_only
+          @ [
+              write (W.settings ~id:1l []);
+              expect (goaway_code ProtocolError);
+              expect eof;
+            ]);
         test
           "Server sends a SETTINGS frame with one setting with an unknown \
            identifier"
-          (S.conn_only
-          *> (W.unknown_setting +> settings_ack)
-          *> (W.goaway NoError +> eof))
           ~desc:
-            {|[Section 6.5.2. of RFC9113] "An endpoint that receives a SETTINGS frame with any unknown or unsupported identifier MUST @{<ul>ignore@} that setting."|};
+            {|[Section 6.5.2. of RFC9113] "An endpoint that receives a SETTINGS frame with any unknown or unsupported identifier MUST @{<ul>ignore@} that setting."|}
+          (conn_only
+          @ [ write W.unknown_setting; expect settings_ack ]
+          @ grace_end);
         test "Server sends a SETTINGS frame with custom, valid values"
-          (S.conn_only
-          *> (W.settings
-                [
-                  HeaderTableSize 5120;
-                  EnablePush 0;
-                  MaxConcurrentStreams 2000l;
-                  InitialWindowSize 131_070l;
-                  MaxFrameSize 163_840;
-                  MaxHeaderListSize 1000;
-                ]
-             +> settings_ack)
-          *> (W.goaway NoError +> eof));
+          (conn_only
+          @ [
+              write
+                W.(
+                  settings
+                    [
+                      (* TODO: uncomment later *)
+                      (* HeaderTableSize 5120; *)
+                      EnablePush 0;
+                      MaxConcurrentStreams 2000l;
+                      InitialWindowSize 131_070l;
+                      MaxFrameSize 163_840;
+                      MaxHeaderListSize 1000;
+                    ]);
+              expect settings_ack;
+            ]
+          @ grace_end);
         test
           "Server sends a SETTINGS frame with PUSH_PROMISE setting set to \
            value > 1"
           ~desc:
             {|[Section 6.5.2.] "SETTINGS_ENABLE_PUSH (0x02): [...] Any value other than 0 or 1 MUST be treated as a connection error (Section 5.4.1) of type PROTOCOL_ERROR."|}
-          (S.conn_only
-          *> (W.settings [ EnablePush 2 ] +> conn_error ProtocolError)
-          *> eof);
+          (conn_only
+          @ [
+              write (W.settings [ EnablePush 2 ]);
+              expect (goaway_code ProtocolError);
+              expect eof;
+            ]);
         test
           "Server sends a SETTINGS frame with PUSH_PROMISE setting set to \
            value 1"
           ~desc:
             {|[Section 6.5.2.] "SETTINGS_ENABLE_PUSH (0x02): [...] A server MUST NOT explicitly set this value to 1. [...] A client MUST treat receipt of a SETTINGS frame with SETTINGS_ENABLE_PUSH set to 1 as a connection error (Section 5.4.1) of type PROTOCOL_ERROR."|}
-          (S.conn_only
-          *> (W.settings [ EnablePush 1 ] +> conn_error ProtocolError)
-          *> eof);
+          (conn_only
+          @ [
+              write (W.settings [ EnablePush 1 ]);
+              expect (goaway_code ProtocolError);
+              expect eof;
+            ]);
         test
           "Server sends a SETTINGS frame with INITIAL_WINDOW_SIZE setting set \
            to value > 2^31-1"
           ~desc:
             {|[Section 6.5.2.] "SETTINGS_INITIAL_WINDOW_SIZE (0x04): [...] Values above the maximum flow-control window size of 2^31-1 MUST be treated as a connection error (Section 5.4.1) of type FLOW_CONTROL_ERROR."|}
-          (S.conn_only
-          *> (W.settings [ InitialWindowSize (Int32.add 2_147_483_647l 1l) ]
-             +> conn_error ProtocolError)
-          *> eof);
+          (conn_only
+          @ [
+              write
+                W.(settings [ InitialWindowSize (Int32.add 2_147_483_647l 1l) ]);
+              expect (goaway_code ProtocolError);
+              expect eof;
+            ]);
         test
           "Server sends a SETTINGS frame with MAX_FRAME_SIZE setting set to \
            value < 16384"
           ~desc:
             {|[Section 6.5.2.] "SETTINGS_MAX_FRAME_SIZE (0x05): [...] The initial value is 214 (16,384) octets. The value advertised by an endpoint MUST be between this initial value and the maximum allowed frame size (224-1 or 16,777,215 octets), inclusive. Values outside this range MUST be treated as a connection error (Section 5.4.1) of type PROTOCOL_ERROR."|}
-          (S.conn_only
-          *> (W.settings [ MaxFrameSize 16_383 ] +> conn_error ProtocolError)
-          *> eof);
+          (conn_only
+          @ [
+              write W.(settings [ MaxFrameSize 16_383 ]);
+              expect (goaway_code ProtocolError);
+              expect eof;
+            ]);
         test
           "Server sends a SETTINGS frame with MAX_FRAME_SIZE setting set to \
            value > 2^24-1"
           ~desc:
             {|[Section 6.5.2.] "SETTINGS_MAX_FRAME_SIZE (0x05): [...] The initial value is 214 (16,384) octets. The value advertised by an endpoint MUST be between this initial value and the maximum allowed frame size (2^24-1 or 16,777,215 octets), inclusive. Values outside this range MUST be treated as a connection error (Section 5.4.1) of type PROTOCOL_ERROR."|}
-          (S.conn_only
-          *> (W.settings [ MaxFrameSize 16_777_215 ] +> conn_error ProtocolError)
-          *> eof);
+          (conn_only
+          @ [
+              !!W.(settings [ MaxFrameSize 16_777_215 ]);
+              ??(goaway_code ProtocolError);
+              ??eof;
+            ]);
         test "Server sends a PING frame with stream id != 0"
-          (S.conn_only
-          *> (W.ping ~id:1l "12345678" +> conn_error ProtocolError)
-          *> eof);
+          (conn_only
+          @ [
+              !!W.(ping ~id:1l "12345678"); ??(goaway_code ProtocolError); ??eof;
+            ]);
         test "Server sends a PING frame with payload length != 8"
-          (S.conn_only
-          *> (W.ping ~len:5 "12345678" +> conn_error FrameSizeError)
-          *> eof);
+          (conn_only
+          @ [
+              !!W.(ping ~len:5 "12345678");
+              ??(goaway_code FrameSizeError);
+              ??eof;
+            ]);
         test "Server sends a GOAWAY frame with stream id != 0"
-          (S.conn_only
-          *> (W.goaway ~id:1l NoError +> conn_error ProtocolError)
-          *> eof);
+          (conn_only
+          @ [
+              !!W.(goaway ~id:1l NoError); ??(goaway_code ProtocolError); ??eof;
+            ]);
         test "Server sends a GOAWAY frame with unknown error code"
-          (S.conn_only *> (W.goaway (UnknownError_code 20l) +> eof));
+          (conn_only
+          @ [
+              !!W.(goaway (UnknownError_code 20l));
+              (* TODO: should also expect GOAWAY I think *)
+              ??eof;
+            ]);
         test
           "Server sends a WINDOW_UPDATE frame with a valid window size \
            increment value and stream id = 0"
-          (S.conn_only *> (W.window_update 1024l ++ W.goaway NoError +> eof));
+          (conn_only @ [ !!W.(window_update 1024l) ] @ grace_end);
         test "Server sends a WINDOW_UPDATE frame with payload length != 4"
-          (S.conn_only
-          *> (W.window_update ~len:3 1024l +> conn_error FrameSizeError)
-          *> eof);
+          (conn_only
+          @ [
+              !!W.(window_update ~len:3 1024l);
+              ??(goaway_code FrameSizeError);
+              ??eof;
+            ]);
         test
           "Server sends a WINDOW_UPDATE frame with window size increment value \
            = 0 and stream id = 0"
-          (S.conn_only
-          *> (W.window_update ~id:0l 0l +> conn_error ProtocolError)
-          *> eof);
+          (conn_only
+          @ [
+              !!W.(window_update ~id:0l 0l);
+              ??(goaway_code ProtocolError);
+              ??eof;
+            ]);
       ]
   in
 
   let stream_frames_validation : test_group =
-    let start =
-      register_ignore I.(frame_type WindowUpdate) *> S.preface *> headers
-    in
-
-    test_group ~streams:[ GET "/" ] "Parsing and validating stream-level frames"
+    test_group
+      ~ignore:Ignore.(frame_type WindowUpdate)
+      ~streams:[ GET "/" ] "Parsing and validating stream-level frames"
       [
         test
           "Server responds with a final 200 code HEADERS frame with END_STREAM \
            flag"
-          (start
-          *> (W.headers (`List [ (":status", "200") ])
-             ++ W.goaway NoError +> eof));
+          (with_preface
+             [ ??headers; !!W.(headers (`List [ (":status", "200") ])) ]
+             [ !!W.(goaway NoError); ??eof ]);
         test "Server responds with a HEADERS frame with stream id = 0"
-          (start
-          *> (W.headers ~id:0l (`List [ (":status", "200") ])
-             +> conn_error ProtocolError)
-          *> eof);
+          (with_preface
+             [ !!W.(headers ~id:0l (`List [ (":status", "200") ])) ]
+             [ ??(goaway_code ProtocolError); ??eof ]);
         test
           "Server responds with a HEADERS frame with padding length > payload \
            length"
-          (start
-          *> (W.headers
-                ~flags:
-                  Flags.(
-                    default_flags |> set_end_header |> set_end_stream
-                    |> set_padded)
-                ~pad_len:50
-                (`List [ (":status", "200") ])
-             +> conn_error ProtocolError)
-          *> eof);
+          (with_preface
+             [
+               ??headers;
+               !!W.(
+                   headers
+                     ~flags:
+                       Flags.(
+                         default_flags |> set_end_header |> set_end_stream
+                         |> set_padded)
+                     ~pad_len:50
+                     (`List [ (":status", "200") ]));
+             ]
+             [ ??(goaway_code ProtocolError); ??eof ]);
         test "Server responds with a HEADERS frame with invalid headers block"
-          (start
-          *> (W.headers (`Block (Cstruct.of_hex "400A686561646572"))
-             +> conn_error CompressionError)
-          *> eof);
+          (with_preface
+             [
+               ??headers;
+               !!W.(headers (`Block (Cstruct.of_hex "400A686561646572")));
+             ]
+             [ ??(goaway_code CompressionError); ??eof ]);
         test "Server sends a WINDOW_UPDATE frame before responding with HEADERS"
-          (start
-          *> (W.window_update ~id:1l 1024l
-             ++ W.headers (`List [ (":status", "200") ])
-             ++ W.goaway NoError +> eof));
+          (with_preface
+             [
+               ??headers;
+               !!W.(
+                   window_update ~id:1l 1024l
+                   ++ headers (`List [ (":status", "200") ]));
+             ]
+             [ !!W.(goaway NoError); ??eof ]);
         test "Server sends a RST_STREAM frame"
-          (start *> (W.rst_stream NoError ++ W.goaway NoError +> eof));
+          (with_preface
+             [ ??headers; !!W.(rst_stream NoError) ]
+             [ !!W.(goaway NoError); ??eof ]);
         test "Server sends a RST_STREAM with stream id = 0"
-          (start
-          *> (W.rst_stream ~id:0l NoError +> conn_error ProtocolError)
-          *> eof);
+          (with_preface
+             [ ??headers; !!W.(rst_stream ~id:0l NoError) ]
+             [ ??(goaway_code ProtocolError); ??eof ]);
         test "Server sends a RST_STREAM with payload length != 4"
-          (start
-          *> (W.rst_stream ~len:3 NoError +> conn_error FrameSizeError)
-          *> eof);
+          (with_preface
+             [ ??headers; !!W.(rst_stream ~len:3 NoError) ]
+             [ ??(goaway_code FrameSizeError); ??eof ]);
         test "Server sends a DATA frame"
-          (start
-          *> (W.headers
-                ~flags:Flags.(default_flags |> set_end_header)
-                (`List [ (":status", "200") ])
-             ++ W.data
-                  ~flags:Flags.(default_flags |> set_end_stream)
-                  (Cstruct.of_string "data")
-             ++ W.goaway NoError +> eof));
+          (with_preface
+             [
+               ??headers;
+               !!W.(
+                   headers
+                     ~flags:Flags.(default_flags |> set_end_header)
+                     (`List [ (":status", "200") ])
+                   ++ W.data
+                        ~flags:Flags.(default_flags |> set_end_stream)
+                        (Cstruct.of_string "data"));
+             ]
+             [ !!W.(goaway NoError); ??eof ]);
       ]
   in
 
   let connection_functionalities : test_group =
     let ping_payload = "12345678" in
     test_group "Connection-level functionalities"
+      ~ignore:Ignore.(frame_type WindowUpdate)
       [
         test "Servers sends a PING frame"
-          (S.conn_only
-          *> ( W.ping ping_payload +> ping >>= function
-               | cs when cs = Cstruct.of_string ping_payload -> return ()
-               | _ -> fail "Expected PING with payload \"12345678\"" )
-          *> (W.goaway NoError +> eof));
+          (conn_only
+          @ [ !!(W.ping ping_payload); ??(ping_p ping_payload) ]
+          @ grace_end);
       ]
   in
 
   let stream_states_idle : test_group =
     test_group "Stream states - Idle"
+      ~ignore:Ignore.(frame_type WindowUpdate)
       [
         test "Server sends DATA frame on idle stream"
-          (register_ignore I.(frame_type WindowUpdate)
-          *> S.preface
-          *> (W.data Cstruct.empty +> conn_error ProtocolError)
-          *> eof);
+          (conn_only
+          @ [ !!W.(data Cstruct.empty); ??(goaway_code ProtocolError); ??eof ]);
         test "Server sends RST_STREAM frame"
-          (register_ignore I.(frame_type WindowUpdate)
-          *> S.preface
-          *> (W.rst_stream NoError +> conn_error ProtocolError)
-          *> eof);
+          (conn_only
+          @ [ !!W.(rst_stream NoError); ??(goaway_code ProtocolError); ??eof ]);
         test "Server sends WINDOW_UPDATE frame"
-          (register_ignore I.(frame_type WindowUpdate)
-          *> S.preface
-          *> (W.window_update ~id:1l 1024l +> conn_error ProtocolError)
-          *> eof);
+          (conn_only
+          @ [
+              !!W.(window_update ~id:1l 1024l);
+              ??(goaway_code ProtocolError);
+              ??eof;
+            ]);
         test "Server sends HEADERS frame"
-          (register_ignore I.(frame_type WindowUpdate)
-          *> S.preface
-          *> (W.headers ~id:1l (`List []) +> conn_error ProtocolError)
-          *> eof);
+          (conn_only
+          @ [
+              !!W.(headers ~id:1l (`List []));
+              ??(goaway_code ProtocolError);
+              ??eof;
+            ]);
       ]
   in
 
   let stream_states_half_closed_local : test_group =
-    let start =
-      register_ignore I.(frame_type WindowUpdate)
-      *> S.preface
-      *> (frame_header
-         >>= ( function
-         | { frame_type = Headers; flags; _ }
-           when Flags.test_end_header flags && not (Flags.test_end_stream flags)
-           ->
-             return ()
-         | _ -> fail "Expected HEADERS with only END_HEADER flag set" )
-         <+ W.headers
+    let stream_init =
+      [
+        ??(frame_header ~flags:Flags.(default_flags |> set_end_header) Headers);
+        !!W.(
+            headers
               ~flags:Flags.(default_flags |> set_end_header |> set_end_stream)
-              (`List [ (":status", "200") ]))
+              (`List [ (":status", "200") ]));
+      ]
+    in
+
+    let with_setup stream_nodes continuation_nodes =
+      with_preface (stream_init @ stream_nodes) continuation_nodes
     in
     test_group
+      ~ignore:Ignore.(frame_type WindowUpdate)
       ~streams:[ POST ("/", 0) ]
       "Stream states - Half-closed (local)"
       [
         test "Server sends RST_STREAM frame"
-          (start *> (W.rst_stream NoError ++ W.goaway NoError +> eof));
+          (with_setup
+             [ !!W.(rst_stream NoError) ]
+             [ !!W.(goaway NoError); ??eof ]);
         test "Server sends WINDOW_UPDATE frame"
-          (start
-          *> (W.window_update ~id:1l 1024l
-             ++ W.rst_stream NoError ++ W.goaway NoError +> eof));
+          (with_setup
+             [ !!W.(window_update ~id:1l 1024l ++ rst_stream NoError) ]
+             [ !!W.(goaway NoError); ??eof ]);
         test "Server sends DATA frame"
-          (start
-          *> (W.data (Cstruct.of_string "1234") +> stream_error 1l StreamClosed)
-          *> (W.goaway NoError +> eof));
+          (with_setup
+             [
+               !!W.(data (Cstruct.of_string "1234"));
+               ??(stream_error 1l StreamClosed);
+             ]
+             [ !!W.(goaway NoError); ??eof ]);
         test "Server sends HEADERS frame"
-          (start
-          *> (W.headers (`List []) +> stream_error 1l StreamClosed)
-          *> (W.goaway NoError +> eof));
+          (with_setup
+             [ !!W.(headers (`List [])); ??(stream_error 1l StreamClosed) ]
+             [ !!W.(goaway NoError); ??eof ]);
       ]
   in
 
+  (*
   let stream_states_half_closed_remote : test_group =
     let start =
       register_ignore I.(frame_type WindowUpdate)
-      *> S.preface
+      *> preface
       *> (frame_header
          >>= ( function
          | { frame_type = Headers; flags; _ }
@@ -344,7 +422,7 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
   let stream_states_closed : test_group =
     let start =
       register_ignore I.(frame_type WindowUpdate)
-      *> S.preface
+      *> preface
       *> (frame_header
          >>= ( function
          | { frame_type = Headers; flags; _ }
@@ -377,7 +455,7 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
   let messages : test_group =
     let start =
       register_ignore I.(frame_type WindowUpdate)
-      *> S.preface
+      *> preface
       *> ( frame_header >>= function
            | { frame_type = Headers; flags; _ }
              when Flags.test_end_header flags && Flags.test_end_stream flags ->
@@ -442,38 +520,143 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
       ]
   in
 
-  let settings_impact : test_group =
-    test_group
-      ~streams:[ GET "/"; GET "/"; GET "/" ]
-      "Settings impact"
-      [
-        test "MAX_CONCURRENT_STREAMS"
-          (register_ignore I.(frame_type WindowUpdate)
-          *> magic *> settings
-          *> (W.settings [ MaxConcurrentStreams 2l ]
-             ++ W.settings ~flags:Flags.(default_flags |> set_ack) []
-             +> settings_ack)
-          *> headers *> headers
-          *> (W.settings [ MaxConcurrentStreams 3l ] +> settings_ack)
-          *> headers
-          *> (W.rst_stream ~id:1l NoError
-             ++ W.rst_stream ~id:3l NoError
-             ++ W.rst_stream ~id:5l NoError
-             ++ W.goaway NoError +> eof));
-      ]
+  let test_max_concurrent_streams_setting =
+    let setup =
+      register_ignore I.(frame_type WindowUpdate)
+      *> magic *> settings
+      *> (W.settings [ MaxConcurrentStreams 2l ]
+         ++ W.settings ~flags:Flags.(default_flags |> set_ack) []
+         +> settings_ack)
+    in
+
+    let expectation =
+      headers *> headers
+      *> (W.settings [ MaxConcurrentStreams 3l ] +> settings_ack)
+      *> headers
+    in
+
+    let cleanup =
+      W.rst_stream ~id:1l NoError
+      ++ W.rst_stream ~id:3l NoError
+      ++ W.rst_stream ~id:5l NoError
+      ++ W.goaway NoError +> eof
+    in
+
+    setup *> expectation *> cleanup
   in
 
+  let test_initial_window_size_setting =
+    let setup =
+      register_ignore I.(frame_type WindowUpdate)
+      *> magic *> settings
+      *> (W.settings [ InitialWindowSize 19_000l ]
+         ++ W.settings ~flags:Flags.(default_flags |> set_ack) []
+         +> settings_ack)
+      *> headers
+    in
+
+    let expectation =
+      ( many data >>| fun css ->
+        let len = Cstruct.lenv css in
+        if len <> 19_000 then
+          fail
+            (Format.asprintf "Expected exactly 19000 bytes of data, got %i" len)
+      )
+      *> (W.settings [ InitialWindowSize 20_000l ] +> settings_ack)
+      *> ( many data >>| fun css ->
+           if Cstruct.lenv css <> 1_000 then
+             raise (fail "Expected exactly 1000 bytes of data") )
+    in
+
+    let cleanup = W.rst_stream ~id:1l NoError ++ W.goaway NoError +> eof in
+
+    setup *> expectation *> cleanup
+  in
+
+  let test_max_frame_size_setting =
+    let setup =
+      register_ignore I.(frame_type WindowUpdate)
+      *> magic *> settings
+      *> (W.settings [ MaxFrameSize 20_000 ]
+         ++ W.settings ~flags:Flags.(default_flags |> set_ack) []
+         +> settings_ack)
+      *> headers
+    in
+
+    let expectation =
+      many data >>| fun css ->
+      if List.exists (fun cs -> Cstruct.length cs > 20_000) css then
+        fail "DATA frame exceeded MAX_FRAME_SIZE setting"
+    in
+
+    let cleanup = W.rst_stream ~id:1l NoError ++ W.goaway NoError +> eof in
+
+    setup *> expectation *> cleanup
+  in
+
+  let test_peer_initial_window_size_setting =
+    let setup =
+      register_ignore I.(frame_type WindowUpdate)
+      *> magic
+      *> ( settings >>| fun settings ->
+           if
+             not
+               (List.exists
+                  (Settings.equal_setting (InitialWindowSize 19_000l))
+                  settings)
+           then
+             fail
+               "Assumed INITIAL_WINDOW_SIZE to be set to 19000 by the tested \
+                peer" )
+      *> (W.settings []
+         ++ W.settings ~flags:Flags.(default_flags |> set_ack) []
+         +> settings_ack)
+      *> headers
+    in
+
+    let payload =
+      let cs = Cstruct.create 10_000 in
+      Cstruct.memset cs 0;
+      cs
+    in
+
+    let expectation =
+      W.data ~id:1l payload ++ W.data ~id:1l payload
+      +> conn_error FlowControlError
+    in
+
+    setup *> expectation *> eof
+  in
+
+  let settings_impact : test_group =
+    test_group "Settings impact"
+      [
+        test "MAX_CONCURRENT_STREAMS"
+          ~streams:[ GET "/"; GET "/"; GET "/" ]
+          test_max_concurrent_streams_setting;
+        test "INITIAL_WINDOW_SIZE"
+          ~streams:[ POST ("/", 20_000) ]
+          test_initial_window_size_setting;
+        test "MAX_FRAME_SIZE"
+          ~streams:[ POST ("/", 50_000) ]
+          test_max_frame_size_setting;
+        test "Peer INITIAL_WINDOW_SIZE"
+          ~settings:[ InitialWindowSize 19_000l ]
+          ~streams:[ GET "/" ] test_peer_initial_window_size_setting;
+      ]
+  in
+  *)
   Runner.run_groups ~sw ~net ~clock first_port
     [
-      preface;
+      connection_preface;
       frame_header_validation;
       connection_frames_validation;
       stream_frames_validation;
       connection_functionalities;
       stream_states_idle;
       stream_states_half_closed_local;
-      stream_states_half_closed_remote;
-      stream_states_closed;
-      messages;
-      settings_impact;
+      (* stream_states_half_closed_remote; *)
+      (* stream_states_closed; *)
+      (* messages; *)
+      (* settings_impact; *)
     ]

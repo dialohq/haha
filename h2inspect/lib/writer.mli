@@ -2,6 +2,7 @@ open H2kit
 
 type t
 
+val ( ++ ) : (t -> unit) -> (t -> unit) -> t -> unit
 val create : writer:Buf_write.t -> hpack:Hpack.Encoder.t -> t
 
 val settings :

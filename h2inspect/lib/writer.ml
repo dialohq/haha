@@ -9,6 +9,11 @@ open Serializers.Make (Buf_write)
 
 type t = ty
 
+let ( ++ ) : (t -> unit) -> (t -> unit) -> t -> unit =
+ fun f1 f2 w ->
+  f1 w;
+  f2 w
+
 let settings ?(flags = Flags.default_flags) ?len ?(id = 0l) settings
     { writer; _ } =
   LowLevel.write_frame_header

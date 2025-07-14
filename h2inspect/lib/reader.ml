@@ -21,14 +21,14 @@ let parse : _ t -> Cstruct.t -> _ Unbuffered.state =
       continue buffer ~off ~len Incomplete
   | state -> state
 
-let magic_parser = Parsers.connection_preface >>| fun _ -> Element.Magic
+let magic_parser = Parsers.connection_preface >>| fun _ -> Event.Magic
 
 let frame_parser =
   Parsers.parse_frame >>| function
-  | Ok frame -> Element.Frame frame
+  | Ok frame -> Event.Frame frame
   | Error err -> ValidationFailed err
 
-let parser : Element.t t =
+let parser : Event.t t =
   (* NOTE: we should do some smarter parsing to choose between magic and frames *)
   peek_string 3 >>= function "PRI" -> magic_parser | _ -> frame_parser
 
@@ -37,7 +37,7 @@ let read :
     buffer:Cstruct.t ->
     parser:_ t ->
     _ state ->
-    Element.t list * _ state option =
+    Event.t list * _ state option =
  fun ~flow ~buffer:buff ~parser { off; continue } ->
   try
     let read =
@@ -47,10 +47,10 @@ let read :
     let to_parse = Cstruct.(sub buff 0 (off + read)) in
 
     let rec aux :
-        Element.t list ->
+        Event.t list ->
         int ->
         _ Unbuffered.state ->
-        Element.t list * _ state option =
+        Event.t list * _ state option =
      fun acc consumed -> function
        | Fail _ -> (acc @ [ Malformed ], None)
        | Partial { committed; continue } ->
@@ -75,7 +75,7 @@ let run :
     sw:Switch.t ->
     clock:float Eio.Time.clock_ty Eio.Resource.t ->
     _ Resource.t ->
-    ((unit -> Element.t) -> 'a) ->
+    ((unit -> Event.t) -> 'a) ->
     'a =
  fun ~sw ~clock flow f ->
   let stream = Stream.create max_int in

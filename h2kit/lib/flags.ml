@@ -25,3 +25,12 @@ let create ?(end_stream = false) ?(end_header = false) ?(ack = false)
 
 let of_int x = x
 let to_int x = x
+
+let to_strings flags =
+  let acc = [] in
+  let acc = if test_ack flags then "ACK" :: acc else acc in
+  let acc = if test_end_header flags then "END_HEADERS" :: acc else acc in
+  let acc = if test_end_stream flags then "END_STREAM" :: acc else acc in
+  let acc = if test_padded flags then "PADDED" :: acc else acc in
+  let acc = if test_priority flags then "PRIORITY" :: acc else acc in
+  List.rev acc
