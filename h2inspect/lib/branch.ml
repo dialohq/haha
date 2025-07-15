@@ -29,8 +29,15 @@ let conn_only =
 let grace_end =
   [ write W.(goaway NoError); (* expect (goaway_code NoError);*) expect eof ]
 
-let with_preface branch continuation =
-  preface @ [ both [ ??settings_ack ] branch ] @ continuation
+let with_preface ?(settings = []) branch continuation =
+  [
+    expect magic;
+    expect (frame_header ~flags:Flags.(default_flags) Settings);
+    write (W.settings settings);
+    !!W.(settings ~flags:Flags.(default_flags |> set_ack) []);
+  ]
+  @ [ both [ ??settings_ack ] branch ]
+  @ continuation
 
 let runner ~await_event ~writer =
   let rec state_machine ev_opt matched branch =

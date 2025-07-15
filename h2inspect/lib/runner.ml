@@ -28,7 +28,7 @@ let run_test :
     int ->
     int ->
     test ->
-    unit =
+    (unit, string list * Event.t) result =
  fun ~await_event:await_ev ~writer:writer' j i
      { branch; label; description; ignore = ign; _ } ->
   let rec await_event () =
@@ -40,7 +40,8 @@ let run_test :
   in
 
   let run = Branch.runner ~await_event ~writer in
-  match run branch with
+  let res = run branch in
+  (match res with
   | Ok () ->
       Ocolor_format.printf
         "%i.%i. @{<grey>%s@}  @{<green>@{<bold>[ PASS ]@}@}@." j (i + 1) label
@@ -59,7 +60,8 @@ let run_test :
            Ocolor_format.asprintf "  @{<grey>@{<bold>> %s@}@}@."
              (Ocolor_format.asprintf description)
          in
-         Util.print_wrapped_sentence ~indent:6 desc
+         Util.print_wrapped_sentence ~indent:6 desc);
+  res
 
 open Eio
 
@@ -70,32 +72,38 @@ let run_groups :
     int ->
     test_group list ->
     Case.t list =
- fun ~sw ~net ~clock first_port ->
-  let rec aux group_i port cases = function
-    | [] -> cases
+ fun ~sw ~net ~clock first_port groups ->
+  let rec aux results group_i port cases = function
+    | [] -> (cases, results)
     | { label = _; tests; streams; settings; ignore = ign } :: rest ->
-        let rec accept : Case.t list -> int -> test list -> int * Case.t list =
-         fun cases i -> function
-           | [] -> (port + i, List.rev cases)
+        let rec accept :
+            _ result Promise.or_exn list ->
+            Case.t list ->
+            int ->
+            test list ->
+            int * Case.t list * _ result Promise.or_exn list =
+         fun results cases i -> function
+           | [] -> (port + i, List.rev cases, results)
            | ({ settings = settings'; streams = streams'; _ } as test) :: rest
              ->
                let server_socket =
                  Net.listen ~sw ~backlog:10 ~reuse_addr:true net
                    (`Tcp (Net.Ipaddr.V4.any, port + i))
                in
-               Fiber.fork ~sw (fun () ->
-                   Switch.run @@ fun sw ->
-                   Net.accept_fork ~sw ~on_error:ignore server_socket
-                   @@ fun flow _ ->
-                   Buf_write.with_flow flow @@ fun writer ->
-                   Reader.run ~sw ~clock flow @@ fun await_ev ->
-                   let rec await_event () =
-                     let ev = await_ev () in
-                     if ign ev then await_event () else ev
-                   in
+               let v =
+                 Fiber.fork_promise ~sw (fun () ->
+                     Switch.run @@ fun sw ->
+                     let flow, _ = Net.accept ~sw server_socket in
+                     Buf_write.with_flow flow @@ fun writer ->
+                     Reader.run ~sw ~clock flow @@ fun await_ev ->
+                     let rec await_event () =
+                       let ev = await_ev () in
+                       if ign ev then await_event () else ev
+                     in
 
-                   run_test ~writer ~await_event group_i i test);
-               let json_l =
+                     run_test ~writer ~await_event group_i i test)
+               in
+               let new_cases =
                  {
                    Case.port = port + i;
                    streams = Option.value ~default:streams streams';
@@ -103,9 +111,31 @@ let run_groups :
                  }
                  :: cases
                in
-               accept json_l (i + 1) rest
+               accept (v :: results) new_cases (i + 1) rest
         in
-        let next_port, cases' = accept [] 0 tests in
-        aux (group_i + 1) next_port (List.concat [ cases; cases' ]) rest
+        let next_port, cases', new_results = accept [] [] 0 tests in
+        aux (results @ new_results) (group_i + 1) next_port
+          (List.concat [ cases; cases' ])
+          rest
   in
-  aux 1 first_port []
+  let cases, results = aux [] 1 first_port [] groups in
+
+  Fiber.fork ~sw (fun () ->
+      let rec auxx succ fail = function
+        | [] ->
+            print_newline ();
+            Ocolor_format.printf "|============================|@.";
+            Ocolor_format.printf
+              "|        @{<green;bold>%i@}/%i Passed        |@." succ
+              (succ + fail);
+            Ocolor_format.printf "|============================|@.";
+            print_newline ()
+        | p :: rest -> (
+            match Promise.await_exn p with
+            | Ok _ -> auxx (succ + 1) fail rest
+            | Error _ -> auxx succ (fail + 1) rest)
+      in
+
+      auxx 0 0 results);
+
+  cases

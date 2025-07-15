@@ -23,3 +23,4 @@ val data : matcher
 val ping : matcher
 val ping_p : string -> matcher
 val stream_error : int32 -> Error_code.t -> matcher
+val timeout : matcher

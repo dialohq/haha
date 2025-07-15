@@ -15,7 +15,9 @@ val both : t -> t -> node
 val preface : t
 val conn_only : t
 val grace_end : t
-val with_preface : t -> node list -> node list
+
+val with_preface :
+  ?settings:H2kit.Settings.setting list -> t -> node list -> node list
 
 val runner :
   await_event:(unit -> Event.t) ->

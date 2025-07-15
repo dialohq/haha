@@ -94,10 +94,13 @@ let run :
 
           aux { off = 0; continue = None }));
 
-  f (fun () ->
-      Fiber.first
-        (fun () -> Stream.take stream)
-        (fun () ->
-          Time.sleep clock 1.;
-          Timeout));
-  Promise.resolve stop_resolver ()
+  let v =
+    f (fun () ->
+        Fiber.first
+          (fun () -> Stream.take stream)
+          (fun () ->
+            Time.sleep clock 1.;
+            Timeout))
+  in
+  Promise.resolve stop_resolver ();
+  v

@@ -377,174 +377,187 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
       ]
   in
 
-  (*
   let stream_states_half_closed_remote : test_group =
-    let start =
-      register_ignore I.(frame_type WindowUpdate)
-      *> preface
-      *> (frame_header
-         >>= ( function
-         | { frame_type = Headers; flags; _ }
-           when Flags.test_end_header flags && Flags.test_end_stream flags ->
-             return ()
-         | _ -> fail "Expected HEADERS with END_HEADER and END_STREAM flags set" )
-         <+ W.headers
+    let stream_init =
+      [
+        ??(frame_header
+             ~flags:Flags.(default_flags |> set_end_header |> set_end_stream)
+             Headers);
+        !!W.(
+            headers
               ~flags:Flags.(default_flags |> set_end_header)
-              (`List [ (":status", "200") ]))
+              (`List [ (":status", "200") ]));
+      ]
     in
+
+    let with_setup stream_nodes continuation_nodes =
+      with_preface (stream_init @ stream_nodes) continuation_nodes
+    in
+
     test_group ~streams:[ GET "/" ] "Stream states - Half-closed (remote)"
+      ~ignore:Ignore.(frame_type WindowUpdate)
       [
         test "Server sends RST_STREAM frame"
-          (start *> (W.rst_stream NoError ++ W.goaway NoError +> eof));
+          (with_setup
+             [ !!W.(rst_stream NoError) ]
+             [ !!W.(goaway NoError); ??eof ]);
         test "Server sends WINDOW_UPDATE frame"
-          (start
-          *> (W.window_update ~id:1l 1024l
-             ++ W.rst_stream NoError ++ W.goaway NoError +> eof));
+          (with_setup
+             [ !!W.(window_update ~id:1l 1024l ++ rst_stream NoError) ]
+             [ !!W.(goaway NoError); ??eof ]);
         test "Server sends DATA frame"
-          (start
-          *> (W.data (Cstruct.of_string "1234")
-             ++ W.rst_stream NoError ++ W.goaway NoError +> eof));
+          (with_setup
+             [ !!W.(data (Cstruct.of_string "1234") ++ rst_stream NoError) ]
+             [ !!W.(goaway NoError); ??eof ]);
         test "Server sends DATA frame with END_STREAM flag set"
-          (start
-          *> (W.data
-                ~flags:Flags.(default_flags |> set_end_stream)
-                (Cstruct.of_string "1234")
-             ++ W.goaway NoError +> eof));
+          (with_setup
+             [
+               !!W.(
+                   data
+                     ~flags:Flags.(default_flags |> set_end_stream)
+                     (Cstruct.of_string "1234"));
+             ]
+             [ !!W.(goaway NoError); ??eof ]);
         test "Server sends HEADERS frame with END_STREAM flag set"
-          (start
-          *> (W.headers
-                ~flags:Flags.(default_flags |> set_end_header |> set_end_stream)
-                (`List [])
-             ++ W.goaway NoError +> eof));
+          (with_setup
+             [
+               !!W.(
+                   headers
+                     ~flags:
+                       Flags.(default_flags |> set_end_header |> set_end_stream)
+                     (`List []));
+             ]
+             [ !!W.(goaway NoError); ??eof ]);
       ]
   in
 
   let stream_states_closed : test_group =
-    let start =
-      register_ignore I.(frame_type WindowUpdate)
-      *> preface
-      *> (frame_header
-         >>= ( function
-         | { frame_type = Headers; flags; _ }
-           when Flags.test_end_header flags && Flags.test_end_stream flags ->
-             return ()
-         | _ -> fail "Expected HEADERS with END_HEADER and END_STREAM flags set" )
-         <+ W.headers
+    let stream_init =
+      [
+        ??(frame_header
+             ~flags:Flags.(default_flags |> set_end_header |> set_end_stream)
+             Headers);
+        !!W.(
+            headers
               ~flags:Flags.(default_flags |> set_end_header |> set_end_stream)
-              (`List [ (":status", "200") ]))
+              (`List [ (":status", "200") ]));
+      ]
     in
+
+    let with_setup stream_nodes continuation_nodes =
+      with_preface (stream_init @ stream_nodes) continuation_nodes
+    in
+
     test_group ~streams:[ GET "/" ] "Stream states - Closed"
+      ~ignore:Ignore.(frame_type WindowUpdate)
       [
         test "Server sends DATA frame"
-          (start
-          *> (W.data (Cstruct.of_string "1234") +> conn_error StreamClosed)
-          *> eof);
+          (with_setup
+             [ !!W.(data (Cstruct.of_string "1234")) ]
+             [ ??(goaway_code StreamClosed); ??eof ]);
         test "Server sends HEADERS frame"
-          (start *> (W.headers (`List []) +> conn_error StreamClosed) *> eof);
+          (with_setup
+             [ !!W.(headers (`List [])) ]
+             [ ??(goaway_code StreamClosed); ??eof ]);
         test "Server sends WINDOW_UPDATE frame"
-          (start
-          *> (W.window_update ~id:1l 1024l +> stream_error 1l StreamClosed)
-          *> (W.goaway NoError +> eof));
+          (with_setup
+             [
+               !!W.(window_update ~id:1l 1024l);
+               ??(stream_error 1l StreamClosed);
+             ]
+             [ !!W.(goaway NoError); ??eof ]);
         test "Server sends RST_STREAM frame"
-          (start
-          *> (W.rst_stream NoError +> stream_error 1l StreamClosed)
-          *> (W.goaway NoError +> eof));
+          (with_setup
+             [ !!W.(rst_stream NoError); ??(stream_error 1l StreamClosed) ]
+             [ !!W.(goaway NoError); ??eof ]);
       ]
   in
 
   let messages : test_group =
-    let start =
-      register_ignore I.(frame_type WindowUpdate)
-      *> preface
-      *> ( frame_header >>= function
-           | { frame_type = Headers; flags; _ }
-             when Flags.test_end_header flags && Flags.test_end_stream flags ->
-               return ()
-           | _ ->
-               fail "Expected HEADERS with END_HEADER and END_STREAM flags set"
-         )
+    let malformed = ??(stream_error 1l ProtocolError) in
+    let with_setup malformed_setup continuation_nodes =
+      with_preface
+        (malformed_setup
+        @ [
+            ??(frame_header Headers
+                 ~flags:
+                   Flags.(default_flags |> set_end_header |> set_end_stream));
+            malformed;
+          ])
+        continuation_nodes
     in
-    let malformed =
-      stream_error 1l ProtocolError *> (W.goaway NoError +> eof)
-    in
+
     test_group ~streams:[ GET "/" ] "Message exchange - responses"
+      ~ignore:Ignore.(frame_type WindowUpdate)
       [
         test "Server sends HEADERS frame without \":status\" pseudo-header"
-          (start *> (W.headers (`List []) +> malformed));
+          (with_setup [ !!W.(headers (`List [])) ] grace_end);
         test
           "Server sends HEADERS frame with duplicate \":status\" pseudo-header"
-          (start
-          *> (W.headers (`List [ (":status", "200"); (":status", "200") ])
-             +> malformed));
+          (with_setup
+             [
+               !!W.(headers (`List [ (":status", "200"); (":status", "200") ]));
+             ]
+             grace_end);
         test "Server sends HEADERS frame with request pseudo-header"
-          (start
-          *> (W.headers
-                ~flags:Flags.(default_flags |> set_end_header)
-                (`List [ (":path", "/"); (":method", "POST") ])
-             +> malformed));
+          (with_setup
+             [
+               !!W.(
+                   headers
+                     ~flags:Flags.(default_flags |> set_end_header)
+                     (`List [ (":path", "/"); (":method", "POST") ]));
+             ]
+             grace_end);
         test "Server sends HEADERS frame with unknown pseudo-header"
-          (start *> (W.headers (`List [ (":hello", "200") ]) +> malformed));
+          (with_setup [ !!W.(headers (`List [ (":hello", "200") ])) ] grace_end);
         test
           "Server sends second HEADERS (trailers) with END_HEADER flag but \
            without END_STREAM flag"
-          (start
-          *> (W.headers
-                ~flags:Flags.(default_flags |> set_end_header)
-                (`List [ (":status", "200") ])
-             ++ W.headers
-                  ~flags:Flags.(default_flags |> set_end_header)
-                  (`List [])
-             +> malformed));
+          (with_setup
+             [
+               !!W.(
+                   headers
+                     ~flags:Flags.(default_flags |> set_end_header)
+                     (`List [ (":status", "200") ])
+                   ++ W.headers
+                        ~flags:Flags.(default_flags |> set_end_header)
+                        (`List []));
+             ]
+             grace_end);
         test
           "Server sends second HEADERS (trailers) with \":status\" \
            pseudo-header"
-          (start
-          *> (W.headers
-                ~flags:Flags.(default_flags |> set_end_header)
-                (`List [ (":status", "200") ])
-             ++ W.headers
-                  ~flags:
-                    Flags.(default_flags |> set_end_header |> set_end_stream)
-                  (`List [ (":status", "200") ])
-             +> malformed));
+          (with_setup
+             [
+               !!W.(
+                   headers
+                     ~flags:Flags.(default_flags |> set_end_header)
+                     (`List [ (":status", "200") ])
+                   ++ W.headers
+                        ~flags:
+                          Flags.(
+                            default_flags |> set_end_header |> set_end_stream)
+                        (`List [ (":status", "200") ]));
+             ]
+             grace_end);
         test "Server sends second HEADERS (trailers) with unknown pseudo-header"
-          (start
-          *> (W.headers
-                ~flags:Flags.(default_flags |> set_end_header)
-                (`List [ (":status", "200") ])
-             ++ W.headers
-                  ~flags:
-                    Flags.(default_flags |> set_end_header |> set_end_stream)
-                  (`List [ (":hello", "200") ])
-             +> malformed));
+          (with_setup
+             [
+               !!W.(
+                   headers
+                     ~flags:Flags.(default_flags |> set_end_header)
+                     (`List [ (":status", "200") ])
+                   ++ W.headers
+                        ~flags:
+                          Flags.(
+                            default_flags |> set_end_header |> set_end_stream)
+                        (`List [ (":hello", "200") ]));
+             ]
+             grace_end);
       ]
   in
 
-  let test_max_concurrent_streams_setting =
-    let setup =
-      register_ignore I.(frame_type WindowUpdate)
-      *> magic *> settings
-      *> (W.settings [ MaxConcurrentStreams 2l ]
-         ++ W.settings ~flags:Flags.(default_flags |> set_ack) []
-         +> settings_ack)
-    in
-
-    let expectation =
-      headers *> headers
-      *> (W.settings [ MaxConcurrentStreams 3l ] +> settings_ack)
-      *> headers
-    in
-
-    let cleanup =
-      W.rst_stream ~id:1l NoError
-      ++ W.rst_stream ~id:3l NoError
-      ++ W.rst_stream ~id:5l NoError
-      ++ W.goaway NoError +> eof
-    in
-
-    setup *> expectation *> cleanup
-  in
-
+  (*
   let test_initial_window_size_setting =
     let setup =
       register_ignore I.(frame_type WindowUpdate)
@@ -627,13 +640,27 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
 
     setup *> expectation *> eof
   in
-
+  *)
   let settings_impact : test_group =
     test_group "Settings impact"
+      ~ignore:Ignore.(frame_type WindowUpdate)
       [
         test "MAX_CONCURRENT_STREAMS"
           ~streams:[ GET "/"; GET "/"; GET "/" ]
-          test_max_concurrent_streams_setting;
+          (with_preface
+             ~settings:[ MaxConcurrentStreams 2l ]
+             [ ??headers; ??headers ]
+             [
+               ??timeout;
+               !!W.(settings [ MaxConcurrentStreams 3l ]);
+               ??settings_ack;
+               ??headers;
+               !!W.(rst_stream ~id:1l NoError);
+               !!W.(rst_stream ~id:3l NoError);
+               !!W.(rst_stream ~id:5l NoError);
+             ]
+          @ grace_end);
+        (*
         test "INITIAL_WINDOW_SIZE"
           ~streams:[ POST ("/", 20_000) ]
           test_initial_window_size_setting;
@@ -643,9 +670,9 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
         test "Peer INITIAL_WINDOW_SIZE"
           ~settings:[ InitialWindowSize 19_000l ]
           ~streams:[ GET "/" ] test_peer_initial_window_size_setting;
+          *)
       ]
   in
-  *)
   Runner.run_groups ~sw ~net ~clock first_port
     [
       connection_preface;
@@ -655,8 +682,8 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
       connection_functionalities;
       stream_states_idle;
       stream_states_half_closed_local;
-      (* stream_states_half_closed_remote; *)
-      (* stream_states_closed; *)
-      (* messages; *)
-      (* settings_impact; *)
+      stream_states_half_closed_remote;
+      stream_states_closed;
+      messages;
+      settings_impact;
     ]

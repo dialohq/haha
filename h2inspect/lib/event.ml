@@ -83,3 +83,7 @@ let stream_error id code = function
       Error
         (Format.asprintf "RST_STREAM frame on stream %li with code %s" id
            (Error_code.to_string code))
+
+let timeout : matcher = function
+  | Timeout -> Ok ()
+  | _ -> Error "time delay before next frame"
