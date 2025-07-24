@@ -1,3 +1,4 @@
 (tests
  (names test_parsers test_serializers)
+ (package h2kit)
  (libraries alcotest angstrom faraday cstruct h2kit))

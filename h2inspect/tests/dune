@@ -1,3 +1,4 @@
 (test
  (name test_branch)
+ (package h2inspect)
  (libraries alcotest h2inspect))

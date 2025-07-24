@@ -4,6 +4,8 @@ module Error : sig
   type connection_error = H2kit.Error.connection_error
   type stream_error = H2kit.Error.stream_error
   type t = H2kit.Error.t
+
+  val pp_hum : Format.formatter -> t -> unit
 end
 
 module Headers : sig
