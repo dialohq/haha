@@ -3,8 +3,14 @@ and t = node list
 
 (* {2 Node makers } *)
 
-val expect : Event.matcher -> node
-val ( ?? ) : Event.matcher -> node
+val many_match :
+  'a Event.matcher ->
+  ('a list -> [ `Done | `More | `NoMatch of string ]) ->
+  node
+
+val many : 'a Event.matcher -> node
+val single : 'a Event.matcher -> node
+val ( ?? ) : 'a Event.matcher -> node
 val write : (Writer.t -> unit) -> node
 val ( !! ) : (Writer.t -> unit) -> node
 val multi : t list -> node

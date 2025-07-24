@@ -17,10 +17,10 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
             {|[Section 3.4. of RFC9113] "In HTTP/2, each endpoint is required to send a connection preface as a final confirmation of the protocol in use and to establish th initial settings for the HTTP/2 connection."|}
           (preface
           @ [
-              expect
+              single
                 (frame_header ~flags:Flags.(default_flags |> set_ack) Settings);
               write W.(goaway NoError);
-              expect eof;
+              single eof;
             ]);
         test "Server sends invalid connection preface"
           ~desc:
@@ -36,11 +36,11 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
           ~desc:
             {|[Section 3.4. of RFC9113] "The SETTINGS frames received from a peer as part of the connection preface MUST be acknowledged (see Section 6.5.3) @{<ul>after@} sending the connection preface. [...] Clients and servers MUST treat an invalid connection preface as a connection error (Section 5.4.1) of type PROTOCOL_ERROR."|}
           [
-            expect magic;
-            expect settings;
+            single magic;
+            single settings;
             write W.(settings ~flags:Flags.(default_flags |> set_ack) []);
-            expect (goaway_code ProtocolError);
-            expect eof;
+            single (goaway_code ProtocolError);
+            single eof;
           ];
       ]
   in
@@ -53,15 +53,15 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
           ~desc:
             {|[Section 4.1. of RFC9113] "Type: The 8-bit type of the frame. The frame type determines the format and semantics of the frame. Frames defined in this document are listed in Section 6. Implementations MUST @{<ul>ignore and discard@} frames of unknown types."|}
           [
-            expect magic;
-            expect settings;
+            single magic;
+            single settings;
             write
               W.(
                 settings [] ++ unknown
                 ++ settings ~flags:Flags.(default_flags |> set_ack) []);
-            expect settings_ack;
+            single settings_ack;
             write W.(goaway NoError);
-            expect eof;
+            single eof;
           ];
       ]
   in
@@ -81,8 +81,8 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
                   settings
                     ~flags:Flags.(default_flags |> set_ack)
                     [ EnablePush 0 ]);
-              expect (goaway_code FrameSizeError);
-              expect eof;
+              single (goaway_code FrameSizeError);
+              single eof;
             ]);
         test "Server sends a SETTINGS frame with stream id != 0"
           ~desc:
@@ -90,8 +90,8 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
           (conn_only
           @ [
               write (W.settings ~id:1l []);
-              expect (goaway_code ProtocolError);
-              expect eof;
+              single (goaway_code ProtocolError);
+              single eof;
             ]);
         test
           "Server sends a SETTINGS frame with one setting with an unknown \
@@ -99,7 +99,7 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
           ~desc:
             {|[Section 6.5.2. of RFC9113] "An endpoint that receives a SETTINGS frame with any unknown or unsupported identifier MUST @{<ul>ignore@} that setting."|}
           (conn_only
-          @ [ write W.unknown_setting; expect settings_ack ]
+          @ [ write W.unknown_setting; single settings_ack ]
           @ grace_end);
         test "Server sends a SETTINGS frame with custom, valid values"
           (conn_only
@@ -116,7 +116,7 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
                       MaxFrameSize 163_840;
                       MaxHeaderListSize 1000;
                     ]);
-              expect settings_ack;
+              single settings_ack;
             ]
           @ grace_end);
         test
@@ -127,8 +127,8 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
           (conn_only
           @ [
               write (W.settings [ EnablePush 2 ]);
-              expect (goaway_code ProtocolError);
-              expect eof;
+              single (goaway_code ProtocolError);
+              single eof;
             ]);
         test
           "Server sends a SETTINGS frame with PUSH_PROMISE setting set to \
@@ -138,8 +138,8 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
           (conn_only
           @ [
               write (W.settings [ EnablePush 1 ]);
-              expect (goaway_code ProtocolError);
-              expect eof;
+              single (goaway_code ProtocolError);
+              single eof;
             ]);
         test
           "Server sends a SETTINGS frame with INITIAL_WINDOW_SIZE setting set \
@@ -150,8 +150,8 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
           @ [
               write
                 W.(settings [ InitialWindowSize (Int32.add 2_147_483_647l 1l) ]);
-              expect (goaway_code ProtocolError);
-              expect eof;
+              single (goaway_code ProtocolError);
+              single eof;
             ]);
         test
           "Server sends a SETTINGS frame with MAX_FRAME_SIZE setting set to \
@@ -161,8 +161,8 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
           (conn_only
           @ [
               write W.(settings [ MaxFrameSize 16_383 ]);
-              expect (goaway_code ProtocolError);
-              expect eof;
+              single (goaway_code ProtocolError);
+              single eof;
             ]);
         test
           "Server sends a SETTINGS frame with MAX_FRAME_SIZE setting set to \
@@ -196,7 +196,7 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
           (conn_only
           @ [
               !!W.(goaway (UnknownError_code 20l));
-              (* TODO: should also expect GOAWAY I think *)
+              (* TODO: should also single GOAWAY I think *)
               ??eof;
             ]);
         test
@@ -558,34 +558,6 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
   in
 
   (*
-  let test_initial_window_size_setting =
-    let setup =
-      register_ignore I.(frame_type WindowUpdate)
-      *> magic *> settings
-      *> (W.settings [ InitialWindowSize 19_000l ]
-         ++ W.settings ~flags:Flags.(default_flags |> set_ack) []
-         +> settings_ack)
-      *> headers
-    in
-
-    let expectation =
-      ( many data >>| fun css ->
-        let len = Cstruct.lenv css in
-        if len <> 19_000 then
-          fail
-            (Format.asprintf "Expected exactly 19000 bytes of data, got %i" len)
-      )
-      *> (W.settings [ InitialWindowSize 20_000l ] +> settings_ack)
-      *> ( many data >>| fun css ->
-           if Cstruct.lenv css <> 1_000 then
-             raise (fail "Expected exactly 1000 bytes of data") )
-    in
-
-    let cleanup = W.rst_stream ~id:1l NoError ++ W.goaway NoError +> eof in
-
-    setup *> expectation *> cleanup
-  in
-
   let test_max_frame_size_setting =
     let setup =
       register_ignore I.(frame_type WindowUpdate)
@@ -605,8 +577,20 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
     let cleanup = W.rst_stream ~id:1l NoError ++ W.goaway NoError +> eof in
 
     setup *> expectation *> cleanup
+    with_preface ~settings:[ MaxFrameSize 20_000 ]
+      [
+        ??headers;
+        expect_many data ~check:(fun css ->
+            if List.exists (fun cs -> Cstruct.length cs > 20_000) css then
+              Error "DATA frames with maximum of 20_000 bytes per frame"
+            else Ok ());
+      ]
+      [ !!W.(rst_stream ~id:1l NoError) ]
+    @ grace_end
   in
+    *)
 
+  (*
   let test_peer_initial_window_size_setting =
     let setup =
       register_ignore I.(frame_type WindowUpdate)
@@ -660,10 +644,36 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
                !!W.(rst_stream ~id:5l NoError);
              ]
           @ grace_end);
-        (*
         test "INITIAL_WINDOW_SIZE"
           ~streams:[ POST ("/", 20_000) ]
-          test_initial_window_size_setting;
+          (with_preface
+             ~settings:[ InitialWindowSize 19_000l ]
+             [
+               ??headers;
+               many_match data (fun css ->
+                   let len = Cstruct.lenv css in
+                   if len = 19_000 then `Done
+                   else if len < 19_00 then `More
+                   else
+                     `NoMatch
+                       (Format.asprintf
+                          "exactly 19 000 bytes of data in DATA frames, but \
+                           got %i"
+                          len));
+               !!W.(settings [ InitialWindowSize 20_000l ]);
+               ??settings_ack;
+               many_match data (fun css ->
+                   let len = Cstruct.lenv css in
+                   if len = 1_000 then `Done
+                   else if len < 1_000 then `More
+                   else
+                     `NoMatch
+                       (Format.asprintf
+                          "1000 bytes of data in DATA frames, but got %i" len));
+             ]
+             [ !!W.(rst_stream ~id:1l NoError) ]
+          @ grace_end);
+        (*
         test "MAX_FRAME_SIZE"
           ~streams:[ POST ("/", 50_000) ]
           test_max_frame_size_setting;

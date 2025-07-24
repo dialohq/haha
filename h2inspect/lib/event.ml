@@ -9,26 +9,32 @@ type t =
   | Timeout
 [@@deriving show]
 
-type matcher = t -> (unit, string) result
+type 'a matcher = t -> ('a, string) result
 
-let magic : matcher = function
+let magic : unit matcher = function
   | Magic -> Ok ()
   | _ -> Error "client preface magic string"
 
-let eof : matcher = function EOF -> Ok () | _ -> Error "EOF"
+let eof : unit matcher = function EOF -> Ok () | _ -> Error "EOF"
 
-let settings : matcher = function
-  | Frame { frame_payload = Settings _; _ } -> Ok ()
+let settings : Settings.setting list matcher = function
+  | Frame { frame_payload = Settings l; _ } -> Ok l
   | _ -> Error "SETTINGS frame"
 
-let settings_ack : matcher = function
-  | Frame { frame_header = { frame_type = Settings; flags; _ }; _ }
+let settings_ack : Settings.setting list matcher = function
+  | Frame
+      {
+        frame_header = { frame_type = Settings; flags; _ };
+        frame_payload = Settings l;
+      }
     when Flags.test_ack flags ->
-      Ok ()
+      Ok l
   | _ -> Error "SETTINGS frame with ACK flag set"
 
-let frame_header ?flags ?id typ : matcher = function
-  | Frame { frame_header = { flags = fl; stream_id; frame_type; _ }; _ } ->
+let frame_header ?flags ?id typ : Frame.frame_header matcher = function
+  | Frame
+      { frame_header = { flags = fl; stream_id; frame_type; _ } as header; _ }
+    ->
       let flags_cond =
         match flags with None -> true | Some flags -> flags = fl
       in
@@ -36,39 +42,40 @@ let frame_header ?flags ?id typ : matcher = function
 
       let type_cond = typ = frame_type in
 
-      if flags_cond && id_cond && type_cond then Ok ()
+      if flags_cond && id_cond && type_cond then Ok header
       else Error (Format.asprintf "%s frame" (Frame.FrameType.to_string typ))
   | _ -> Error (Format.asprintf "%s frame" (Frame.FrameType.to_string typ))
 
-let goaway : matcher = function
-  | Frame { frame_payload = GoAway _; _ } -> Ok ()
+let goaway : (int32 * Error_code.t * Bigstringaf.t) matcher = function
+  | Frame { frame_payload = GoAway p; _ } -> Ok p
   | _ -> Error "GOAWAY frame"
 
-let goaway_code code : matcher = function
-  | Frame { frame_payload = GoAway (_, code', _); _ } when code = code' -> Ok ()
+let goaway_code code : _ matcher = function
+  | Frame { frame_payload = GoAway (_, code', _); _ } when code = code' ->
+      Ok code'
   | _ ->
       Error
         (Format.asprintf "GOAWAY frame with code %s"
            (Error_code.to_string code))
 
-let headers : matcher = function
+let headers : _ matcher = function
   | Frame { frame_payload = Headers _; _ } -> Ok ()
   | _ -> Error "HEADERS frame"
 
-let data = function
-  | Frame { frame_payload = Data _; _ } -> Ok ()
+let data : Cstruct.t matcher = function
+  | Frame { frame_payload = Data cs; _ } -> Ok cs
   | _ -> Error "DATA frame"
 
-let ping = function
+let ping : unit matcher = function
   | Frame { frame_payload = Ping _; _ } -> Ok ()
   | _ -> Error "PING frame"
 
-let ping_p cs = function
+let ping_p cs : unit matcher = function
   | Frame { frame_payload = Ping cs'; _ } when Cstruct.of_string cs = cs' ->
       Ok ()
   | _ -> Error "PING frame"
 
-let stream_error id code = function
+let stream_error id code : unit matcher = function
   | Frame { frame_payload = RSTStream code'; frame_header = { stream_id; _ } }
     when code = code' && id = stream_id ->
       Ok ()
@@ -84,6 +91,6 @@ let stream_error id code = function
         (Format.asprintf "RST_STREAM frame on stream %li with code %s" id
            (Error_code.to_string code))
 
-let timeout : matcher = function
+let timeout : unit matcher = function
   | Timeout -> Ok ()
   | _ -> Error "time delay before next frame"

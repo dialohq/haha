@@ -43,8 +43,8 @@ let run_test :
   let res = run branch in
   (match res with
   | Ok () ->
-      Ocolor_format.printf
-        "%i.%i. @{<grey>%s@}  @{<green>@{<bold>[ PASS ]@}@}@." j (i + 1) label
+      Ocolor_format.printf "%i.%i. @{<grey>%s@}  @{<green;bold>[ PASS ]@}@." j
+        (i + 1) label
   | Error (expected, received) ->
       let reason = Util.make_msg expected received in
       let open H2kit.Serializers.Make (Buf_write) in

@@ -2,11 +2,25 @@ open Event
 open H2kit
 module W = Writer
 
-type node = Write of (W.t -> unit) | Expect of matcher | Multi of t list
+type 'a matcher_node = {
+  matcher : 'a matcher;
+  is_done : ('a list -> [ `Done | `More | `NoMatch of string ]) option;
+}
+
+type node =
+  | Matcher : 'a matcher_node -> node
+  | Write of (W.t -> unit)
+  | Multi of t list
+
 and t = node list
 
-let expect x = Expect x
-let ( ?? ) = expect
+let many_match matcher is_done = Matcher { matcher; is_done = Some is_done }
+let many matcher = Matcher { matcher; is_done = None }
+
+let single matcher =
+  many_match matcher (fun l -> if List.length l > 0 then `Done else `More)
+
+let ( ?? ) = single
 let write x = Write x
 let ( !! ) = write
 let multi x = Multi x
@@ -17,22 +31,22 @@ type state = { branch : t; status : status }
 
 let preface =
   [
-    expect magic;
-    expect (frame_header ~flags:Flags.(default_flags) Settings);
+    single magic;
+    single (frame_header ~flags:Flags.(default_flags) Settings);
     write W.(settings [] ++ settings ~flags:Flags.(default_flags |> set_ack) []);
   ]
 
 let conn_only =
   preface
-  @ [ expect (frame_header ~flags:Flags.(default_flags |> set_ack) Settings) ]
+  @ [ single (frame_header ~flags:Flags.(default_flags |> set_ack) Settings) ]
 
 let grace_end =
-  [ write W.(goaway NoError); (* expect (goaway_code NoError);*) expect eof ]
+  [ write W.(goaway NoError); (* expect (goaway_code NoError);*) single eof ]
 
 let with_preface ?(settings = []) branch continuation =
   [
-    expect magic;
-    expect (frame_header ~flags:Flags.(default_flags) Settings);
+    single magic;
+    single (frame_header ~flags:Flags.(default_flags) Settings);
     write (W.settings settings);
     !!W.(settings ~flags:Flags.(default_flags |> set_ack) []);
   ]
@@ -45,12 +59,28 @@ let runner ~await_event ~writer =
     | Write write :: rest, matched ->
         write writer;
         state_machine ev_opt matched rest
-    | Expect check :: rest, false -> (
-        let ev = match ev_opt with None -> await_event () | Some ev -> ev in
-        match check ev with
-        | Ok () -> state_machine None true rest
-        | Error expected -> Some { status = NoMatch ([ expected ], ev); branch }
-        )
+    | Matcher { matcher; is_done } :: rest, false ->
+        let rec aux acc ev_opt =
+          let ev = match ev_opt with None -> await_event () | Some ev -> ev in
+
+          match (matcher ev, is_done) with
+          | Ok matched, None -> aux (matched :: acc) None
+          | Error _, None -> state_machine (Some ev) true rest
+          | Ok matched, Some is_done -> (
+              match is_done List.(rev (matched :: acc)) with
+              | `Done -> state_machine None true rest
+              | `More -> aux (matched :: acc) None
+              | `NoMatch expected ->
+                  Some { status = NoMatch ([ expected ], ev); branch })
+          | Error expected, Some is_done -> (
+              match is_done List.(rev acc) with
+              | `Done -> state_machine (Some ev) true rest
+              | `More -> Some { status = NoMatch ([ expected ], ev); branch }
+              | `NoMatch expected ->
+                  Some { status = NoMatch ([ expected ], ev); branch })
+        in
+
+        aux [] ev_opt
     | Multi [] :: rest, false -> state_machine ev_opt false rest
     | Multi branches :: rest, false ->
         let ev = match ev_opt with None -> await_event () | Some ev -> ev in
@@ -73,7 +103,7 @@ let runner ~await_event ~writer =
         in
 
         aux [] [] branches
-    | (Expect _ | Multi _) :: _, true -> Some { status = Match; branch }
+    | (Matcher _ | Multi _) :: _, true -> Some { status = Match; branch }
     | [], _ -> None
   in
 
