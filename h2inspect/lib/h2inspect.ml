@@ -558,39 +558,6 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
   in
 
   (*
-  let test_max_frame_size_setting =
-    let setup =
-      register_ignore I.(frame_type WindowUpdate)
-      *> magic *> settings
-      *> (W.settings [ MaxFrameSize 20_000 ]
-         ++ W.settings ~flags:Flags.(default_flags |> set_ack) []
-         +> settings_ack)
-      *> headers
-    in
-
-    let expectation =
-      many data >>| fun css ->
-      if List.exists (fun cs -> Cstruct.length cs > 20_000) css then
-        fail "DATA frame exceeded MAX_FRAME_SIZE setting"
-    in
-
-    let cleanup = W.rst_stream ~id:1l NoError ++ W.goaway NoError +> eof in
-
-    setup *> expectation *> cleanup
-    with_preface ~settings:[ MaxFrameSize 20_000 ]
-      [
-        ??headers;
-        expect_many data ~check:(fun css ->
-            if List.exists (fun cs -> Cstruct.length cs > 20_000) css then
-              Error "DATA frames with maximum of 20_000 bytes per frame"
-            else Ok ());
-      ]
-      [ !!W.(rst_stream ~id:1l NoError) ]
-    @ grace_end
-  in
-    *)
-
-  (*
   let test_peer_initial_window_size_setting =
     let setup =
       register_ignore I.(frame_type WindowUpdate)
@@ -653,12 +620,12 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
                many_match data (fun css ->
                    let len = Cstruct.lenv css in
                    if len = 19_000 then `Done
-                   else if len < 19_00 then `More
+                   else if len < 19_000 then `More
                    else
                      `NoMatch
                        (Format.asprintf
-                          "exactly 19 000 bytes of data in DATA frames, but \
-                           got %i"
+                          "exactly 19000 bytes of data in DATA frames, but got \
+                           %i"
                           len));
                !!W.(settings [ InitialWindowSize 20_000l ]);
                ??settings_ack;
@@ -673,16 +640,31 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
              ]
              [ !!W.(rst_stream ~id:1l NoError) ]
           @ grace_end);
-        (*
+        (* FIX: test below *)
         test "MAX_FRAME_SIZE"
           ~streams:[ POST ("/", 50_000) ]
-          test_max_frame_size_setting;
+          (with_preface ~settings:[ MaxFrameSize 20_000 ]
+             [
+               ??headers;
+               many_match data (fun css ->
+                   if
+                     not
+                       (List.for_all (fun cs -> Cstruct.length cs < 20_000) css)
+                   then `NoMatch ""
+                   else if Cstruct.lenv css = 50_000 then `Done
+                   else `More);
+             ]
+             [ !!W.(rst_stream ~id:1l NoError) ]
+          @ grace_end);
+        (*
         test "Peer INITIAL_WINDOW_SIZE"
           ~settings:[ InitialWindowSize 19_000l ]
           ~streams:[ GET "/" ] test_peer_initial_window_size_setting;
-          *)
+        *)
       ]
   in
+
+  (* TODO: do some comments/docs *)
   Runner.run_groups ~sw ~net ~clock first_port
     [
       connection_preface;

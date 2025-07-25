@@ -94,3 +94,13 @@ let stream_error id code : unit matcher = function
 let timeout : unit matcher = function
   | Timeout -> Ok ()
   | _ -> Error "time delay before next frame"
+
+let pp_hum_short fmt =
+  let open Format in
+  function
+  | Frame frame -> fprintf fmt "%a" Frame.pp_hum_short frame
+  | Malformed -> fprintf fmt "Malformed Frame!"
+  | ValidationFailed _ -> fprintf fmt "Malformed Frame!"
+  | Magic -> fprintf fmt "MAGIC"
+  | EOF -> fprintf fmt "EOF"
+  | Timeout -> fprintf fmt "TIMEOUT"

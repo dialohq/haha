@@ -27,3 +27,4 @@ val ping : unit matcher
 val ping_p : string -> unit matcher
 val stream_error : int32 -> Error_code.t -> unit matcher
 val timeout : unit matcher
+val pp_hum_short : Format.formatter -> t -> unit

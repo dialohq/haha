@@ -25,15 +25,18 @@ let test_group ?(settings = []) ?(streams = []) ?(ignore = Ignore.nothing) label
 let run_test :
     await_event:(unit -> Event.t) ->
     writer:Buf_write.t ->
+    (Event.t -> bool) ->
     int ->
     int ->
     test ->
-    (unit, string list * Event.t) result =
- fun ~await_event:await_ev ~writer:writer' j i
+    (unit, string list) result =
+ fun ~await_event:await_ev ~writer:writer' group_ignore j i
      { branch; label; description; ignore = ign; _ } ->
+  let all_events = ref [] in
   let rec await_event () =
     let ev = await_ev () in
-    if ign ev then await_event () else ev
+    all_events := ev :: !all_events;
+    if ign ev || group_ignore ev then await_event () else ev
   in
   let writer =
     Writer.create ~writer:writer' ~hpack:(Hpack.Encoder.create 1000)
@@ -41,26 +44,38 @@ let run_test :
 
   let run = Branch.runner ~await_event ~writer in
   let res = run branch in
-  (match res with
-  | Ok () ->
-      Ocolor_format.printf "%i.%i. @{<grey>%s@}  @{<green;bold>[ PASS ]@}@." j
-        (i + 1) label
-  | Error (expected, received) ->
-      let reason = Util.make_msg expected received in
-      let open H2kit.Serializers.Make (Buf_write) in
-      write_goaway_frame ~debug_data:(Cstruct.of_string reason) 0l ProtocolError
-        writer';
-      Buf_write.flush writer';
-      Ocolor_format.printf "%i.%i. @{<grey>%s@}  @{<red>@{<bold>[ FAIL ]@}@}@."
-        j (i + 1) label;
-      Ocolor_format.printf "@{<red>  %s@}@.@." reason;
-      description
-      |> Option.iter @@ fun description ->
-         let desc =
-           Ocolor_format.asprintf "  @{<grey>@{<bold>> %s@}@}@."
-             (Ocolor_format.asprintf description)
-         in
-         Util.print_wrapped_sentence ~indent:6 desc);
+  begin
+    match res with
+    | Ok () ->
+        Ocolor_format.printf "%i.%i. %s  @{<green;bold>[ PASS ]@}@." j (i + 1)
+          label
+    | Error expected ->
+        let expected = String.concat " OR " expected in
+        let reason = Format.asprintf "Expected %s" expected in
+        let open H2kit.Serializers.Make (Buf_write) in
+        write_goaway_frame ~debug_data:(Cstruct.of_string reason) 0l
+          ProtocolError writer';
+        Buf_write.flush writer';
+        Ocolor_format.printf "%i.%i. %s  @{<red;bold>[ FAIL ]@}@." j (i + 1)
+          label;
+
+        print_newline ();
+        List.iter
+          (Ocolor_format.printf "  @{<hi_black;it>(recv) %a@}@."
+             Event.pp_hum_short)
+          List.(rev !all_events);
+        print_newline ();
+
+        Ocolor_format.printf "@{<red>  %s@}@.@." reason;
+        Option.iter
+          (fun description ->
+            let desc =
+              Ocolor_format.asprintf "  @{<grey>@{<bold>> %s@}@}@."
+                (Ocolor_format.asprintf description)
+            in
+            Util.print_wrapped_sentence ~indent:6 desc)
+          description
+  end;
   res
 
 open Eio
@@ -95,13 +110,8 @@ let run_groups :
                      Switch.run @@ fun sw ->
                      let flow, _ = Net.accept ~sw server_socket in
                      Buf_write.with_flow flow @@ fun writer ->
-                     Reader.run ~sw ~clock flow @@ fun await_ev ->
-                     let rec await_event () =
-                       let ev = await_ev () in
-                       if ign ev then await_event () else ev
-                     in
-
-                     run_test ~writer ~await_event group_i i test)
+                     Reader.run ~sw ~clock flow @@ fun await_event ->
+                     run_test ~writer ~await_event ign group_i i test)
                in
                let new_cases =
                  {

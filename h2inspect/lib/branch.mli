@@ -29,4 +29,4 @@ val runner :
   await_event:(unit -> Event.t) ->
   writer:Writer.t ->
   t ->
-  (unit, string list * Event.t) result
+  (unit, string list) result

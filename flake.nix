@@ -36,6 +36,9 @@
 
             alejandra
           ];
+          shellHook = ''
+            export PATH=$PATH:$(pwd)/_build/install/default/bin
+          '';
         };
       };
     });
