@@ -138,13 +138,54 @@ let pp_frame_payload formatter payload =
       fprintf formatter "    <%i bytes block>" (Bigstringaf.length headers)
   | Unknown (_, bs) -> fprintf formatter "    %s" (Bigstringaf.to_string bs)
 
-let pp_hum_exact formatter { frame_header; frame_payload } =
+let pp_hum_exact fmt { frame_header; frame_payload } =
   let open Format in
-  fprintf formatter "%s@." (FrameType.to_string frame_header.frame_type);
+  fprintf fmt "%s@." (FrameType.to_string frame_header.frame_type);
   List.iter
-    (fun flag_str -> fprintf formatter "    + %s@." flag_str)
+    (fun flag_str -> fprintf fmt "    + %s@." flag_str)
     (Flags.to_strings frame_header.flags);
-  pp_frame_payload formatter frame_payload
+  pp_frame_payload fmt frame_payload
+
+let pp_frame_payload_short ?(pp_sep = fun fmt () -> Format.fprintf fmt "; ") ()
+    fmt =
+  let open Format in
+  function
+  | Data cs -> fprintf fmt "<%i bytes>" (Cstruct.length cs)
+  | Headers headers ->
+      fprintf fmt "<%i bytes block>" (Bigstringaf.length headers)
+  | Priority -> ()
+  | RSTStream ec -> fprintf fmt "%s" (Error_code.to_string ec)
+  | Settings settings ->
+      List.iter
+        (function
+          | Settings.HeaderTableSize v -> fprintf fmt "HEADER_TABLE_SIZE=%i " v
+          | EnablePush v -> fprintf fmt "ENABLE_PUSH=%i " v
+          | MaxConcurrentStreams v ->
+              fprintf fmt "MAX_CONCURRENT_STREAMS=%li " v
+          | InitialWindowSize v -> fprintf fmt "INITIAL_WINDOW_SIZE=%li " v
+          | MaxFrameSize v -> fprintf fmt "MAX_FRAME_SIZE=%i " v
+          | MaxHeaderListSize v -> fprintf fmt "MAX_HEADER_LIST_SIZE=%i " v)
+        settings
+  | PushPromise (stream_id, headers) ->
+      fprintf fmt "%li%a<%i bytes block>" stream_id pp_sep ()
+        (Bigstringaf.length headers)
+  | Ping bs -> fprintf fmt "\"%s\"" (Cstruct.to_string bs)
+  | GoAway (stream_id, ec, debug_data) ->
+      fprintf fmt "%li%a%s%a\"%s\"" stream_id pp_sep ()
+        (Error_code.to_string ec) pp_sep ()
+        (Bigstringaf.to_string debug_data)
+  | WindowUpdate ws -> fprintf fmt "%li" ws
+  | Continuation headers ->
+      fprintf fmt "<%i bytes block>" (Bigstringaf.length headers)
+  | Unknown (_, bs) -> fprintf fmt "%s" (Bigstringaf.to_string bs)
+
+let pp_hum_short fmt { frame_header; frame_payload } =
+  let open Format in
+  fprintf fmt "%s[%li] %a"
+    (FrameType.to_string frame_header.frame_type)
+    frame_header.stream_id
+    (pp_frame_payload_short ())
+    frame_payload
 
 let validate_header
     ({ frame_type; payload_length; flags; stream_id } : frame_header) :

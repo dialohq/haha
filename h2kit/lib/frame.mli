@@ -68,3 +68,4 @@ val pp_hum : Format.formatter -> t -> unit
 (** Human-readable formatter for the [t] type. Useful for debbugging. *)
 
 val pp_hum_exact : Format.formatter -> t -> unit
+val pp_hum_short : Format.formatter -> t -> unit
