@@ -84,7 +84,7 @@ let run :
       Fiber.first
         (fun () -> Promise.await stop_promise)
         (fun () ->
-          let buffer = Cstruct.create Settings.default.max_frame_size in
+          let buffer = Cstruct.create 100_000 in
 
           let rec aux state =
             let l, next = read ~flow ~buffer ~parser state in

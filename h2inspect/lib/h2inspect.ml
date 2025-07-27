@@ -640,17 +640,16 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
              ]
              [ !!W.(rst_stream ~id:1l NoError) ]
           @ grace_end);
-        (* FIX: test below *)
         test "MAX_FRAME_SIZE"
           ~streams:[ POST ("/", 50_000) ]
           (with_preface ~settings:[ MaxFrameSize 20_000 ]
              [
                ??headers;
                many_match data (fun css ->
-                   if
-                     not
-                       (List.for_all (fun cs -> Cstruct.length cs < 20_000) css)
-                   then `NoMatch ""
+                   if List.for_all (fun cs -> Cstruct.length cs < 20_000) css
+                   then
+                     `NoMatch
+                       "DATA frames with payload size no higher than 20000"
                    else if Cstruct.lenv css = 50_000 then `Done
                    else `More);
              ]
