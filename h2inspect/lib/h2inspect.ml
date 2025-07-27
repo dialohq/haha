@@ -557,113 +557,78 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
       ]
   in
 
-  (*
-  let test_peer_initial_window_size_setting =
-    let setup =
-      register_ignore I.(frame_type WindowUpdate)
-      *> magic
-      *> ( settings >>| fun settings ->
-           if
-             not
-               (List.exists
-                  (Settings.equal_setting (InitialWindowSize 19_000l))
-                  settings)
-           then
-             fail
-               "Assumed INITIAL_WINDOW_SIZE to be set to 19000 by the tested \
-                peer" )
-      *> (W.settings []
-         ++ W.settings ~flags:Flags.(default_flags |> set_ack) []
-         +> settings_ack)
-      *> headers
-    in
-
-    let payload =
-      let cs = Cstruct.create 10_000 in
-      Cstruct.memset cs 0;
-      cs
-    in
-
-    let expectation =
-      W.data ~id:1l payload ++ W.data ~id:1l payload
-      +> conn_error FlowControlError
-    in
-
-    setup *> expectation *> eof
-  in
-  *)
   let settings_impact : test_group =
     test_group "Settings impact"
       ~ignore:Ignore.(frame_type WindowUpdate)
       [
         test "MAX_CONCURRENT_STREAMS"
           ~streams:[ GET "/"; GET "/"; GET "/" ]
-          (with_preface
-             ~settings:[ MaxConcurrentStreams 2l ]
-             [ ??headers; ??headers ]
-             [
-               ??timeout;
-               !!W.(settings [ MaxConcurrentStreams 3l ]);
-               ??settings_ack;
-               ??headers;
-               !!W.(rst_stream ~id:1l NoError);
-               !!W.(rst_stream ~id:3l NoError);
-               !!W.(rst_stream ~id:5l NoError);
-             ]
-          @ grace_end);
+          begin
+            with_preface
+              ~settings:[ MaxConcurrentStreams 2l ]
+              [ ??headers; ??headers ]
+              [
+                ??timeout;
+                !!W.(settings [ MaxConcurrentStreams 3l ]);
+                ??settings_ack;
+                ??headers;
+                !!W.(rst_stream ~id:1l NoError);
+                !!W.(rst_stream ~id:3l NoError);
+                !!W.(rst_stream ~id:5l NoError);
+              ]
+            @ grace_end
+          end;
         test "INITIAL_WINDOW_SIZE"
           ~streams:[ POST ("/", 20_000) ]
-          (with_preface
-             ~settings:[ InitialWindowSize 19_000l ]
-             [
-               ??headers;
-               many_match data (fun css ->
-                   let len = Cstruct.lenv css in
-                   if len = 19_000 then `Done
-                   else if len < 19_000 then `More
-                   else
-                     `NoMatch
-                       (Format.asprintf
-                          "exactly 19000 bytes of data in DATA frames, but got \
-                           %i"
-                          len));
-               !!W.(settings [ InitialWindowSize 20_000l ]);
-               ??settings_ack;
-               many_match data (fun css ->
-                   let len = Cstruct.lenv css in
-                   if len = 1_000 then `Done
-                   else if len < 1_000 then `More
-                   else
-                     `NoMatch
-                       (Format.asprintf
-                          "1000 bytes of data in DATA frames, but got %i" len));
-             ]
-             [ !!W.(rst_stream ~id:1l NoError) ]
-          @ grace_end);
+          begin
+            with_preface
+              ~settings:[ InitialWindowSize 19_000l ]
+              [
+                ??headers;
+                many_match data (fun css ->
+                    let len = Cstruct.lenv css in
+                    if len = 19_000 then `Done
+                    else if len < 19_000 then `More
+                    else
+                      `NoMatch
+                        (Format.asprintf
+                           "exactly 19000 bytes of data in DATA frames, but \
+                            got %i"
+                           len));
+                !!W.(settings [ InitialWindowSize 20_000l ]);
+                ??settings_ack;
+                many_match data (fun css ->
+                    let len = Cstruct.lenv css in
+                    if len = 1_000 then `Done
+                    else if len < 1_000 then `More
+                    else
+                      `NoMatch
+                        (Format.asprintf
+                           "1000 bytes of data in DATA frames, but got %i" len));
+              ]
+              [ !!W.(rst_stream ~id:1l NoError) ]
+            @ grace_end
+          end;
         test "MAX_FRAME_SIZE"
           ~streams:[ POST ("/", 50_000) ]
-          (with_preface ~settings:[ MaxFrameSize 20_000 ]
-             [
-               ??headers;
-               many_match data (fun css ->
-                   if List.for_all (fun cs -> Cstruct.length cs < 20_000) css
-                   then
-                     `NoMatch
-                       "DATA frames with payload size no higher than 20000"
-                   else if Cstruct.lenv css = 50_000 then `Done
-                   else `More);
-             ]
-             [ !!W.(rst_stream ~id:1l NoError) ]
-          @ grace_end);
-        (*
-        test "Peer INITIAL_WINDOW_SIZE"
-          ~settings:[ InitialWindowSize 19_000l ]
-          ~streams:[ GET "/" ] test_peer_initial_window_size_setting;
-        *)
+          begin
+            with_preface ~settings:[ MaxFrameSize 20_000 ]
+              [
+                ??headers;
+                many_match data (fun css ->
+                    if List.for_all (fun cs -> Cstruct.length cs < 20_000) css
+                    then
+                      `NoMatch
+                        "DATA frames with payload size no higher than 20000"
+                    else if Cstruct.lenv css = 50_000 then `Done
+                    else `More);
+              ]
+              [ !!W.(rst_stream ~id:1l NoError) ]
+            @ grace_end
+          end;
       ]
   in
 
-  (* TODO: do some comments/docs *)
   Runner.run_groups ~sw ~net ~clock first_port
     [
       connection_preface;
