@@ -3,7 +3,12 @@ open H2kit
 type t
 
 val ( ++ ) : (t -> unit) -> (t -> unit) -> t -> unit
-val create : writer:Buf_write.t -> hpack:Hpack.Encoder.t -> t
+
+val create :
+  writer:Buf_write.t ->
+  record_event:(Event.t -> unit) ->
+  hpack:Hpack.Encoder.t ->
+  t
 
 val settings :
   ?flags:Flags.t -> ?len:int -> ?id:int32 -> Settings.setting list -> t -> unit

@@ -2,4 +2,4 @@
  (names conformance_client conformance_server)
  (package haha)
  (public_names conformance_client conformance_server)
- (libraries haha h2inspect yojson))
+ (libraries haha h2inspect))

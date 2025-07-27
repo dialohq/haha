@@ -33,13 +33,15 @@ let run_test :
  fun ~await_event:await_ev ~writer:writer' group_ignore j i
      { branch; label; description; ignore = ign; _ } ->
   let all_events = ref [] in
+  let record_event ev = all_events := `Send ev :: !all_events in
   let rec await_event () =
     let ev = await_ev () in
-    all_events := ev :: !all_events;
+    all_events := `Recv ev :: !all_events;
     if ign ev || group_ignore ev then await_event () else ev
   in
   let writer =
-    Writer.create ~writer:writer' ~hpack:(Hpack.Encoder.create 1000)
+    Writer.create ~writer:writer' ~record_event
+      ~hpack:(Hpack.Encoder.create 1000)
   in
 
   let run = Branch.runner ~await_event ~writer in
@@ -61,8 +63,13 @@ let run_test :
 
         print_newline ();
         List.iter
-          (Ocolor_format.printf "  @{<hi_black;it>(recv) %a@}@."
-             Event.pp_hum_short)
+          (function
+            | `Recv ev ->
+                Ocolor_format.printf "  @{<hi_black;it>(recv) %a@}@."
+                  Event.pp_hum_short ev
+            | `Send ev ->
+                Ocolor_format.printf "  @{<hi_black;it>(send) %a@}@."
+                  Event.pp_hum_short ev)
           List.(rev !all_events);
         print_newline ();
 
