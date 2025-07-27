@@ -1,8 +1,6 @@
 type node
 and t = node list
 
-(* {2 Node makers } *)
-
 val many_match :
   'a Event.matcher ->
   ('a list -> [ `Done | `More | `NoMatch of string ]) ->
@@ -11,6 +9,12 @@ val many_match :
 val many : 'a Event.matcher -> node
 val single : 'a Event.matcher -> node
 val ( ?? ) : 'a Event.matcher -> node
+
+val ( ??: ) :
+  'a Event.matcher ->
+  ('a list -> [ `Done | `More | `NoMatch of string ]) ->
+  node
+
 val write : (Writer.t -> unit) -> node
 val ( !! ) : (Writer.t -> unit) -> node
 val multi : t list -> node

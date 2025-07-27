@@ -24,6 +24,7 @@ let single matcher =
   many_match matcher (fun l -> if List.length l > 0 then `Done else `More)
 
 let ( ?? ) = single
+let ( ??: ) = many_match
 let write x = Write x
 let ( !! ) = write
 let multi x = Multi x

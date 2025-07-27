@@ -585,7 +585,7 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
               ~settings:[ InitialWindowSize 19_000l ]
               [
                 ??headers;
-                many_match data (fun css ->
+                ??:data (fun css ->
                     let len = Cstruct.lenv css in
                     if len = 19_000 then `Done
                     else if len < 19_000 then `More
@@ -597,7 +597,7 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
                            len));
                 !!W.(settings [ InitialWindowSize 20_000l ]);
                 ??settings_ack;
-                many_match data (fun css ->
+                ??:data (fun css ->
                     let len = Cstruct.lenv css in
                     if len = 1_000 then `Done
                     else if len < 1_000 then `More
@@ -615,7 +615,7 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
             with_preface ~settings:[ MaxFrameSize 20_000 ]
               [
                 ??headers;
-                many_match data (fun css ->
+                ??:data (fun css ->
                     if List.for_all (fun cs -> Cstruct.length cs < 20_000) css
                     then
                       `NoMatch
