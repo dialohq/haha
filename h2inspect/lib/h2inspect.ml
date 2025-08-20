@@ -120,8 +120,8 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
             ]
           @ grace_end);
         test
-          "Server sends a SETTINGS frame with PUSH_PROMISE setting set to \
-           value > 1"
+          "Server sends a SETTINGS frame with ENABLE_PUSH setting set to value \
+           > 1"
           ~desc:
             {|[Section 6.5.2.] "SETTINGS_ENABLE_PUSH (0x02): [...] Any value other than 0 or 1 MUST be treated as a connection error (Section 5.4.1) of type PROTOCOL_ERROR."|}
           (conn_only
@@ -131,8 +131,8 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
               single eof;
             ]);
         test
-          "Server sends a SETTINGS frame with PUSH_PROMISE setting set to \
-           value 1"
+          "Server sends a SETTINGS frame with ENABLE_PUSH setting set to value \
+           1"
           ~desc:
             {|[Section 6.5.2.] "SETTINGS_ENABLE_PUSH (0x02): [...] A server MUST NOT explicitly set this value to 1. [...] A client MUST treat receipt of a SETTINGS frame with SETTINGS_ENABLE_PUSH set to 1 as a connection error (Section 5.4.1) of type PROTOCOL_ERROR."|}
           (conn_only
