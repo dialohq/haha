@@ -74,7 +74,7 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
           "Server sends a SETTINGS frame with ACK flag and payload length > 0"
           ~desc:
             {|ACK (0x01): "[...] Receipt of a SETTINGS frame with the ACK flag set and a length field value other than 0 MUST be treated as a connection error (Section 5.4.1) of type FRAME_SIZE_ERROR."|}
-          (preface
+          (conn_only
           @ [
               write
                 W.(
