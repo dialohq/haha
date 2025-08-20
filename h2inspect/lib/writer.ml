@@ -51,14 +51,14 @@ let unknown_setting { writer; record_event; _ } =
   let frame =
     {
       Frame.frame_header;
-      frame_payload = Settings [ EnablePush 0; EnablePush 0 ];
+      frame_payload = Settings [ MaxConcurrentStreams 100l ];
     }
   in
 
   record_event (Frame frame);
 
   LowLevel.write_frame_header frame_header writer;
-  LowLevel.write_settings_frame_payload [ EnablePush 0 ] writer;
+  LowLevel.write_settings_frame_payload [ MaxConcurrentStreams 100l ] writer;
   Buf_write.BE.write_uint16 writer 7;
   Buf_write.BE.write_uint32 writer 10l
 

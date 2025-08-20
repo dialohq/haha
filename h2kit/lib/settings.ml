@@ -80,3 +80,18 @@ let to_settings_list settings =
     else settings_list
   in
   settings_list
+
+let validate ~(peer : [ `Client | `Server ]) =
+  let rec aux acc = function
+    | [] -> acc
+    | _ when not acc -> false
+    | InitialWindowSize x :: rest ->
+        (* we check for upper bound (2^31-1) by checking if the OCaml's int32 is negative *)
+        if x > 0l then aux acc rest else false
+    | MaxFrameSize x :: rest ->
+        if x >= 16384 && x <= 16_777_215 then aux acc rest else false
+    | EnablePush _ :: _ when peer = `Client -> false
+    | EnablePush x :: rest -> if x = 0 || x = 1 then aux acc rest else false
+    | _ :: rest -> aux acc rest
+  in
+  aux true

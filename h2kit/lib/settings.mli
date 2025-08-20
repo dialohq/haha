@@ -24,3 +24,4 @@ val serialize_key : setting -> int
 val setting_to_string : setting -> string
 val update_with_list : t -> setting list -> t
 val to_settings_list : t -> setting list
+val validate : peer:[ `Client | `Server ] -> setting list -> bool

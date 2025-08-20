@@ -80,7 +80,7 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
                 W.(
                   settings
                     ~flags:Flags.(default_flags |> set_ack)
-                    [ EnablePush 0 ]);
+                    [ MaxConcurrentStreams 100l ]);
               single (goaway_code FrameSizeError);
               single eof;
             ]);
@@ -108,9 +108,6 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
                 W.(
                   settings
                     [
-                      (* TODO: uncomment later *)
-                      (* HeaderTableSize 5120; *)
-                      EnablePush 0;
                       MaxConcurrentStreams 2000l;
                       InitialWindowSize 131_070l;
                       MaxFrameSize 163_840;
@@ -171,7 +168,7 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
             {|[Section 6.5.2.] "SETTINGS_MAX_FRAME_SIZE (0x05): [...] The initial value is 214 (16,384) octets. The value advertised by an endpoint MUST be between this initial value and the maximum allowed frame size (2^24-1 or 16,777,215 octets), inclusive. Values outside this range MUST be treated as a connection error (Section 5.4.1) of type PROTOCOL_ERROR."|}
           (conn_only
           @ [
-              !!W.(settings [ MaxFrameSize 16_777_215 ]);
+              !!W.(settings [ MaxFrameSize 16_777_216 ]);
               ??(goaway_code ProtocolError);
               ??eof;
             ]);

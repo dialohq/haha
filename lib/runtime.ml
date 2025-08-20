@@ -221,27 +221,31 @@ let frame_handler ~process_complete_headers (frame : Frame.t)
   in
 
   let process_settings_frame { Frame.flags; _ } settings_list =
-    match (state.settings_status, Flags.test_ack flags) with
-    | _, false -> (
-        match State.update_state_with_peer_settings state settings_list with
-        | Error msg -> connection_error Error_code.InternalError msg
-        | Ok new_state ->
-            write_settings_ack state.writer;
-            step InProgress new_state)
-    | Syncing new_settings, true ->
-        let new_state =
-          {
-            state with
-            local_settings =
-              Settings.(update_with_list state.local_settings new_settings);
-            settings_status = Idle;
-          }
-        in
+    if state.validate_settings settings_list then
+      match (state.settings_status, Flags.test_ack flags) with
+      | _, false -> (
+          match State.update_state_with_peer_settings state settings_list with
+          | Error msg -> connection_error Error_code.InternalError msg
+          | Ok new_state ->
+              write_settings_ack state.writer;
+              step InProgress new_state)
+      | Syncing new_settings, true ->
+          let new_state =
+            {
+              state with
+              local_settings =
+                Settings.(update_with_list state.local_settings new_settings);
+              settings_status = Idle;
+            }
+          in
 
-        step InProgress new_state
-    | Idle, true ->
-        connection_error Error_code.ProtocolError
-          "Unexpected ACK flag in SETTINGS frame."
+          step InProgress new_state
+      | Idle, true ->
+          connection_error Error_code.ProtocolError
+            "Unexpected ACK flag in SETTINGS frame."
+    else
+      connection_error Error_code.ProtocolError
+        "Value of ENABLE_PUSH settings should equal 0 or 1"
   in
 
   let process_rst_stream_frame { Frame.stream_id; _ } error_code =

@@ -5,6 +5,7 @@ type 'context final_contexts = (Stream_identifier.t * 'context) list
 type 'peer t = {
   peer_settings : Settings.t;
   local_settings : Settings.t;
+  validate_settings : Settings.setting list -> bool;
   settings_status : settings_sync;
   headers_state : headers_state;
   streams : 'peer Streams.t;
@@ -19,9 +20,10 @@ type 'peer t = {
   prev_iter_ignore : Stream_identifier.t list;
 }
 
-let initial ~streams ~writer ~peer_settings ~user_settings =
+let initial ~streams ~writer ~peer_settings ~user_settings ~validate_settings =
   {
     peer_settings;
+    validate_settings;
     writer;
     hpack_decoder =
       Hpack.Decoder.create
@@ -47,11 +49,13 @@ let initial ~streams ~writer ~peer_settings ~user_settings =
 
 let initial_client ~writer ~peer_settings ~user_settings =
   initial
+    ~validate_settings:(Settings.validate ~peer:`Client)
     ~streams:(Streams.initial_client ())
     ~writer ~peer_settings ~user_settings
 
 let initial_server ~writer ~peer_settings ~user_settings =
   initial
+    ~validate_settings:(Settings.validate ~peer:`Server)
     ~streams:(Streams.initial_server ())
     ~writer ~peer_settings ~user_settings
 
