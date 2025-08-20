@@ -100,7 +100,7 @@ let connection_handler :
     match step with
     | { state = End; _ } -> ()
     | { state = Error err; _ } -> error_handler err
-    | { state = InProgress next; _ } -> loop (next [])
+    | { state = InProgress next; _ } -> (loop [@tailcall]) (next [])
   in
 
   loop initial_step

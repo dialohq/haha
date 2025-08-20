@@ -76,9 +76,9 @@ let update_state_with_peer_settings (t : _ t) settings_list =
             (Hpack.Decoder.set_capacity state.hpack_decoder x)
         with
         | Error _ -> Error "error updating HPack decoder capacity"
-        | Ok state -> loop l state)
-    | MaxFrameSize _ :: l -> loop l state
-    | MaxHeaderListSize _ :: l -> loop l state
+        | Ok state -> (loop [@tailcall]) l state)
+    | MaxFrameSize _ :: l -> (loop [@tailcall]) l state
+    | MaxHeaderListSize _ :: l -> (loop [@tailcall]) l state
     | _ :: l -> loop l state
   in
 
@@ -91,10 +91,10 @@ let update_state_with_local_settings (t : _ t) settings_list =
     | [] -> Ok state
     | Settings.HeaderTableSize x :: l ->
         Hpack.Encoder.set_capacity state.writer.hpack_encoder x;
-        loop l state
-    | MaxFrameSize _ :: l -> loop l state
-    | MaxHeaderListSize _ :: l -> loop l state
-    | _ :: l -> loop l state
+        (loop [@tailcall]) l state
+    | MaxFrameSize _ :: l -> (loop [@tailcall]) l state
+    | MaxHeaderListSize _ :: l -> (loop [@tailcall]) l state
+    | _ :: l -> (loop [@tailcall]) l state
   in
 
   loop settings_list

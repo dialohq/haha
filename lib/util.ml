@@ -19,20 +19,21 @@ let split_cstructs cstructs max_bytes =
       | c :: rest ->
           let len = Cstruct.length c in
           if len <= max_bytes - current_size then
-            build_group rest (c :: current_group) (current_size + len) max_bytes
+            (build_group [@tailcall]) rest (c :: current_group)
+              (current_size + len) max_bytes
           else
             let take = max_bytes - current_size in
             let s1 = Cstruct.sub c 0 take in
             let s2 = Cstruct.sub c take (len - take) in
             (List.rev (s1 :: current_group), s2 :: rest)
   in
-  let rec build_all_groups remaining =
-    if remaining = [] then []
+  let rec build_all_groups acc remaining =
+    if remaining = [] then acc
     else
       let group, new_remaining = build_group remaining [] 0 max_bytes in
-      group :: build_all_groups new_remaining
+      (build_all_groups [@tailcall]) (group :: acc) new_remaining
   in
-  build_all_groups cstructs
+  build_all_groups [] cstructs
 
 let merge_thunks f1 f2 : unit -> unit =
  fun () ->

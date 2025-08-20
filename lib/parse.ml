@@ -53,7 +53,7 @@ let read_frames ({ Cstruct.len = total_len; _ } as cs) =
     | `Complete (consumed, frame) ->
         let new_results = results @ [ frame ] in
         if total_consumed + consumed < total_len then
-          loop_frames
+          (loop_frames [@tailcall])
             (Cstruct.shift cs consumed)
             new_results
             (total_consumed + consumed)
