@@ -79,8 +79,13 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
         (parse_loop [@tailcall]) consumed
           (total_consumed + consumed)
           (total_read + read_len) (Some continue)
-    | `Complete (consumed, { Frame.frame_payload = Settings settings_list; _ })
-      ->
+    | `Complete
+        ( consumed,
+          {
+            Frame.frame_payload = Settings settings_list;
+            frame_header = { flags; _ };
+          } )
+      when not (Flags.test_ack flags) ->
         let peer_settings = Settings.(update_with_list default settings_list) in
         let open Writer in
         let writer =
