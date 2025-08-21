@@ -207,10 +207,11 @@ let read_data :
       let send_update = Writer.write_window_update writer id in
       match state with
       | Closed Terminating -> Ok (State state)
-      | Idle | HalfClosed (Remote _) ->
+      | Idle ->
           Error
-            (conn_prot_err StreamClosed
+            (conn_prot_err ProtocolError
                "DATA frame received on closed stream! Stream ID %li" id)
+      | HalfClosed (Remote _) -> Error (stream_prot_err id StreamClosed)
       | Reserved _ ->
           Error
             (conn_prot_err ProtocolError
@@ -594,15 +595,17 @@ let receive_trailers :
           on_close new_context;
           Ok (State (Closed Terminated))
       | Reserved _ -> Error (stream_prot_err id Error_code.StreamClosed)
-      | Idle -> Error (stream_prot_err id Error_code.ProtocolError)
-      | Closed Terminated | HalfClosed (Remote _) ->
+      | Idle ->
+          Error
+            (conn_prot_err ProtocolError
+               "HEADERS frame received on idle stream! Stream ID %li" id)
+      | Closed Terminated ->
           Error
             (conn_prot_err Error_code.StreamClosed
                "HEADERS received on a closed stream")
+      | HalfClosed (Remote _) -> Error (stream_prot_err id StreamClosed)
       | Open _ | HalfClosed (Local _) ->
-          Error
-            (conn_prot_err Error_code.ProtocolError
-               "received first HEADERS in stream %li with no pseudo-headers" id)
+          Error (stream_prot_err id Error_code.ProtocolError)
   in
 
   update_stream_state ~writer id f t
@@ -811,9 +814,7 @@ let receive_response :
           Ok new_stream_state
       | Open { readers = BodyReader _; _ }, _
       | HalfClosed (Local { readers = BodyReader _; _ }), _ ->
-          Error
-            (conn_prot_err Error_code.ProtocolError
-               "unexpected multiple non-informational HEADERS on stream %li" id)
+          Error (stream_prot_err id ProtocolError)
       | Idle, _ ->
           Error
             (conn_prot_err Error_code.ProtocolError
