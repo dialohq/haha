@@ -1,9 +1,9 @@
 open Runtime
 open Types
 
-type iter_input = Shutdown
 type state = Streams.server_peer State.t
-type interation = iter_input Types.iteration
+(* type iter_input = Shutdown *)
+(* type interation = iter_input Types.iteration *)
 
 let process_complete_headers :
     Reqd.handler -> state -> Frame.frame_header -> Headers.t -> state step =
@@ -36,7 +36,7 @@ let user_goaway_handler ~f =
  fun () ->
   f ();
   fun state ->
-    Writer.write_goaway state.State.writer
+    Writer.goaway state.State.writer
       (Streams.last_peer_stream state.streams)
       Error_code.NoError;
     { iter_result = InProgress; state = { state with shutdown = true } }
@@ -67,7 +67,7 @@ let connection_handler :
   let initial_state_result =
     Eio.Flow.read_exact socket (Cstruct.sub receive_buffer 0 mstring_len);
 
-    match Parse.magic_parse receive_buffer.buffer ~off:0 ~len:mstring_len with
+    match Parser.magic_parse receive_buffer.buffer ~off:0 ~len:mstring_len with
     | Error _ as err -> err
     | Ok _ -> (
         match
@@ -95,7 +95,7 @@ let connection_handler :
       ~initial_state_result ~input_handler socket
   in
 
-  let rec loop : interation -> unit =
+  let rec loop =
    fun step ->
     match step with
     | { state = End; _ } -> ()

@@ -22,10 +22,10 @@ let handle_connection_error ?(last_peer_stream = Int32.zero) ~writer error =
   codemsg_opt
   |> Option.iter @@ fun (code, msg) ->
      let debug_data = Cstruct.of_string ~off:0 ~len:(String.length msg) msg in
-     write_goaway ~debug_data writer last_peer_stream code
+     goaway ~debug_data writer last_peer_stream code
 
 let handle_stream_error (state : _ State.t) stream_id code =
-  write_rst_stream state.writer stream_id code;
+  rst_stream state.writer stream_id code;
   {
     state with
     streams =
@@ -68,7 +68,7 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
     in
 
     match
-      Parse.parse_frame
+      Parser.parse_frame
         (Cstruct.sub receive_buffer read_off read_len)
         continue_opt
     with
@@ -94,12 +94,12 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
         in
 
         (match user_settings with
-        | Some user_settings -> write_settings writer user_settings
+        | Some user_settings -> settings writer user_settings
         | None -> ());
-        write_settings_ack writer;
-        write_window_update writer Stream_identifier.connection
-          Flow_control.initial_increment;
-        write writer socket
+        settings_ack writer;
+        window_update writer Stream_identifier.connection
+          ~increment:Flow_control.initial_increment;
+        flush writer socket
         |> Result.map_error (fun exn -> Error.Exn exn)
         |> Result.map (fun () ->
                let rest_off = read_off + total_consumed + consumed in
@@ -130,7 +130,8 @@ let process_data_frame : 'a t -> Frame.frame_header -> Cstruct.t -> 'a t step =
           flow =
             Flow_control.receive_data state.flow
               ~send_update:
-                (write_window_update state.writer Stream_identifier.connection)
+                (window_update state.writer
+                   ~increment:Stream_identifier.connection)
               (Cstruct.length data |> Int32.of_int);
         }
   | Error err -> { iter_result = ConnectionError err; state }
@@ -227,7 +228,7 @@ let frame_handler ~process_complete_headers (frame : Frame.t)
           match State.update_state_with_peer_settings state settings_list with
           | Error msg -> connection_error Error_code.InternalError msg
           | Ok new_state ->
-              write_settings_ack state.writer;
+              settings_ack state.writer;
               step InProgress new_state)
       | Syncing new_settings, true ->
           let new_state =
@@ -295,7 +296,7 @@ let frame_handler ~process_complete_headers (frame : Frame.t)
       | Data payload -> process_data_frame frame_header payload
       | Settings payload -> process_settings_frame frame_header payload
       | Ping bs ->
-          write_ping state.writer bs ~ack:true;
+          ping state.writer bs ~ack:true;
           step InProgress state
       | Headers payload -> process_headers_frame frame_header payload
       | Continuation payload -> process_continuation_frame frame_header payload
@@ -312,7 +313,7 @@ let frame_handler ~process_complete_headers (frame : Frame.t)
          block"
 
 let parse_and_handle ~frame_handler (state : _ State.t) cs =
-  match Parse.read_frames cs state.parse_state with
+  match Parser.read_frames cs state.parse_state with
   | Ok (consumed, frames, continue_opt) ->
       let state_with_parse = { state with parse_state = continue_opt } in
       let next_step =
@@ -381,7 +382,7 @@ let finalize_iteration :
         ~last_peer_stream:(Streams.last_peer_stream state.streams)
         ~writer:state.writer err
   | _ -> ());
-  let write_result = write state.writer socket in
+  let write_result = flush state.writer socket in
   let state = do_flush state |> update_closing_streams in
   let active_streams = active_streams state in
 
@@ -449,8 +450,8 @@ let start :
         create ~header_table_size:Settings.default.header_table_size
           Settings.default.max_frame_size
       in
-      handle_connection_error ~writer err;
-      write writer socket |> ignore;
+     handle_connection_error ~writer err;
+      flush writer socket |> ignore;
       { active_streams = 0; state = Error err }
   | Ok (initial_state, rest_to_parse) ->
       if Cstruct.length rest_to_parse > 0 then

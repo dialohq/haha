@@ -13,7 +13,7 @@ type 'peer t = {
   hpack_decoder : Hpack.Decoder.t;
   shutdown : bool;
   writer : Writer.t;
-  parse_state : Parse.continue option;
+  parse_state : Parser.continue option;
   flow : Flow_control.t;
   read_off : int;
   flush_thunk : unit -> unit;
@@ -94,7 +94,7 @@ let update_state_with_local_settings (t : _ t) settings_list =
     match list with
     | [] -> Ok state
     | Settings.HeaderTableSize x :: l ->
-        Hpack.Encoder.set_capacity state.writer.hpack_encoder x;
+        Writer.set_encoder_capacity state.writer x;
         (loop [@tailcall]) l state
     | MaxFrameSize _ :: l -> (loop [@tailcall]) l state
     | MaxHeaderListSize _ :: l -> (loop [@tailcall]) l state

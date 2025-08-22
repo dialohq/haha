@@ -35,9 +35,7 @@ let input_handler : state -> iter_input -> state =
     invalid_arg "HTTP/2 iteration: cannot pass inputs after Shutdown";
   match input with
   | Shutdown ->
-      Writer.write_goaway writer
-        (Streams.last_peer_stream streams)
-        Error_code.NoError;
+      Writer.goaway writer (Streams.last_peer_stream streams) Error_code.NoError;
       let new_state = { state with shutdown = true } in
       new_state
   | Request request ->
@@ -54,11 +52,11 @@ let connect : 'c. ?config:Settings.t -> _ Eio.Resource.t -> iteration =
   let receive_buffer = Cstruct.create (9 + config.max_frame_size) in
   let user_settings = config in
 
-  Writer.write_connection_preface initial_writer;
-  Writer.write_settings initial_writer user_settings;
+  Writer.connection_preface initial_writer;
+  Writer.settings initial_writer user_settings;
 
   let initial_state_result =
-    match Writer.write initial_writer socket with
+    match Writer.flush initial_writer socket with
     | Ok () -> (
         match process_preface_settings ~socket ~receive_buffer () with
         | Error _ as err -> err
