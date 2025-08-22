@@ -23,15 +23,16 @@ let test_group ?(settings = []) ?(streams = []) ?(ignore = Ignore.nothing) label
   { label; settings; streams; tests; ignore }
 
 let run_test :
+    clock:float Eio.Time.clock_ty Eio.Resource.t ->
     await_event:(unit -> Event.t) ->
     writer:Buf_write.t ->
+    float ->
+    string ->
     (Event.t -> bool) ->
-    int ->
-    int ->
     test ->
     (unit, string list) result =
- fun ~await_event:await_ev ~writer:writer' group_ignore j i
-     { branch; label; description; ignore = ign; _ } ->
+ fun ~clock ~await_event:await_ev ~writer:writer' start_time group_label
+     group_ignore { branch; label; description; ignore = ign; _ } ->
   let all_events = ref [] in
   let record_event ev = all_events := `Send ev :: !all_events in
   let rec await_event () =
@@ -46,11 +47,10 @@ let run_test :
 
   let run = Branch.runner ~await_event ~writer in
   let res = run branch in
+  let time = (Eio.Time.now clock -. start_time) *. 1000. in
   begin
     match res with
-    | Ok () ->
-        Ocolor_format.printf "%i.%i. %s  @{<green;bold>[ PASS ]@}@." j (i + 1)
-          label
+    | Ok () -> Util.print_success ~group:group_label ~test:label ~time
     | Error expected ->
         let expected = String.concat " OR " expected in
         let reason = Format.asprintf "Expected %s" expected in
@@ -58,8 +58,7 @@ let run_test :
         write_goaway_frame ~debug_data:(Cstruct.of_string reason) 0l
           ProtocolError writer';
         Buf_write.flush writer';
-        Ocolor_format.printf "%i.%i. %s  @{<red;bold>[ FAIL ]@}@." j (i + 1)
-          label;
+        Util.print_failure ~group:group_label ~test:label ~time;
 
         print_newline ();
         List.iter
@@ -97,7 +96,7 @@ let run_groups :
  fun ~sw ~net ~clock first_port groups ->
   let rec aux results group_i port cases = function
     | [] -> (cases, results)
-    | { label = _; tests; streams; settings; ignore = ign } :: rest ->
+    | { label; tests; streams; settings; ignore = ign } :: rest ->
         let rec accept :
             _ result Promise.or_exn list ->
             Case.t list ->
@@ -114,11 +113,12 @@ let run_groups :
                in
                let v =
                  Fiber.fork_promise ~sw (fun () ->
+                     let start = Time.now clock in
                      Switch.run @@ fun sw ->
                      let flow, _ = Net.accept ~sw server_socket in
                      Buf_write.with_flow flow @@ fun writer ->
                      Reader.run ~sw ~clock flow @@ fun await_event ->
-                     run_test ~writer ~await_event ign group_i i test)
+                     run_test ~clock ~writer ~await_event start label ign test)
                in
                let new_cases =
                  {

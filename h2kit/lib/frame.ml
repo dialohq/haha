@@ -179,11 +179,16 @@ let pp_frame_payload_short ?(pp_sep = fun fmt () -> Format.fprintf fmt "; ") ()
       fprintf fmt "<%i bytes block>" (Bigstringaf.length headers)
   | Unknown (_, bs) -> fprintf fmt "%s" (Bigstringaf.to_string bs)
 
+(* TODO: should only display flags relevant to a specific frame type *)
 let pp_hum_short fmt { frame_header; frame_payload } =
   let open Format in
-  fprintf fmt "%s[%li] %a"
+  let flags_strings = Flags.to_strings frame_header.flags in
+  fprintf fmt "%s[%li%s%a] %a"
     (FrameType.to_string frame_header.frame_type)
     frame_header.stream_id
+    (if List.length flags_strings > 0 then ";" else "")
+    (pp_print_list ~pp_sep:(fun fmt () -> fprintf fmt ",") pp_print_string)
+    flags_strings
     (pp_frame_payload_short ())
     frame_payload
 

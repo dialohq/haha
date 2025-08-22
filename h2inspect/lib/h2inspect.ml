@@ -67,7 +67,7 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
   in
 
   let connection_frames_validation : test_group =
-    test_group "Parsing and validating connection-level frames"
+    test_group "Connection-level frames"
       ~ignore:Ignore.(frame_type WindowUpdate)
       [
         test
@@ -222,7 +222,7 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
   let stream_frames_validation : test_group =
     test_group
       ~ignore:Ignore.(frame_type WindowUpdate)
-      ~streams:[ GET "/" ] "Parsing and validating stream-level frames"
+      ~streams:[ GET "/" ] "Stream-level frames"
       [
         test
           "Server responds with a final 200 code HEADERS frame with END_STREAM \
@@ -296,7 +296,7 @@ let run_server_tests ?(first_port = 8050) ~sw clock net =
 
   let connection_functionalities : test_group =
     let ping_payload = "12345678" in
-    test_group "Connection-level functionalities"
+    test_group "Connection functionalities"
       ~ignore:Ignore.(frame_type WindowUpdate)
       [
         test "Servers sends a PING frame"

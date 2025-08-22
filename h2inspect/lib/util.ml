@@ -1,5 +1,17 @@
 open H2kit
 
+let print_success ~group ~test ~time =
+  Ocolor_format.printf
+    "@{<green>\u{2713}@} %s @{<hi_black>>@} @{<bold>%s@} \
+     @{<hi_black;bold>[%.2fms]@}@."
+    group test time
+
+let print_failure ~group ~test ~time =
+  Ocolor_format.printf
+    "@{<red>\u{2717}@} %s @{<hi_black>>@} @{<bold>%s@} \
+     @{<hi_black;bold>[%.2fms]@}@."
+    group test time
+
 let print_wrapped_sentence ~indent sentence =
   let open Format in
   set_margin 100;
