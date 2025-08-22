@@ -309,15 +309,17 @@ let receive_rst :
   update_stream_state id f
 
 let receive_window_update :
+    writer:Writer.t ->
     Stream_identifier.t ->
     int32 ->
     'p t ->
     ('p t, Error.connection_error) result =
- fun id increment ->
+ fun ~writer id increment ->
   let f : _ Stream.transition =
    fun (State state) ->
     match state with
     | Closed Terminating -> Ok (State state)
+    | Closed Terminated -> Error (Error.stream_prot_err id StreamClosed)
     | Open ({ flow; _ } as state') ->
         Ok
           (State
@@ -359,12 +361,12 @@ let receive_window_update :
                      state' with
                      flow = Flow_control.incr_out_flow flow increment;
                    })))
-    | _ ->
+    | Idle ->
         Error
           (Error.conn_prot_err ProtocolError "unexpected WINDOW_UPDATE[%li]" id)
   in
 
-  update_stream_state id f
+  update_stream_state ~writer id f
 
 let all_closed : _ t -> bool =
  fun { map; _ } ->

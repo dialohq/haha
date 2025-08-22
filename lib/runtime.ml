@@ -279,7 +279,10 @@ let frame_handler ~process_complete_headers (frame : Frame.t)
       step InProgress
         { state with flow = Flow_control.incr_out_flow state.flow increment }
     else
-      match Streams.receive_window_update stream_id increment state.streams with
+      match
+        Streams.receive_window_update ~writer:state.writer stream_id increment
+          state.streams
+      with
       | Error err -> { iter_result = ConnectionError err; state }
       | Ok streams -> step InProgress { state with streams }
   in

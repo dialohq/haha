@@ -33,7 +33,11 @@ val receive_rst :
   ('p t, Error.connection_error) result
 
 val receive_window_update :
-  Stream_identifier.t -> int32 -> 'p t -> ('p t, Error.connection_error) result
+  writer:Writer.t ->
+  Stream_identifier.t ->
+  int32 ->
+  'p t ->
+  ('p t, Error.connection_error) result
 
 val receive_response :
   pseudo:Headers.Pseudo.response_pseudos ->
