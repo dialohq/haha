@@ -9,7 +9,7 @@ let initial_increment =
 
 let initial = { out_flow = 0l; sent = 0l; received = 0l }
 
-let receive_data ~(send_update : int32 -> unit) t n =
+let receive_data ~id n t =
   let open Int32 in
   let in_window = sub Window_size.max_size t.received in
 
@@ -17,7 +17,7 @@ let receive_data ~(send_update : int32 -> unit) t n =
 
   if compare (div Window_size.max_size 2l) new_in_window > 0 then (
     let increment = sub Window_size.max_size new_in_window in
-    send_update increment;
+    Writer.(write @@ window_update ~increment id);
     { t with received = 0l })
   else { t with received = add t.received n }
 

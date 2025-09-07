@@ -22,10 +22,10 @@ let handle_connection_error ?(last_peer_stream = Int32.zero) ~writer error =
   codemsg_opt
   |> Option.iter @@ fun (code, msg) ->
      let debug_data = Cstruct.of_string ~off:0 ~len:(String.length msg) msg in
-     goaway ~debug_data writer last_peer_stream code
+     goaway ~debug_data last_peer_stream code writer
 
 let handle_stream_error (state : _ State.t) stream_id code =
-  rst_stream state.writer stream_id code;
+  rst_stream stream_id code state.writer;
   {
     state with
     streams =
@@ -94,10 +94,10 @@ let process_preface_settings ?user_settings ~socket ~receive_buffer () =
         in
 
         (match user_settings with
-        | Some user_settings -> settings writer user_settings
+        | Some user_settings -> settings user_settings writer
         | None -> ());
         settings_ack writer;
-        window_update writer Stream_identifier.connection
+        window_update Stream_identifier.connection writer
           ~increment:Flow_control.initial_increment;
         flush writer socket
         |> Result.map_error (fun exn -> Error.Exn exn)
@@ -129,9 +129,9 @@ let process_data_frame : 'a t -> Frame.frame_header -> Cstruct.t -> 'a t step =
           streams;
           flow =
             Flow_control.receive_data state.flow
-              ~send_update:
-                (window_update state.writer
-                   ~increment:Stream_identifier.connection)
+              ~send_update:(fun n ->
+                window_update ~increment:Stream_identifier.connection n
+                  state.writer)
               (Cstruct.length data |> Int32.of_int);
         }
   | Error err -> { iter_result = ConnectionError err; state }
@@ -296,7 +296,7 @@ let frame_handler ~process_complete_headers (frame : Frame.t)
       | Data payload -> process_data_frame frame_header payload
       | Settings payload -> process_settings_frame frame_header payload
       | Ping bs ->
-          ping state.writer bs ~ack:true;
+          ping bs ~ack:true state.writer;
           step InProgress state
       | Headers payload -> process_headers_frame frame_header payload
       | Continuation payload -> process_continuation_frame frame_header payload
@@ -450,7 +450,7 @@ let start :
         create ~header_table_size:Settings.default.header_table_size
           Settings.default.max_frame_size
       in
-     handle_connection_error ~writer err;
+      handle_connection_error ~writer err;
       flush writer socket |> ignore;
       { active_streams = 0; state = Error err }
   | Ok (initial_state, rest_to_parse) ->

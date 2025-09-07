@@ -7,6 +7,9 @@ type t = {
   max_header_list_size : int option;
 }
 
+type _ Effect.t += SettingsLookup : unit -> t Effect.t
+
+val lookup_settings : unit -> t
 val octets_per_setting : int
 val minimal_frame_size_allowed : int
 val default : t

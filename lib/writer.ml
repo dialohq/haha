@@ -6,6 +6,11 @@ type t = {
   hpack_encoder : Hpack.Encoder.t;
 }
 
+type writer = t -> unit
+type _ Effect.t += Write : writer -> unit Effect.t
+
+let write writer = Effect.perform (Write writer)
+
 let create ~header_table_size capacity =
   let buffer = Bigstringaf.create capacity in
 
@@ -38,13 +43,13 @@ let flush t socket =
 
 let connection_preface t = write_connection_preface t.faraday
 
-let goaway ?debug_data t id code =
+let goaway ?debug_data id code t =
   write_goaway_frame ?debug_data id code t.faraday
 
-let window_update t ~increment id =
+let window_update ~increment id t =
   write_window_update_frame id increment t.faraday
 
-let settings t settings =
+let settings settings t =
   let frame_info = create_frame_info Stream_identifier.connection in
   write_settings_frame (Settings.to_settings_list settings) frame_info t.faraday
 
@@ -56,7 +61,7 @@ let settings_ack t =
   in
   write_settings_frame Settings.(to_settings_list default) frame_info t.faraday
 
-let ping ?(ack = false) t payload =
+let ping ?(ack = false) payload t =
   let frame_info =
     create_frame_info
       ~flags:Flags.(if ack then set_ack default_flags else default_flags)
@@ -64,7 +69,7 @@ let ping ?(ack = false) t payload =
   in
   write_ping_frame payload frame_info t.faraday
 
-let data ?(padding_length = 0) ?(end_stream = false) t stream_id cs_list =
+let data ?(padding_length = 0) ?(end_stream = false) stream_id cs_list t =
   let frame_info =
     create_frame_info
       ~flags:
@@ -75,8 +80,8 @@ let data ?(padding_length = 0) ?(end_stream = false) t stream_id cs_list =
 
   write_data_frame cs_list frame_info t.faraday
 
-let response_headers ?padding_length ?(end_header = true) t stream_id
-    (response : _ Response.t) =
+let response_headers ?padding_length ?(end_header = true) stream_id
+    (response : _ Response.t) t =
   let status, headers, flags =
     match response with
     | `Interim { status; headers; _ } ->
@@ -100,8 +105,8 @@ let response_headers ?padding_length ?(end_header = true) t stream_id
 
 let haha_header = ("user-agent", "haha/0.0.1")
 
-let request_headers ?padding_length ?(end_header = true) t stream_id
-    (request : Request.t) =
+let request_headers ?padding_length ?(end_header = true) stream_id
+    (request : Request.t) t =
   let (Request { meth; path; scheme; authority; headers; body_writer; _ }) =
     request
   in
@@ -133,7 +138,7 @@ let request_headers ?padding_length ?(end_header = true) t stream_id
   let frame_info = create_frame_info ?padding_length ~flags stream_id in
   write_headers_frame t.hpack_encoder headers frame_info t.faraday
 
-let trailers ?padding_length ?(end_header = true) t stream_id headers =
+let trailers ?padding_length ?(end_header = true) stream_id headers t =
   let flags =
     if end_header then
       Flags.default_flags |> Flags.set_end_header |> Flags.set_end_stream
@@ -144,7 +149,7 @@ let trailers ?padding_length ?(end_header = true) t stream_id headers =
 
   write_headers_frame t.hpack_encoder headers frame_info t.faraday
 
-let rst_stream t id code = write_rst_stream_frame id code t.faraday
+let rst_stream id code t = write_rst_stream_frame id code t.faraday
 
 let pp_hum fmt t =
   Format.fprintf fmt "<length %i>" (Bigstringaf.length t.buffer)

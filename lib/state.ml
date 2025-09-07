@@ -1,6 +1,5 @@
 type settings_sync = Syncing of Settings.setting list | Idle
 type headers_state = Idle | InProgress of Bigstringaf.t * int
-type 'context final_contexts = (Stream_identifier.t * 'context) list
 
 type 'peer t = {
   peer_settings : Settings.t;
@@ -9,7 +8,6 @@ type 'peer t = {
   settings_status : settings_sync;
   headers_state : headers_state;
   streams : 'peer Streams.t;
-  (* hpack_encoder : Hpackv.Encoder.t; *)
   hpack_decoder : Hpack.Decoder.t;
   shutdown : bool;
   writer : Writer.t;
@@ -29,12 +27,6 @@ let initial ~streams ~writer ~peer_settings ~user_settings ~validate_settings =
       Hpack.Decoder.create
         (Int.min peer_settings.header_table_size
            Settings.default.header_table_size);
-    (*
-    hpack_encoder =
-      Hpackv.Encoder.create
-        (Int.min peer_settings.header_table_size
-           Settings.default.header_table_size);
-    *)
     local_settings = Settings.default;
     settings_status = Syncing Settings.(to_settings_list user_settings);
     streams;
@@ -50,14 +42,12 @@ let initial ~streams ~writer ~peer_settings ~user_settings ~validate_settings =
 let initial_client ~writer ~peer_settings ~user_settings =
   initial
     ~validate_settings:(Settings.validate ~peer:`Client)
-    ~streams:(Streams.initial_client ())
-    ~writer ~peer_settings ~user_settings
+    ~streams:(Streams.init_client ()) ~writer ~peer_settings ~user_settings
 
 let initial_server ~writer ~peer_settings ~user_settings =
   initial
     ~validate_settings:(Settings.validate ~peer:`Server)
-    ~streams:(Streams.initial_server ())
-    ~writer ~peer_settings ~user_settings
+    ~streams:(Streams.init_server ()) ~writer ~peer_settings ~user_settings
 
 let active_streams t = Streams.count_active t.streams
 let error_all err t = Streams.close_all ~err:(ConnectionError err) t.streams

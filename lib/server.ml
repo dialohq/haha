@@ -36,9 +36,9 @@ let user_goaway_handler ~f =
  fun () ->
   f ();
   fun state ->
-    Writer.goaway state.State.writer
-      (Streams.last_peer_stream state.streams)
-      Error_code.NoError;
+    Writer.goaway
+      (Streams.last_peer_stream state.State.streams)
+      Error_code.NoError state.writer;
     { iter_result = InProgress; state = { state with shutdown = true } }
 
 let get_response_writers : state -> (unit -> state -> state step) list =

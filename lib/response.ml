@@ -11,9 +11,6 @@ type interim_response = { status : Status.informational; headers : Headers.t }
 type 'context t =
   [ `Interim of interim_response | `Final of 'context final_response ]
 
-type 'context handler =
-  'context -> 'context t -> 'context reader option * 'context
-
 type 'context response_writer = unit -> 'context t
 
 let status (t : _ t) =

@@ -6,7 +6,7 @@ type t =
       scheme : string;
       headers : Headers.t;
       body_writer : 'context Body.writer option;
-      response_handler : 'context Response.handler;
+      response_handler : 'context Respd.handler;
       error_handler : 'context -> Error.t -> 'context;
       on_close : 'context -> unit;
       initial_context : 'context;

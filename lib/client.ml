@@ -35,7 +35,7 @@ let input_handler : state -> iter_input -> state =
     invalid_arg "HTTP/2 iteration: cannot pass inputs after Shutdown";
   match input with
   | Shutdown ->
-      Writer.goaway writer (Streams.last_peer_stream streams) Error_code.NoError;
+      Writer.goaway (Streams.last_peer_stream streams) Error_code.NoError writer;
       let new_state = { state with shutdown = true } in
       new_state
   | Request request ->
@@ -53,7 +53,7 @@ let connect : 'c. ?config:Settings.t -> _ Eio.Resource.t -> iteration =
   let user_settings = config in
 
   Writer.connection_preface initial_writer;
-  Writer.settings initial_writer user_settings;
+  Writer.settings user_settings initial_writer;
 
   let initial_state_result =
     match Writer.flush initial_writer socket with

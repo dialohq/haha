@@ -10,7 +10,7 @@ type handler_result =
   | ReqdHandle : {
       body_reader : 'context Body.reader;
       response_writer : 'context Response.response_writer;
-      error_handler : 'context -> Error.t -> 'context;
+      error_handler : 'context -> Error_code.t -> 'context;
       context : 'context;
       on_close : 'context -> unit;
     }

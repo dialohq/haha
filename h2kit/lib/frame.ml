@@ -17,17 +17,17 @@ let connection_preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 
 module FrameType = struct
   type t =
-    | Data
-    | Headers
-    | Priority
-    | RSTStream
-    | Settings
-    | PushPromise
-    | Ping
-    | GoAway
-    | WindowUpdate
-    | Continuation
-    | Unknown of int
+    | Data (* stream *)
+    | Headers (* stream *)
+    | Priority (* stream *)
+    | RSTStream (* stream *)
+    | Settings (* connection *)
+    | PushPromise (* stream *)
+    | Ping (* connection *)
+    | GoAway (* connection *)
+    | WindowUpdate (* shared *)
+    | Continuation (* stream *)
+    | Unknown of int (* connection *)
   [@@deriving show { with_path = false }, eq]
 
   let to_int = function

@@ -1,87 +1,100 @@
 module StreamMap = Map.Make (Int32)
 
-type client_peer = private Client [@warning "-37"]
-type server_peer = private Server [@warning "-37"]
-
-type (_, 'c) writers =
-  | BodyWriter : 'c Body.writer -> ('peer, 'c) writers
-  | WritingResponse : 'c Response.response_writer -> (server_peer, 'c) writers
-
-type (_, 'c) readers =
-  | BodyReader : 'c Body.reader -> ('peer, 'c) readers
-  | AwaitingResponse : 'c Response.handler -> (client_peer, 'c) readers
-
-module Stream = struct
-  type 'context error_handler = 'context -> Error.t -> 'context
-
-  type ('peer, 'c) open_state = {
-    readers : ('peer, 'c) readers;
-    writers : ('peer, 'c) writers;
-    error_handler : 'c error_handler;
-    on_close : 'c -> unit;
-    context : 'c;
-    flow : Flow_control.t;
-  }
-
-  type ('peer, 'c) half_closed =
-    | Remote of {
-        writers : ('peer, 'c) writers;
-        error_handler : 'c error_handler;
-        on_close : 'c -> unit;
-        context : 'c;
-        flow : Flow_control.t;
-      }
-    | Local of {
-        readers : ('peer, 'c) readers;
-        error_handler : 'c error_handler;
-        on_close : 'c -> unit;
-        context : 'c;
-        flow : Flow_control.t;
-      }
-
-  type 'context reserved =
-    | Remote of {
-        error_handler : 'context error_handler;
-        on_close : 'context -> unit;
-        context : 'context;
-        flow : Flow_control.t;
-      } [@warning "-37"]
-    | Local of {
-        error_handler : 'context error_handler;
-        on_close : 'context -> unit;
-        context : 'context;
-        flow : Flow_control.t;
-      } [@warning "-37"]
-
-  type closed = Terminating | Terminated
-
-  type ('peer, 'c) state =
-    | Idle
-    | Reserved of 'c reserved
-    | Open of ('peer, 'c) open_state
-    | HalfClosed of ('peer, 'c) half_closed
-    | Closed of closed
-
-  type 'peer t = State : ('peer, _) state -> 'peer t
-  type 'p transition = 'p t -> ('p t, Error.t) result
-end
-
 type 'peer t = {
   map : 'peer Stream.t StreamMap.t;
   last_peer_stream : Stream_identifier.t;
   last_local_stream : Stream_identifier.t;
 }
 
-let last_peer_stream : _ t -> int32 = fun t -> t.last_peer_stream
+(* let last_peer_stream : _ t -> int32 = fun t -> t.last_peer_stream *)
 
-let initial_client : unit -> _ t =
+let init_client : unit -> _ t =
  fun () ->
   { map = StreamMap.empty; last_peer_stream = 0l; last_local_stream = -1l }
 
-let initial_server : unit -> _ t =
+let init_server : unit -> _ t =
  fun () ->
   { map = StreamMap.empty; last_peer_stream = -1l; last_local_stream = 0l }
 
+let update_ids : Stream_identifier.t -> 'p t -> 'p t =
+ fun id ({ last_peer_stream; last_local_stream; _ } as t) ->
+  let open Stream_identifier in
+  match
+    (is_client id, is_client last_peer_stream, is_client last_local_stream)
+  with
+  | true, true, false | false, false, true ->
+      { t with last_peer_stream = Int32.max last_peer_stream id }
+  | true, false, true | false, true, false ->
+      { t with last_local_stream = Int32.max last_local_stream id }
+  | _, true, true | _, false, false ->
+      (* initially we set odd and even values for those so this is unreachable *)
+      assert false
+
+(*
+
+A general function would be good to do something before the specific processing function and after every on of them, like those actions:
+  - before/after -> update last ids
+  - after -> clean up all terminated/idle streams from the map
+
+*)
+
+let read_data :
+    id:Stream_identifier.t ->
+    end_stream:bool ->
+    Cstruct.t ->
+    'a t ->
+    ('a t, Error_code.t * string) result =
+ fun ~id ~end_stream data t ->
+  match StreamMap.find_opt id t.map with
+  | Some stream ->
+      let res = Stream.read_data ~end_stream data stream in
+      Result.map
+        (fun new_stream ->
+          let map = StreamMap.add id new_stream t.map in
+          update_ids id { t with map })
+        res
+  | None ->
+      let stream =
+        if id > t.last_local_stream then Stream.create_idle ~id
+        else Stream.create_terminated ~id
+      in
+
+      let res = Stream.read_data ~end_stream data stream in
+      Result.map
+        (fun _ ->
+          (* NOTE: should we update the map or no here? *)
+          t)
+        res
+
+let receive_headers :
+    id:Stream_identifier.t ->
+    end_stream:bool ->
+    Headers.t ->
+    'a t ->
+    ('a t, Error_code.t * string) result =
+ fun ~id ~end_stream headers t ->
+  match StreamMap.find_opt id t.map with
+  | Some stream ->
+      let res = Stream.receive_headers ~end_stream headers stream in
+      Result.map
+        (fun new_stream ->
+          let map = StreamMap.add id new_stream t.map in
+          update_ids id { t with map })
+        res
+  | None ->
+      let stream =
+        if id > t.last_local_stream then Stream.create_idle ~id
+        else Stream.create_terminated ~id
+      in
+
+      let res = Stream.receive_headers ~end_stream headers stream in
+      Result.map
+        (fun _ ->
+          (* NOTE: should we update the map or no here? *)
+          t)
+        res
+
+(*
 let count_active : _ t -> int =
  fun { map; _ } ->
   StreamMap.fold
@@ -139,20 +152,6 @@ let update_closing_streams : _ t -> _ t =
   in
   { t with map }
 
-let update_last_id : Stream_identifier.t -> 'p t -> 'p t =
- fun id ({ last_peer_stream; last_local_stream; _ } as t) ->
-  let open Stream_identifier in
-  match
-    (is_client id, is_client last_peer_stream, is_client last_local_stream)
-  with
-  | true, true, false | false, false, true ->
-      { t with last_peer_stream = Int32.max last_peer_stream id }
-  | true, false, true | false, true, false ->
-      { t with last_local_stream = Int32.max last_local_stream id }
-  | _, true, true | _, false, false ->
-      (* initially we set odd and even values for those so this is unreachable *)
-      assert false
-
 let stream_transition : Stream_identifier.t -> 'p Stream.t -> 'p t -> 'p t =
  fun id stream t ->
   let map =
@@ -184,7 +183,7 @@ let update_stream_state :
     match update stream with
     | Ok new_stream -> Ok (StreamMap.add id new_stream t.map)
     | Error (StreamError (id, code) as err) ->
-        Option.iter (fun writer -> Writer.rst_stream writer id code) writer;
+        Option.iter (Writer.rst_stream id code) writer;
         finalize_stream ~err stream;
         Ok (StreamMap.add id (Stream.State (Closed Terminating)) t.map)
     | Error (ConnectionError err) -> Error err
@@ -202,7 +201,7 @@ let read_data :
   let f : _ Stream.transition =
     let open Error in
     fun (State state) ->
-      let send_update increment = Writer.window_update writer ~increment id in
+      let send_update increment = Writer.window_update ~increment id writer in
       match state with
       | Closed Terminating -> Ok (State state)
       | Idle ->
@@ -393,7 +392,7 @@ let body_writer_handler (type p) :
   match payload with
   | `Data cs_list ->
       let distributed = Util.split_cstructs cs_list max_frame_size in
-      List.iter (fun cs_list -> Writer.data writer id cs_list) distributed;
+      List.iter (fun cs_list -> Writer.data id cs_list writer) distributed;
 
       stream_transition id state_on_data t
   | `End (Some cs_list, trailers) ->
@@ -403,17 +402,17 @@ let body_writer_handler (type p) :
         (fun i cs_list ->
           Writer.data
             ~end_stream:((not send_trailers) && i = List.length distributed - 1)
-            writer id cs_list)
+            id cs_list writer)
         distributed;
 
-      if send_trailers then Writer.trailers writer id trailers;
+      if send_trailers then Writer.trailers id trailers writer;
       (match state_on_end with State (Closed _) -> on_close () | _ -> ());
 
       stream_transition id state_on_end t
   | `End (None, trailers) ->
       let send_trailers = Headers.length trailers > 0 in
-      if send_trailers then Writer.trailers writer id trailers
-      else Writer.data ~end_stream:true writer id [ Cstruct.empty ];
+      if send_trailers then Writer.trailers id trailers writer
+      else Writer.data ~end_stream:true id [ Cstruct.empty ] writer;
       (match state_on_end with State (Closed _) -> on_close () | _ -> ());
 
       stream_transition id state_on_end t
@@ -488,17 +487,17 @@ let make_response_writer_transition :
           let response = response_writer () in
 
           fun t ->
-            response_headers writer id response;
+            response_headers id response writer;
             match response with
             | `Final { body_writer = Some body_writer; _ } ->
-                window_update writer id
-                  ~increment:Flow_control.initial_increment;
+                window_update id ~increment:Flow_control.initial_increment
+                  writer;
                 stream_transition id
                   (State (Open { state' with writers = BodyWriter body_writer }))
                   t
             | `Final { body_writer = None; _ } ->
-                window_update writer id
-                  ~increment:Flow_control.initial_increment;
+                window_update id ~increment:Flow_control.initial_increment
+                  writer;
                 stream_transition id
                   (State
                      (HalfClosed
@@ -516,19 +515,19 @@ let make_response_writer_transition :
           let response = response_writer () in
 
           fun t ->
-            response_headers writer id response;
+            response_headers id response writer;
             match response with
             | `Final { body_writer = Some body_writer; _ } ->
-                window_update writer id
-                  ~increment:Flow_control.initial_increment;
+                window_update id ~increment:Flow_control.initial_increment
+                  writer;
                 stream_transition id
                   (State
                      (HalfClosed
                         (Remote { state' with writers = BodyWriter body_writer })))
                   t
             | `Final { body_writer = None; _ } ->
-                window_update writer id
-                  ~increment:Flow_control.initial_increment;
+                window_update id ~increment:Flow_control.initial_increment
+                  writer;
                 on_close context;
                 stream_transition id (State (Closed Terminated)) t
             | `Interim _ -> t)
@@ -625,7 +624,7 @@ let receive_request :
  fun ~writer ~request_handler ~pseudo ~end_stream ~headers ~max_streams id t ->
   let f : server_peer Stream.transition =
     let open Error in
-    fun (State state) ->
+    fun (State state) -
       match state with
       | Closed Terminating -> Ok (State state)
       | Idle ->
@@ -751,7 +750,7 @@ let receive_response :
           let new_stream_state : client_peer Stream.t =
             match (body_reader, end_stream) with
             | None, _ ->
-                Writer.rst_stream writer id NoError;
+                Writer.rst_stream id NoError writer;
                 on_close context;
                 State (Closed Terminating)
             | Some _, true ->
@@ -794,7 +793,7 @@ let receive_response :
           let new_stream_state : client_peer Stream.t =
             match (end_stream, body_reader) with
             | false, None ->
-                Writer.rst_stream writer id NoError;
+                Writer.rst_stream id NoError writer;
                 on_close context;
                 State (Closed Terminating)
             | false, Some body_reader ->
@@ -848,8 +847,8 @@ let write_request :
     request
   in
   let id = Int32.add t.last_local_stream 2l in
-  Writer.request_headers writer id request;
-  Writer.window_update writer id ~increment:Flow_control.initial_increment;
+  Writer.request_headers id request writer;
+  Writer.window_update id ~increment:Flow_control.initial_increment writer;
   let stream_state : _ Stream.t =
     match body_writer with
     | Some body_writer ->
@@ -877,3 +876,4 @@ let write_request :
   in
 
   stream_transition id stream_state t
+*)

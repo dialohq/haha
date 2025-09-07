@@ -1,24 +1,29 @@
-type client_peer
-type server_peer
 type 'peer t
 
-val last_peer_stream : _ t -> int32
-val initial_client : unit -> _ t
-val initial_server : unit -> _ t
-val count_active : _ t -> int
-val close_stream : ?err:Error.t -> Stream_identifier.t -> 'p t -> 'p t
-val close_all : ?err:Error.t -> _ t -> unit
-val all_closed : _ t -> bool
-val update_closing_streams : 'p t -> 'p t
+(* val last_peer_stream : _ t -> int32 *)
+val init_client : unit -> _ t
+val init_server : unit -> _ t
+(* val count_active : _ t -> int *)
+(* val close_stream : ?err:Error.t -> Stream_identifier.t -> 'p t -> 'p t *)
+(* val close_all : ?err:Error.t -> _ t -> unit *)
+(* val all_closed : _ t -> bool *)
+(* val update_closing_streams : 'p t -> 'p t *)
 
 val read_data :
+  id:Stream_identifier.t ->
   end_stream:bool ->
-  writer:Writer.t ->
-  data:Cstruct.t ->
-  Stream_identifier.t ->
-  'p t ->
-  ('p t, Error.connection_error) result
+  Cstruct.t ->
+  'a t ->
+  ('a t, Error_code.t * string) result
 
+val receive_headers :
+  id:int32 ->
+  end_stream:bool ->
+  Headers.t ->
+  'a t ->
+  ('a t, Error_code.t * string) result
+
+(*
 val receive_trailers :
   writer:Writer.t ->
   headers:Headers.t ->
@@ -69,3 +74,4 @@ val response_writers_transitions :
   writer:Writer.t ->
   server_peer t ->
   (unit -> server_peer t -> server_peer t) list
+*)
