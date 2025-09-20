@@ -1,5 +1,6 @@
 open H2kit
 open Utils
+module Parsers = Parsers.Make (Angstrom_reader)
 module Serializers = Serializers.Make (Faraday)
 
 module Testable = struct

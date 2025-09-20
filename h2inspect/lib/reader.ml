@@ -1,6 +1,7 @@
 open Eio
 open H2kit
 open Angstrom
+module Parsers = Parsers.Make (Angstrom_reader)
 
 type 'a continue = Cstruct.t -> 'a Unbuffered.state
 type 'a state = { off : int; continue : 'a continue option }

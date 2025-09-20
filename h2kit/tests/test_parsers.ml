@@ -1,6 +1,7 @@
 open Angstrom
 open H2kit
 open Utils
+module Parsers = Parsers.Make (Angstrom_reader)
 
 module Testable = struct
   let h2_frame =
@@ -36,8 +37,8 @@ let run_parser p s =
 let test_connection_preface () =
   let preface = Frame.connection_preface in
   let result = parse_string ~consume:All Parsers.connection_preface preface in
-  Alcotest.(check (result string string))
-    "Correctly parses the connection preface" (Ok preface) result;
+  Alcotest.(check (result unit string))
+    "Correctly parses the connection preface" (Ok ()) result;
 
   let bad_preface = "GET / HTTP/1.1\r\n\r\n" in
   let result =
