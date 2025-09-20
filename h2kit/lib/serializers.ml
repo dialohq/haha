@@ -1,4 +1,4 @@
-module type BufWriterType = sig
+module type WriterType = sig
   type t
 
   val write_uint8 : t -> int -> unit
@@ -51,10 +51,10 @@ module type S = sig
   val write_window_update_frame : Stream_identifier.t -> int32 -> t -> unit
 end
 
-module Make (BufWriter : BufWriterType) = struct
-  open BufWriter
+module Make (Writer : WriterType) = struct
+  open Writer
 
-  type t = BufWriter.t
+  type t = Writer.t
 
   type frame_info = {
     flags : Flags.t;

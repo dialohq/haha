@@ -2,8 +2,8 @@
 
     The serializers are designed to be modular and independent of the underlying
     writing mechanism. This is achieved through the {!Make} functor, which takes
-    a module of type {!BufWriterType} as an argument. This {!BufWriterType}
-    module is responsible for handling the actual writing of data to a buffer.
+    a module of type {!WriterType} as an argument. This {!WriterType} module is
+    responsible for handling the actual writing of data to a buffer.
 
     This design allows you to choose your preferred buffered writing
     implementation. Two popular choices are
@@ -13,8 +13,8 @@
     {2 Using with Faraday}
 
     The {{:https://ocaml.org/p/faraday/0.8.2/doc/Faraday/index.html}Faraday}
-    library's main module is fully compatible with the {!BufWriterType}
-    signature. You can directly pass it to the {!Make} functor:
+    library's main module is fully compatible with the {!WriterType} signature.
+    You can directly pass it to the {!Make} functor:
 
     {[
       module FaradaySerializers = Serializers.Make (Faraday)
@@ -28,7 +28,7 @@
     module. As
     {{:https://ocaml-multicore.github.io/eio/eio/Eio/Buf_write/index.html}Eio.Buf_write}
     has a slightly different interface, you'll need to create a small wrapper
-    module to adapt it to the {!BufWriterType} signature.
+    module to adapt it to the {!WriterType} signature.
 
     Here is a wrapper for
     {{:https://ocaml-multicore.github.io/eio/eio/Eio/Buf_write/index.html}Eio.Buf_write}
@@ -62,7 +62,7 @@
 (** The interface for a buffered writer that the serializers will use to output
     data. It abstracts the specifics of the underlying I/O mechanism, allowing
     the serializers to be generic. *)
-module type BufWriterType = sig
+module type WriterType = sig
   type t
   (** The abstract type for the buffered writer. *)
 
@@ -157,7 +157,6 @@ module type S = sig
 end
 
 (** The {!Make} functor takes a module [BufWriter] that conforms to the
-    {!BufWriterType} signature and returns a new module of type {!S}. The
-    resulting module provides a set of functions for serializing various HTTP/2
-    frames. *)
-module Make (BufWriter : BufWriterType) : S with type t = BufWriter.t
+    {!WriterType} signature and returns a new module of type {!S}. The resulting
+    module provides a set of functions for serializing various HTTP/2 frames. *)
+module Make (BufWriter : WriterType) : S with type t = BufWriter.t
