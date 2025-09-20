@@ -15,3 +15,5 @@ val receive_headers_server :
   end_stream:bool ->
   Headers.t ->
   server_peer transition
+
+val receive_rst : Error_code.t -> 'a transition

@@ -1,4 +1,3 @@
-open Writer
 open Effect.Deep
 
 type event = Frame of Frame.t | Input of unit
@@ -38,6 +37,10 @@ type 'peer connection = {
   streams : 'peer Streams.t;
   socket : [ `Flow | `W ] Eio.Resource.t;
   hpack_decoder : Hpack.Decoder.t;
+  flow : Flow_control.t;
+  (* those below should be something different probably *)
+  initial_window : int32;
+  max_frame_size : int;
 }
 
 let shutdown : 'a connection -> Error_code.t * string -> unit =
@@ -45,11 +48,40 @@ let shutdown : 'a connection -> Error_code.t * string -> unit =
   (* TODO: some cleanup in here idk *)
   ()
 
+let update_with_settings :
+    Settings.setting list ->
+    'a connection ->
+    ('a connection, Error_code.t * string) result =
+ fun settings conn ->
+  let rec aux conn = function
+    | [] -> Ok conn
+    | Settings.HeaderTableSize v :: rest ->
+        Writer.set_encoder_capacity conn.writer v;
+        aux conn rest
+    | EnablePush _ :: rest ->
+        (* TODO: gotta thing about this, peer-specific *)
+        aux conn rest
+    | MaxConcurrentStreams v :: rest ->
+        let streams =
+          Streams.update_max_streams (Int32.to_int v) conn.streams
+        in
+        aux { conn with streams } rest
+    | InitialWindowSize initial_window :: rest ->
+        aux { conn with initial_window } rest
+    | MaxFrameSize max_frame_size :: rest ->
+        aux { conn with max_frame_size } rest
+    | MaxHeaderListSize _ :: rest ->
+        (* TODO: this is advisory, might implement later *)
+        aux conn rest
+  in
+
+  aux conn settings
+
 let rec run :
     'a connection -> event list -> ('a connection, Error_code.t * string) result
     =
  fun conn event ->
-  let ( => ) x y =
+  let ( let* ) x y =
     match x with
     | Error err ->
         shutdown conn err;
@@ -57,13 +89,11 @@ let rec run :
     | Ok v -> y v
   in
 
-  let ( let* ) = ( => ) in
-
   let aux () =
     match event with
     | [] -> Ok conn
     | Frame { frame_payload = Ping data; _ } :: rest ->
-        ping data ~ack:true conn.writer;
+        Writer.ping data ~ack:true conn.writer;
         run conn rest
     | Frame
         {
@@ -90,7 +120,25 @@ let rec run :
     | Frame { frame_payload = Headers _data; _ } :: _rest ->
         (* TODO: handle continuation headers *)
         assert false
-    | _ -> Ok conn
+    | Frame { frame_payload = Continuation _; _ } :: _rest -> assert false
+    | Frame
+        {
+          frame_payload = RSTStream code;
+          frame_header = { stream_id = id; _ };
+          _;
+        }
+      :: rest ->
+        let* streams = Streams.receive_rst ~id code conn.streams in
+        run { conn with streams } rest
+    | Frame { frame_payload = Settings l; _ } :: rest ->
+        let* conn = update_with_settings l conn in
+        Writer.settings_ack conn.writer;
+        run conn rest
+    | Frame { frame_payload = PushPromise _; _ } :: _rest ->
+        (* TODO: again, peer-specific *)
+        failwith "server push not implemented"
+    | Frame { frame_payload = Unknown _ | Priority; _ } :: rest -> run conn rest
+    | _ :: rest -> run conn rest
   in
 
   let effc : type c. c Effect.t -> ((c, 'b) continuation -> 'b) option =

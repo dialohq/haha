@@ -4,17 +4,32 @@ type 'peer t = {
   map : 'peer Stream.t StreamMap.t;
   last_peer_stream : Stream_identifier.t;
   last_local_stream : Stream_identifier.t;
+  max_streams : int;
+  handle_headers : end_stream:bool -> Headers.t -> 'peer Stream.transition;
 }
 
-(* let last_peer_stream : _ t -> int32 = fun t -> t.last_peer_stream *)
+let init_client : int -> Stream.client_peer t =
+ fun max_streams ->
+  {
+    map = StreamMap.empty;
+    last_peer_stream = 0l;
+    last_local_stream = -1l;
+    max_streams;
+    handle_headers = Stream.receive_headers_client;
+  }
 
-let init_client : unit -> _ t =
- fun () ->
-  { map = StreamMap.empty; last_peer_stream = 0l; last_local_stream = -1l }
+let init_server : request_handler:Reqd.handler -> int -> Stream.server_peer t =
+ fun ~request_handler max_streams ->
+  {
+    map = StreamMap.empty;
+    last_peer_stream = -1l;
+    last_local_stream = 0l;
+    max_streams;
+    handle_headers = Stream.receive_headers_server ~request_handler;
+  }
 
-let init_server : unit -> _ t =
- fun () ->
-  { map = StreamMap.empty; last_peer_stream = -1l; last_local_stream = 0l }
+let update_max_streams : int -> 'p t -> 'p t =
+ fun max_streams t -> { t with max_streams }
 
 let update_ids : Stream_identifier.t -> 'p t -> 'p t =
  fun id ({ last_peer_stream; last_local_stream; _ } as t) ->
@@ -75,7 +90,7 @@ let receive_headers :
  fun ~id ~end_stream headers t ->
   match StreamMap.find_opt id t.map with
   | Some stream ->
-      let res = Stream.receive_headers ~end_stream headers stream in
+      let res = t.handle_headers ~end_stream headers stream in
       Result.map
         (fun new_stream ->
           let map = StreamMap.add id new_stream t.map in
@@ -87,11 +102,38 @@ let receive_headers :
         else Stream.create_terminated ~id
       in
 
-      let res = Stream.receive_headers ~end_stream headers stream in
+      let res = t.handle_headers ~end_stream headers stream in
       Result.map
-        (fun _ ->
-          (* NOTE: should we update the map or no here? *)
-          t)
+        (fun new_stream ->
+          let map = StreamMap.add id new_stream t.map in
+          update_ids id { t with map })
+        res
+
+let receive_rst :
+    id:Stream_identifier.t ->
+    Error_code.t ->
+    'a t ->
+    ('a t, Error_code.t * string) result =
+ fun ~id code t ->
+  match StreamMap.find_opt id t.map with
+  | Some stream ->
+      let res = Stream.receive_rst code stream in
+      Result.map
+        (fun new_stream ->
+          let map = StreamMap.add id new_stream t.map in
+          update_ids id { t with map })
+        res
+  | None ->
+      let stream =
+        if id > t.last_local_stream then Stream.create_idle ~id
+        else Stream.create_terminated ~id
+      in
+
+      let res = Stream.receive_rst code stream in
+      Result.map
+        (fun new_stream ->
+          let map = StreamMap.add id new_stream t.map in
+          update_ids id { t with map })
         res
 
 (*

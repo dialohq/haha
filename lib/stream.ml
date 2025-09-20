@@ -190,23 +190,12 @@ let receive_request :
     can_open:(unit -> bool) ->
     request_handler:Reqd.handler ->
     end_stream:bool ->
-    Headers.t ->
-    Headers.Pseudo.request_pseudos ->
+    Reqd.t ->
     server_peer transition =
- fun ~can_open ~request_handler ~end_stream headers pseudo -> function
+ fun ~can_open ~request_handler ~end_stream reqd -> function
   | Inactive { state = Closed Terminating; _ } as stream -> Ok stream
   | Inactive { state = Idle; id } ->
       if can_open () then
-        let reqd =
-          {
-            Reqd.meth = Method.of_string pseudo.meth;
-            path = pseudo.path;
-            authority = pseudo.authority;
-            scheme = pseudo.scheme;
-            headers;
-          }
-        in
-
         let (Reqd.ReqdHandle
                {
                  body_reader = reader;
@@ -402,16 +391,6 @@ let receive_response :
   | Inactive { state = Closed Terminated; _ } ->
       Error (StreamClosed, "HEADERS received on closed stream")
 
-(* 
-
-   To transition from two receive_headers_* functions to one, a good idea would be to pass a module called smth like `Peer` which would include a minimal functionalities that are peer-specific.
-
-   In this case it would probobly be a function that validates the pseudo headers which are different for each peer.
-
-   The `client_peer` and `server_peer` at the top are pretty good for peer specific states, althought this could be abstracted in some other way as well.
-
-*)
-
 let receive_headers_server :
     request_handler:Reqd.handler ->
     end_stream:bool ->
@@ -433,10 +412,20 @@ let receive_headers_server :
           Ok (Inactive { state = Closed Terminating; id = s.id }))
   | true, NotPresent -> receive_trailers headers
   | end_stream, Valid (Request pseudo) ->
+      let reqd =
+        {
+          Reqd.meth = Method.of_string pseudo.meth;
+          path = pseudo.path;
+          authority = pseudo.authority;
+          scheme = pseudo.scheme;
+          headers = Headers.filter_out_pseudo headers;
+        }
+      in
+
       (* TODO: pass can_open *)
       receive_request
         ~can_open:(fun () -> true)
-        ~request_handler ~end_stream headers pseudo
+        ~request_handler ~end_stream reqd
 
 let receive_headers_client :
     end_stream:bool -> Headers.t -> client_peer transition =
@@ -462,3 +451,17 @@ let receive_headers_client :
           (Headers.filter_out_pseudo headers)
       in
       receive_response ~respd ~end_stream
+
+let receive_rst : Error_code.t -> 'a transition =
+ fun code -> function
+  | Inactive { state = Closed Terminating; _ } as stream -> Ok stream
+  | Inactive { state = Idle; _ } ->
+      Error (ProtocolError, "RST_STREAM received on a idle stream")
+  | Inactive { state = Closed Terminated; _ } ->
+      Error (StreamClosed, "RST_STREAM received on a closed stream!")
+  | Active { error_handler; on_close; context; id; _ } ->
+      let final_context = error_handler context code in
+      on_close final_context;
+
+      (* NOTE: notice we're not writing here *)
+      Ok (Inactive { state = Closed Terminating; id })

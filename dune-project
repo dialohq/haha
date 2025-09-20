@@ -26,5 +26,6 @@
 
 (package
  (name haha-examples)
+ (allow_empty)
  (synopsis "Examples for Haha library")
  (depends haha uri))
