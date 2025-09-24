@@ -4,11 +4,11 @@ type 'peer t = {
   map : 'peer Stream.t StreamMap.t;
   last_peer_stream : Stream_identifier.t;
   last_local_stream : Stream_identifier.t;
-  max_streams : int;
+  max_streams : int32; [@warning "-69"]
   handle_headers : end_stream:bool -> Headers.t -> 'peer Stream.transition;
 }
 
-let init_client : int -> Stream.client_peer t =
+let init_client : int32 -> Peer.client t =
  fun max_streams ->
   {
     map = StreamMap.empty;
@@ -18,7 +18,7 @@ let init_client : int -> Stream.client_peer t =
     handle_headers = Stream.receive_headers_client;
   }
 
-let init_server : request_handler:Reqd.handler -> int -> Stream.server_peer t =
+let init_server : request_handler:Reqd.handler -> int32 -> Peer.server t =
  fun ~request_handler max_streams ->
   {
     map = StreamMap.empty;
@@ -28,10 +28,18 @@ let init_server : request_handler:Reqd.handler -> int -> Stream.server_peer t =
     handle_headers = Stream.receive_headers_server ~request_handler;
   }
 
-let update_max_streams : int -> 'p t -> 'p t =
+let last_peer_stream { last_peer_stream; _ } = last_peer_stream
+
+let update_max_streams : int32 -> 'a t -> 'a t =
  fun max_streams t -> { t with max_streams }
 
-let update_ids : Stream_identifier.t -> 'p t -> 'p t =
+let active_streams : 'a t -> int =
+ fun t ->
+  StreamMap.fold
+    (fun _ stream acc -> if Stream.is_active stream then acc + 1 else acc)
+    t.map 0
+
+let update_ids : Stream_identifier.t -> 'a t -> 'a t =
  fun id ({ last_peer_stream; last_local_stream; _ } as t) ->
   let open Stream_identifier in
   match
@@ -137,6 +145,7 @@ let receive_rst :
         res
 
 (*
+
 let count_active : _ t -> int =
  fun { map; _ } ->
   StreamMap.fold

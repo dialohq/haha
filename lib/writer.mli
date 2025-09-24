@@ -3,9 +3,12 @@ type writer = t -> unit
 type _ Effect.t += Write : writer -> unit Effect.t
 
 val write : writer -> unit
-val create : header_table_size:int -> int -> t
+
+val create :
+  header_table_size:int -> [> Eio.Flow.sink_ty ] Eio.Resource.t -> int -> t
+
 val set_encoder_capacity : t -> int -> unit
-val flush : t -> [> Eio.Flow.sink_ty ] Eio.Resource.t -> (unit, exn) result
+val flush : t -> (unit, exn) result
 val connection_preface : t -> unit
 
 val goaway :

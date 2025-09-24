@@ -10,3 +10,6 @@ module Streams = Streams
 module Types = Types
 module Reqd = Reqd
 module Body = Body
+module Client = Client
+module Server = Server
+module Connection = Connection

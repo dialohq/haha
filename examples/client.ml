@@ -1,3 +1,4 @@
+(*
 open Haha
 
 type context = int * bool;;
@@ -85,3 +86,20 @@ let rec iterate : Client.iter_input list -> Client.iteration -> unit =
 in
 
 iterate inputs initial_iteration
+*)
+
+open Haha
+
+let rec iterate : Connection.iteration -> unit = function
+  | End -> ()
+  | Error _err -> print_endline "conn erra"
+  | InProgress next -> iterate (next ())
+
+let () =
+  Eio_main.run @@ fun env ->
+  Eio.Switch.run @@ fun sw ->
+  let socket =
+    Eio.Net.connect ~sw env#net (`Tcp (Eio.Net.Ipaddr.V4.loopback, 8080))
+  in
+
+  iterate (Client.connect socket)

@@ -1,3 +1,4 @@
+(*
 open Haha
 
 type context = [ `Data of Cstruct.t | `Wait | `End ];;
@@ -75,3 +76,24 @@ Eio.Net.run_server
   ~on_error:(fun exn ->
     Printf.printf "connection exn: %s\n%!" @@ Printexc.to_string exn)
   server_socket connection_handler
+*)
+
+open Haha
+
+let () =
+  Eio_main.run @@ fun env ->
+  Eio.Switch.run @@ fun sw ->
+  let socket =
+    Eio.Net.listen ~reuse_port:true ~backlog:10 ~sw env#net
+      (`Tcp (Eio.Net.Ipaddr.V4.any, 8080))
+  in
+
+  let request_handler : Reqd.handler = Obj.magic () in
+
+  let connection_handler =
+    Server.connection_handler
+      ~error_handler:(fun _ -> print_endline "conn erra")
+      request_handler
+  in
+
+  Eio.Net.run_server ~on_error:raise socket connection_handler

@@ -1,5 +1,5 @@
-type client_peer = private Client [@warning "-37"]
-type server_peer = private Server [@warning "-37"]
+type client_peer = Peer.client
+type server_peer = Peer.server
 
 type (_, 'c) writers =
   | BodyWriter : 'c Body.writer -> ('peer, 'c) writers
@@ -8,6 +8,7 @@ type (_, 'c) writers =
 type (_, 'c) readers =
   | BodyReader : 'c Body.reader -> ('peer, 'c) readers
   | AwaitingResponse : 'c Respd.handler -> (client_peer, 'c) readers
+      [@warning "-37"]
 
 type 'context error_handler = 'context -> Error_code.t -> 'context
 
@@ -21,7 +22,7 @@ type ('peer, 'c) active_state =
 type closed = Terminating | Terminated
 type inactive_state = Idle | Closed of closed
 
-type 'peer t =
+type _ t =
   | Active : {
       state : ('peer, 'c) active_state;
       id : Stream_identifier.t;
@@ -37,6 +38,7 @@ type 'p transition = 'p t -> ('p t, Error_code.t * string) result
 
 let create_idle ~id = Inactive { id; state = Idle }
 let create_terminated ~id = Inactive { id; state = Closed Terminated }
+let is_active = function Active _ -> true | Inactive _ -> false
 
 let read_data : end_stream:bool -> Cstruct.t -> 'a transition =
  fun ~end_stream data -> function

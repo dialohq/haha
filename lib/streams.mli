@@ -1,15 +1,15 @@
 type 'peer t
 
-(* val last_peer_stream : _ t -> int32 *)
-val init_client : int -> Stream.client_peer t
-val init_server : request_handler:Reqd.handler -> int -> Stream.server_peer t
+val init_client : int32 -> Peer.client t
+val init_server : request_handler:Reqd.handler -> int32 -> Peer.server t
+val update_max_streams : int32 -> 'a t -> 'a t
+val active_streams : 'a t -> int
+val last_peer_stream : _ t -> int32
 (* val count_active : _ t -> int *)
 (* val close_stream : ?err:Error.t -> Stream_identifier.t -> 'p t -> 'p t *)
 (* val close_all : ?err:Error.t -> _ t -> unit *)
 (* val all_closed : _ t -> bool *)
 (* val update_closing_streams : 'p t -> 'p t *)
-
-val update_max_streams : int -> 'p t -> 'p t
 
 val read_data :
   id:Stream_identifier.t ->

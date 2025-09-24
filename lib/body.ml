@@ -5,7 +5,6 @@ type 'context writer_payload =
 
 type 'context writer_result = {
   payload : 'context writer_payload;
-  on_flush : unit -> unit;
   context : 'context;
 }
 
