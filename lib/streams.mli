@@ -1,8 +1,12 @@
 type 'peer t
 
-val init_client : int32 -> Peer.client t
-val init_server : request_handler:Reqd.handler -> int32 -> Peer.server t
-val update_max_streams : int32 -> 'a t -> 'a t
+val init_client : int32 -> int32 -> Peer.client t
+
+val init_server :
+  request_handler:Reqd.handler -> int32 -> int32 -> Peer.server t
+
+val update_local_max : int32 -> 'a t -> 'a t
+val update_peer_max : int32 -> 'a t -> 'a t
 val active_streams : 'a t -> int
 val last_peer_stream : _ t -> int32
 (* val count_active : _ t -> int *)

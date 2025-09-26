@@ -29,9 +29,10 @@ let create : [> Flow.source_ty ] Resource.t -> int -> t =
  fun flow size -> Buf_read.of_flow ~initial_size:size ~max_size:size flow
 
 let update_size : int -> t -> t =
- fun _size _t ->
+ fun _size t ->
   (* TODO: copy all bytes from previous and create a new reader *)
-  failwith "Reader.update_size not implemented"
+  print_endline "WARN: Reader.update_size not implemented";
+  t
 
 let read_preface : t -> (unit, Error.t) result =
  fun t ->

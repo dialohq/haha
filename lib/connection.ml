@@ -36,6 +36,8 @@ type shutdown =
   | AwaitingClosedStreams
   | Close
 
+type settings_sync = Idle | Syncing of Settings.t
+
 type 'peer t = {
   writer : Writer.t;
   streams : 'peer Streams.t;
@@ -43,6 +45,7 @@ type 'peer t = {
   flow : Flow_control.t; [@warning "-69"]
   reader : Reader.t;
   shutdown : shutdown;
+  settings_sync : settings_sync;
 }
 
 type iteration =
@@ -61,10 +64,13 @@ let initial_client :
   {
     reader;
     writer;
-    streams = Streams.init_client peer_settings.max_concurrent_streams;
-    hpack_decoder = Hpack.Decoder.create user_settings.header_table_size;
+    streams =
+      Streams.init_client peer_settings.max_concurrent_streams
+        Settings.default.max_concurrent_streams;
+    hpack_decoder = Hpack.Decoder.create Settings.default.header_table_size;
     flow = Flow_control.initial;
     shutdown = Idle;
+    settings_sync = Syncing user_settings;
   }
 
 let initial_server :
@@ -80,18 +86,15 @@ let initial_server :
     reader;
     writer;
     streams =
-      Streams.init_server ~request_handler peer_settings.max_concurrent_streams;
-    hpack_decoder = Hpack.Decoder.create user_settings.header_table_size;
+      Streams.init_server ~request_handler peer_settings.max_concurrent_streams
+        Settings.default.max_concurrent_streams;
+    hpack_decoder = Hpack.Decoder.create Settings.default.header_table_size;
     flow = Flow_control.initial;
     shutdown = Idle;
+    settings_sync = Syncing user_settings;
   }
 
-let shutdown : 'a t -> Error_code.t * string -> unit =
- fun _conn _ ->
-  (* TODO: some cleanup in here idk *)
-  ()
-
-let update_with_settings :
+let receive_settings :
     Settings.setting list -> 'a t -> ('a t, Error_code.t * string) result =
  fun settings conn ->
   let rec aux conn = function
@@ -103,7 +106,7 @@ let update_with_settings :
         (* TODO: gotta thing about this, peer-specific *)
         aux conn rest
     | MaxConcurrentStreams v :: rest ->
-        let streams = Streams.update_max_streams v conn.streams in
+        let streams = Streams.update_local_max v conn.streams in
         aux { conn with streams } rest
     | InitialWindowSize _initial_window :: _rest ->
         failwith "implement INITIAL_WINDOW_SIZE setting"
@@ -117,13 +120,27 @@ let update_with_settings :
 
   aux conn settings
 
+(* updating connection state with user's settings after receiving ACK *)
+let update_with_settings :
+    Settings.t -> 'a t -> ('a t, Error_code.t * string) result =
+ fun settings t ->
+  match
+    Hpack.Decoder.set_capacity t.hpack_decoder settings.header_table_size
+  with
+  | Ok () ->
+      let streams =
+        Streams.update_peer_max settings.max_concurrent_streams t.streams
+      in
+      let reader = Reader.update_size settings.max_frame_size t.reader in
+      Ok { t with streams; reader }
+  | Error Decoding_error ->
+      Error (InternalError, "failed to update capacity of the HPACK decoder")
+
 let handle_frame : 'a t -> Frame.t -> ('a t, Error.connection_error) result =
  fun conn event ->
   let ( let* ) x y =
     match x with
-    | Result.Error err ->
-        shutdown conn err;
-        Result.Error (Error.PeerError err)
+    | Result.Error err -> Result.Error (Error.ProtocolViolation err)
     | Ok v -> y v
   in
 
@@ -159,8 +176,20 @@ let handle_frame : 'a t -> Frame.t -> ('a t, Error.connection_error) result =
     } ->
         let* streams = Streams.receive_rst ~id code conn.streams in
         Ok { conn with streams }
+    | { frame_payload = Settings _; frame_header = { flags; _ } }
+      when Flags.test_ack flags -> (
+        match conn.settings_sync with
+        | Idle ->
+            Error
+              (ProtocolViolation
+                 (ProtocolError, "unexpected SETTINGS with ACK flag"))
+        | Syncing settings ->
+            let* new_t =
+              update_with_settings settings { conn with settings_sync = Idle }
+            in
+            Ok new_t)
     | { frame_payload = Settings l; _ } ->
-        let* conn = update_with_settings l conn in
+        let* conn = receive_settings l conn in
         Writer.settings_ack conn.writer;
         Ok conn
     | { frame_payload = PushPromise _; _ } ->

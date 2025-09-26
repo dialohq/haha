@@ -15,7 +15,7 @@ let connect :
   match Writer.flush writer with
   | Error exn -> Error (Exn exn)
   | Ok () ->
-      let reader = Reader.create socket settings.max_frame_size in
+      let reader = Reader.create socket Settings.default.max_frame_size in
 
       let conn =
         match Reader.read_frame reader with
@@ -25,6 +25,7 @@ let connect :
               Writer.create ~header_table_size:peer_settings'.header_table_size
                 socket peer_settings'.max_frame_size
             in
+            Writer.settings_ack writer;
 
             let conn = initial_client ~writer ~reader settings lis in
             Ok conn

@@ -6,7 +6,7 @@ let handle :
     [> Eio.Flow.two_way_ty ] Eio.Resource.t ->
     iteration =
  fun ?(settings = Settings.default) ~request_handler socket ->
-  let reader = Reader.create socket settings.max_frame_size in
+  let reader = Reader.create socket Settings.default.max_frame_size in
 
   let conn =
     match Reader.(read_preface >>= read_frame) reader with
@@ -18,6 +18,7 @@ let handle :
         in
 
         Writer.settings settings writer;
+        Writer.settings_ack writer;
 
         match Writer.flush writer with
         | Error exn -> Result.Error (Error.Exn exn)

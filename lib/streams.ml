@@ -4,34 +4,41 @@ type 'peer t = {
   map : 'peer Stream.t StreamMap.t;
   last_peer_stream : Stream_identifier.t;
   last_local_stream : Stream_identifier.t;
-  max_streams : int32; [@warning "-69"]
+  max_local_streams : int32; [@warning "-69"]
+  max_peer_streams : int32; [@warning "-69"]
   handle_headers : end_stream:bool -> Headers.t -> 'peer Stream.transition;
 }
 
-let init_client : int32 -> Peer.client t =
- fun max_streams ->
+let init_client : int32 -> int32 -> Peer.client t =
+ fun max_local_streams max_peer_streams ->
   {
     map = StreamMap.empty;
     last_peer_stream = 0l;
     last_local_stream = -1l;
-    max_streams;
+    max_local_streams;
+    max_peer_streams;
     handle_headers = Stream.receive_headers_client;
   }
 
-let init_server : request_handler:Reqd.handler -> int32 -> Peer.server t =
- fun ~request_handler max_streams ->
+let init_server :
+    request_handler:Reqd.handler -> int32 -> int32 -> Peer.server t =
+ fun ~request_handler max_local_streams max_peer_streams ->
   {
     map = StreamMap.empty;
     last_peer_stream = -1l;
     last_local_stream = 0l;
-    max_streams;
+    max_local_streams;
+    max_peer_streams;
     handle_headers = Stream.receive_headers_server ~request_handler;
   }
 
 let last_peer_stream { last_peer_stream; _ } = last_peer_stream
 
-let update_max_streams : int32 -> 'a t -> 'a t =
- fun max_streams t -> { t with max_streams }
+let update_local_max : int32 -> 'a t -> 'a t =
+ fun max_local_streams t -> { t with max_local_streams }
+
+let update_peer_max : int32 -> 'a t -> 'a t =
+ fun max_peer_streams t -> { t with max_peer_streams }
 
 let active_streams : 'a t -> int =
  fun t ->
