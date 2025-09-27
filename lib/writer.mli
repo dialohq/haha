@@ -7,6 +7,7 @@ val write : writer -> unit
 val create :
   header_table_size:int -> [> Eio.Flow.sink_ty ] Eio.Resource.t -> int -> t
 
+val create_with_defaults : [> Eio.Flow.sink_ty ] Eio.Resource.t -> t
 val set_encoder_capacity : t -> int -> unit
 val flush : t -> (unit, exn) result
 val connection_preface : t -> unit

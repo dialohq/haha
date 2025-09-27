@@ -20,4 +20,5 @@ val initial_server :
   Settings.setting list ->
   Peer.server t
 
-val start : ('a t, Error.connection_error) result -> iteration
+val start : 'a t -> iteration
+val handle_preface_error : Writer.t -> Error.connection_error -> iteration

@@ -248,16 +248,28 @@ let rec continue : 'a t -> iteration =
 
   let transition = Eio.Fiber.any ~combine events in
 
-  postprocess @@ Eio.Cancel.protect (fun () -> transition t)
+  let last_seen = Streams.last_peer_stream t.streams in
+  postprocess last_seen t.writer @@ Eio.Cancel.protect (fun () -> transition t)
 
-and postprocess : ('a t, Error.connection_error) result -> iteration = function
+and postprocess :
+    int32 -> Writer.t -> ('a t, Error.connection_error) result -> iteration =
+ fun last_seen writer -> function
   | Error err ->
-      print_endline "conn erra inside";
-      (* we should probably flush the writer first even if we got a connection error *)
       (*
         - send GOAWAY
         - error/on_close all streams
       *)
+      (match err with
+      | PeerError _ -> ()
+      | ProtocolViolation (code, msg) ->
+          Writer.goaway ~debug_data:(Cstruct.of_string msg) last_seen code
+            writer
+      | Exn exn ->
+          Writer.goaway
+            ~debug_data:(Cstruct.of_string (Printexc.to_string exn))
+            last_seen InternalError writer);
+
+      Writer.flush writer |> ignore;
       Error err
   | Ok { shutdown = Close; _ } -> End
   | Ok { shutdown = AwaitingClosedStreams; streams; writer; _ }
@@ -265,10 +277,14 @@ and postprocess : ('a t, Error.connection_error) result -> iteration = function
       Writer.goaway (Streams.last_peer_stream streams) NoError writer;
       match Writer.flush writer with
       | Ok () -> End
-      | Error exn -> postprocess (Error (Exn exn)))
+      | Error exn -> postprocess last_seen writer (Error (Exn exn)))
   | Ok t -> (
       match Writer.flush t.writer with
       | Ok () -> InProgress (fun () -> continue t)
-      | Error exn -> postprocess (Error (Exn exn)))
+      | Error exn -> postprocess last_seen writer (Error (Exn exn)))
 
-let start = postprocess
+let start t =
+  let last_seen = Streams.last_peer_stream t.streams in
+  postprocess last_seen t.writer (Ok t)
+
+let handle_preface_error writer error = postprocess 0l writer (Error error)

@@ -25,6 +25,11 @@ let create :
   in
   T { buffer; faraday = Faraday.of_bigstring buffer; hpack_encoder; socket }
 
+let create_with_defaults : [> Eio.Flow.sink_ty ] Eio.Resource.t -> t =
+ fun socket ->
+  create ~header_table_size:Settings.default.header_table_size socket
+    Settings.default.max_frame_size
+
 let set_encoder_capacity (T t) = Hpack.Encoder.set_capacity t.hpack_encoder
 
 let flush (T t) =

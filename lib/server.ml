@@ -8,34 +8,32 @@ let handle :
  fun ?(settings = Settings.default) ~request_handler socket ->
   let reader = Reader.create socket Settings.default.max_frame_size in
 
-  let conn =
-    match Reader.(read_preface >>= read_frame) reader with
-    | Ok { frame_payload = Settings lis; _ } -> (
-        let peer_settings' = Settings.(update_with_list default lis) in
-        let writer =
-          Writer.create ~header_table_size:peer_settings'.header_table_size
-            socket peer_settings'.max_frame_size
-        in
+  match Reader.(read_preface >>= read_frame) reader with
+  | Ok { frame_payload = Settings lis; _ } -> (
+      let peer_settings' = Settings.(update_with_list default lis) in
+      let writer =
+        Writer.create ~header_table_size:peer_settings'.header_table_size socket
+          peer_settings'.max_frame_size
+      in
 
-        Writer.settings settings writer;
-        Writer.settings_ack writer;
+      Writer.settings settings writer;
+      Writer.settings_ack writer;
 
-        match Writer.flush writer with
-        | Error exn -> Result.Error (Error.Exn exn)
-        | Ok () ->
-            let conn =
-              initial_server ~writer ~reader ~request_handler settings lis
-            in
-            Ok conn)
-    | Ok _ | Error (StreamError _) ->
-        Error
-          (Error.ProtocolViolation
-             ( ProtocolError,
-               "invalid connection preface, expected SETTINGS frame" ))
-    | Error (ConnectionError err) -> Error err
-  in
-
-  start conn
+      match Writer.flush writer with
+      | Error exn -> handle_preface_error writer (Error.Exn exn)
+      | Ok () ->
+          let conn =
+            initial_server ~writer ~reader ~request_handler settings lis
+          in
+          start conn)
+  | Ok _ | Error (StreamError _) ->
+      let writer = Writer.create_with_defaults socket in
+      handle_preface_error writer
+        (Error.ProtocolViolation
+           (ProtocolError, "invalid connection preface, expected SETTINGS frame"))
+  | Error (ConnectionError err) ->
+      let writer = Writer.create_with_defaults socket in
+      handle_preface_error writer err
 
 let connection_handler :
     ?settings:Settings.t ->
