@@ -15,25 +15,28 @@ val last_peer_stream : _ t -> int32
 (* val all_closed : _ t -> bool *)
 (* val update_closing_streams : 'p t -> 'p t *)
 
+val write_request :
+  request:Request.t -> Peer.client t -> Peer.client t * Writer.write list
+
 val read_data :
   id:Stream_identifier.t ->
   end_stream:bool ->
   Cstruct.t ->
   'a t ->
-  ('a t, Error_code.t * string) result
+  ('a t * Writer.write list, Error_code.t * string) result
 
 val receive_headers :
   id:Stream_identifier.t ->
   end_stream:bool ->
   Headers.t ->
   'a t ->
-  ('a t, Error_code.t * string) result
+  ('a t * Writer.write list, Error_code.t * string) result
 
 val receive_rst :
   id:Stream_identifier.t ->
   Error_code.t ->
   'a t ->
-  ('a t, Error_code.t * string) result
+  ('a t * Writer.write list, Error_code.t * string) result
 
 (*
 val receive_trailers :

@@ -1,8 +1,14 @@
+type iteration =
+  [ `End
+  | `Error of Error.connection_error
+  | `Shutdown of unit -> iteration
+  | `InProgress of ?shutdown:bool -> unit -> iteration ]
+
 val handle :
   ?settings:Settings.t ->
   request_handler:Reqd.handler ->
   [> Eio.Flow.two_way_ty ] Eio.Resource.t ->
-  Connection.iteration
+  iteration
 
 val connection_handler :
   ?settings:Settings.t ->

@@ -13,3 +13,5 @@ module Body = Body
 module Client = Client
 module Server = Server
 module Connection = Connection
+module Peer = Peer
+module Respd = Respd

@@ -9,10 +9,7 @@ type t =
     }
       -> t
 
-type writer = t -> unit
-type _ Effect.t += Write : writer -> unit Effect.t
-
-let write writer = Effect.perform (Write writer)
+type write = t -> unit
 
 let create :
     header_table_size:int -> [> Eio.Flow.sink_ty ] Eio.Resource.t -> int -> t =

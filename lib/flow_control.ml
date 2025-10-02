@@ -15,11 +15,11 @@ let receive_data ~id n t =
 
   let new_in_window = sub in_window n in
 
-  if compare (div Window_size.max_size 2l) new_in_window > 0 then (
+  if compare (div Window_size.max_size 2l) new_in_window > 0 then
     let increment = sub Window_size.max_size new_in_window in
-    Writer.(write @@ window_update ~increment id);
-    { t with received = 0l })
-  else { t with received = add t.received n }
+    let write = Writer.window_update ~increment id in
+    ({ t with received = 0l }, [ write ])
+  else ({ t with received = add t.received n }, [])
 
 let is_overflow t ~initial_window_size =
   Int32.(compare t.sent (add t.out_flow initial_window_size)) > 0

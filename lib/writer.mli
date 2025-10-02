@@ -1,8 +1,5 @@
 type t
-type writer = t -> unit
-type _ Effect.t += Write : writer -> unit Effect.t
-
-val write : writer -> unit
+type write = t -> unit
 
 val create :
   header_table_size:int -> [> Eio.Flow.sink_ty ] Eio.Resource.t -> int -> t

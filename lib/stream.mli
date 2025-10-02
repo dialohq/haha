@@ -1,10 +1,16 @@
 type 'a t
-type 'p transition = 'p t -> ('p t, Error_code.t * string) result
+
+type 'p transition =
+  'p t -> ('p t * Writer.write list, Error_code.t * string) result
 
 val create_idle : id:Stream_identifier.t -> 'a t
 val create_terminated : id:Stream_identifier.t -> 'a t
-val read_data : end_stream:bool -> Cstruct.t -> 'a transition
 val is_active : 'a t -> bool
+
+val init :
+  request:Request.t -> Stream_identifier.t -> Peer.client t * Writer.write list
+
+val read_data : end_stream:bool -> Cstruct.t -> 'a transition
 
 val receive_headers_client :
   end_stream:bool -> Headers.t -> Peer.client transition

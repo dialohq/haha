@@ -68,20 +68,29 @@ A general function would be good to do something before the specific processing 
 
 *)
 
+let write_request :
+    request:Request.t -> Peer.client t -> Peer.client t * Writer.write list =
+ fun ~request t ->
+  let id = Int32.add t.last_local_stream 2l in
+  let new_stream, writes = Stream.init ~request id in
+  let map = StreamMap.add id new_stream t.map in
+
+  ({ t with map; last_local_stream = id }, writes)
+
 let read_data :
     id:Stream_identifier.t ->
     end_stream:bool ->
     Cstruct.t ->
     'a t ->
-    ('a t, Error_code.t * string) result =
+    ('a t * Writer.write list, Error_code.t * string) result =
  fun ~id ~end_stream data t ->
   match StreamMap.find_opt id t.map with
   | Some stream ->
       let res = Stream.read_data ~end_stream data stream in
       Result.map
-        (fun new_stream ->
+        (fun (new_stream, writes) ->
           let map = StreamMap.add id new_stream t.map in
-          update_ids id { t with map })
+          (update_ids id { t with map }, writes))
         res
   | None ->
       let stream =
@@ -91,9 +100,9 @@ let read_data :
 
       let res = Stream.read_data ~end_stream data stream in
       Result.map
-        (fun _ ->
+        (fun (_, writes) ->
           (* NOTE: should we update the map or no here? *)
-          t)
+          (t, writes))
         res
 
 let receive_headers :
@@ -101,15 +110,15 @@ let receive_headers :
     end_stream:bool ->
     Headers.t ->
     'a t ->
-    ('a t, Error_code.t * string) result =
+    ('a t * Writer.write list, Error_code.t * string) result =
  fun ~id ~end_stream headers t ->
   match StreamMap.find_opt id t.map with
   | Some stream ->
       let res = t.handle_headers ~end_stream headers stream in
       Result.map
-        (fun new_stream ->
+        (fun (new_stream, writes) ->
           let map = StreamMap.add id new_stream t.map in
-          update_ids id { t with map })
+          (update_ids id { t with map }, writes))
         res
   | None ->
       let stream =
@@ -119,24 +128,24 @@ let receive_headers :
 
       let res = t.handle_headers ~end_stream headers stream in
       Result.map
-        (fun new_stream ->
+        (fun (new_stream, writes) ->
           let map = StreamMap.add id new_stream t.map in
-          update_ids id { t with map })
+          (update_ids id { t with map }, writes))
         res
 
 let receive_rst :
     id:Stream_identifier.t ->
     Error_code.t ->
     'a t ->
-    ('a t, Error_code.t * string) result =
+    ('a t * Writer.write list, Error_code.t * string) result =
  fun ~id code t ->
   match StreamMap.find_opt id t.map with
   | Some stream ->
       let res = Stream.receive_rst code stream in
       Result.map
-        (fun new_stream ->
+        (fun (new_stream, writes) ->
           let map = StreamMap.add id new_stream t.map in
-          update_ids id { t with map })
+          (update_ids id { t with map }, writes))
         res
   | None ->
       let stream =
@@ -146,9 +155,9 @@ let receive_rst :
 
       let res = Stream.receive_rst code stream in
       Result.map
-        (fun new_stream ->
+        (fun (new_stream, writes) ->
           let map = StreamMap.add id new_stream t.map in
-          update_ids id { t with map })
+          (update_ids id { t with map }, writes))
         res
 
 (*
@@ -890,48 +899,4 @@ let receive_response :
 
   update_stream_state ~writer id f t
 
-let write_request :
-    writer:Writer.t -> request:Request.t -> client_peer t -> client_peer t =
- fun ~writer ~request t ->
-  let (Request.Request
-         {
-           response_handler;
-           body_writer;
-           error_handler;
-           initial_context;
-           on_close;
-           _;
-         } as request) =
-    request
-  in
-  let id = Int32.add t.last_local_stream 2l in
-  Writer.request_headers id request writer;
-  Writer.window_update id ~increment:Flow_control.initial_increment writer;
-  let stream_state : _ Stream.t =
-    match body_writer with
-    | Some body_writer ->
-        State
-          (Open
-             {
-               readers = AwaitingResponse response_handler;
-               writers = BodyWriter body_writer;
-               error_handler;
-               context = initial_context;
-               on_close;
-               flow = Flow_control.initial;
-             })
-    | None ->
-        State
-          (HalfClosed
-             (Local
-                {
-                  readers = AwaitingResponse response_handler;
-                  error_handler;
-                  context = initial_context;
-                  on_close;
-                  flow = Flow_control.initial;
-                }))
-  in
-
-  stream_transition id stream_state t
 *)

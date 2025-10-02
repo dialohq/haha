@@ -1,5 +1,3 @@
-open Effect.Deep
-
 (* TODO: own HPACK implementation and Eio-based parsing *)
 let decompress_headers_block ?len bs hpack_decoder :
     (Headers.t, Error_code.t * string) result =
@@ -30,12 +28,7 @@ let decompress_headers_block ?len bs hpack_decoder :
                         (hpack_header.Hpack.name, hpack_header.value))
                       l))
 
-type shutdown =
-  | Idle
-  | AwaitingGoaway [@warning "-37"]
-  | AwaitingClosedStreams
-  | Close
-
+type shutdown = Idle | Ongoing
 type settings_sync = Idle | Syncing of Settings.t
 
 type 'peer t = {
@@ -48,10 +41,12 @@ type 'peer t = {
   settings_sync : settings_sync;
 }
 
-type iteration =
-  | End
-  | Error of Error.connection_error
-  | InProgress of (unit -> iteration)
+type 'a iteration_base =
+  [> `End
+  | `Error of Error.connection_error
+  | `Shutdown of unit -> 'a iteration_base ]
+  as
+  'a
 
 let initial_client :
     writer:Writer.t ->
@@ -136,90 +131,74 @@ let update_with_settings :
   | Error Decoding_error ->
       Error (InternalError, "failed to update capacity of the HPACK decoder")
 
+let ( let* ) x y =
+  match x with
+  | Result.Error err -> Result.Error (Error.ProtocolViolation err)
+  | Ok v -> y v
+
 let handle_frame : 'a t -> Frame.t -> ('a t, Error.connection_error) result =
  fun conn event ->
-  let ( let* ) x y =
-    match x with
-    | Result.Error err -> Result.Error (Error.ProtocolViolation err)
-    | Ok v -> y v
-  in
-
-  let aux () =
-    match event with
-    | { frame_payload = Ping data; _ } ->
-        Writer.ping data ~ack:true conn.writer;
-        Ok conn
-    | { frame_payload = Data data; frame_header = { stream_id = id; flags; _ } }
-      ->
-        let end_stream = Flags.test_end_stream flags in
-        let* streams = Streams.read_data ~id ~end_stream data conn.streams in
-        Ok { conn with streams }
-    | {
-     frame_payload = Headers data;
-     frame_header = { stream_id = id; flags; _ };
-    }
-      when Flags.test_end_header flags ->
-        let* headers = decompress_headers_block data conn.hpack_decoder in
-        let end_stream = Flags.test_end_stream flags in
-        let* streams =
-          Streams.receive_headers ~id ~end_stream headers conn.streams
-        in
-        Ok { conn with streams }
-    | { frame_payload = Headers _data; _ } ->
-        (* TODO: handle continuation headers *)
-        assert false
-    | { frame_payload = Continuation _; _ } -> assert false
-    | {
-     frame_payload = RSTStream code;
-     frame_header = { stream_id = id; _ };
-     _;
-    } ->
-        let* streams = Streams.receive_rst ~id code conn.streams in
-        Ok { conn with streams }
-    | { frame_payload = Settings _; frame_header = { flags; _ } }
-      when Flags.test_ack flags -> (
-        match conn.settings_sync with
-        | Idle ->
-            Error
-              (ProtocolViolation
-                 (ProtocolError, "unexpected SETTINGS with ACK flag"))
-        | Syncing settings ->
-            let* new_t =
-              update_with_settings settings { conn with settings_sync = Idle }
-            in
-            Ok new_t)
-    | { frame_payload = Settings l; _ } ->
-        let* conn = receive_settings l conn in
-        Writer.settings_ack conn.writer;
-        Ok conn
-    | { frame_payload = PushPromise _; _ } ->
-        (* TODO: again, peer-specific *)
-        failwith "server push not implemented"
-    | { frame_payload = Unknown _ | Priority; _ } -> Ok conn
-    | { frame_payload = GoAway (_, NoError, _); _ } -> (
-        match conn.shutdown with
-        | AwaitingGoaway -> Ok { conn with shutdown = Close }
-        | Close -> Ok conn
-        | AwaitingClosedStreams -> Ok { conn with shutdown = Close }
-        | Idle -> Ok { conn with shutdown = AwaitingClosedStreams })
-    | { frame_payload = GoAway (_last_seen, code, debug_data); _ } ->
-        (* TODO: process last_seen with Streams module *)
-        Error (PeerError (code, Bigstringaf.to_string debug_data))
-    | _ -> Ok conn
-  in
-
-  let effc : type c. c Effect.t -> ((c, 'b) continuation -> 'b) option =
-   fun eff ->
-    match eff with
-    | Writer.Write write ->
-        Some
-          (fun k ->
-            write conn.writer;
-            continue k ())
-    | _ -> None
-  in
-
-  match_with aux () { retc = (fun x -> x); exnc = raise; effc }
+  match event with
+  | { frame_payload = Ping data; _ } ->
+      Writer.ping data ~ack:true conn.writer;
+      Ok conn
+  | { frame_payload = Data data; frame_header = { stream_id = id; flags; _ } }
+    ->
+      let end_stream = Flags.test_end_stream flags in
+      let* streams, writes =
+        Streams.read_data ~id ~end_stream data conn.streams
+      in
+      List.iter (fun write -> write conn.writer) writes;
+      Ok { conn with streams }
+  | {
+   frame_payload = Headers data;
+   frame_header = { stream_id = id; flags; _ };
+  }
+    when Flags.test_end_header flags ->
+      let* headers = decompress_headers_block data conn.hpack_decoder in
+      let end_stream = Flags.test_end_stream flags in
+      let* streams, writes =
+        Streams.receive_headers ~id ~end_stream headers conn.streams
+      in
+      List.iter (fun write -> write conn.writer) writes;
+      Ok { conn with streams }
+  | { frame_payload = Headers _data; _ } ->
+      (* TODO: handle continuation headers *)
+      assert false
+  | { frame_payload = Continuation _; _ } -> assert false
+  | { frame_payload = RSTStream code; frame_header = { stream_id = id; _ }; _ }
+    ->
+      let* streams, writes = Streams.receive_rst ~id code conn.streams in
+      List.iter (fun write -> write conn.writer) writes;
+      Ok { conn with streams }
+  | { frame_payload = Settings _; frame_header = { flags; _ } }
+    when Flags.test_ack flags -> (
+      match conn.settings_sync with
+      | Idle ->
+          Error
+            (ProtocolViolation
+               (ProtocolError, "unexpected SETTINGS with ACK flag"))
+      | Syncing settings ->
+          let* new_t =
+            update_with_settings settings { conn with settings_sync = Idle }
+          in
+          Ok new_t)
+  | { frame_payload = Settings l; _ } ->
+      let* conn = receive_settings l conn in
+      Writer.settings_ack conn.writer;
+      Ok conn
+  | { frame_payload = PushPromise _; _ } ->
+      (* TODO: again, peer-specific *)
+      failwith "server push not implemented"
+  | { frame_payload = Unknown _ | Priority; _ } -> Ok conn
+  | { frame_payload = GoAway (_, NoError, _); _ } -> (
+      match conn.shutdown with
+      | Ongoing -> Ok conn
+      | Idle -> Ok { conn with shutdown = Ongoing })
+  | { frame_payload = GoAway (_last_seen, code, debug_data); _ } ->
+      (* TODO: process last_seen with Streams module *)
+      Error (PeerError (code, Bigstringaf.to_string debug_data))
+  | _ -> Ok conn
 
 let handle_stream_error :
     'a t -> Error.stream_error -> ('a t, Error.connection_error) result =
@@ -240,8 +219,15 @@ let combine : 'a transition -> 'a transition -> 'a transition =
  fun tran1 tran2 t ->
   match tran1 t with Error _ as err -> err | Ok new_t -> tran2 new_t
 
-let rec continue : 'a t -> iteration =
- fun t ->
+type ('p, 'a) in_progress_f =
+  'p Streams.t ->
+  (bool -> 'p Streams.t -> Writer.write list -> 'a iteration_base) ->
+  'a iteration_base
+
+let rec continue :
+    shutdown:bool -> ('a, 'b) in_progress_f -> 'a t -> 'b iteration_base =
+ fun ~shutdown in_progress t ->
+  let t = if shutdown then { t with shutdown = Ongoing } else t in
   let read_event = make_read_event t.reader in
 
   let events = [ read_event ] in
@@ -249,11 +235,16 @@ let rec continue : 'a t -> iteration =
   let transition = Eio.Fiber.any ~combine events in
 
   let last_seen = Streams.last_peer_stream t.streams in
-  postprocess last_seen t.writer @@ Eio.Cancel.protect (fun () -> transition t)
+  postprocess in_progress last_seen t.writer
+  @@ Eio.Cancel.protect (fun () -> transition t)
 
 and postprocess :
-    int32 -> Writer.t -> ('a t, Error.connection_error) result -> iteration =
- fun last_seen writer -> function
+    ('a, 'b) in_progress_f ->
+    int32 ->
+    Writer.t ->
+    ('a t, Error.connection_error) result ->
+    'b iteration_base =
+ fun in_progress last_seen writer -> function
   | Error err ->
       (*
         - send GOAWAY
@@ -270,21 +261,28 @@ and postprocess :
             last_seen InternalError writer);
 
       Writer.flush writer |> ignore;
-      Error err
-  | Ok { shutdown = Close; _ } -> End
-  | Ok { shutdown = AwaitingClosedStreams; streams; writer; _ }
+      `Error err
+  | Ok { shutdown = Ongoing; streams; writer; _ }
     when Streams.active_streams streams = 0 -> (
       Writer.goaway (Streams.last_peer_stream streams) NoError writer;
       match Writer.flush writer with
-      | Ok () -> End
-      | Error exn -> postprocess last_seen writer (Error (Exn exn)))
+      | Ok () -> `End
+      | Error exn -> postprocess in_progress last_seen writer (Error (Exn exn)))
   | Ok t -> (
-      match Writer.flush t.writer with
-      | Ok () -> InProgress (fun () -> continue t)
-      | Error exn -> postprocess last_seen writer (Error (Exn exn)))
+      match (Writer.flush t.writer, t.shutdown) with
+      | Error exn, _ ->
+          postprocess in_progress last_seen writer (Error (Exn exn))
+      | Ok (), Idle ->
+          in_progress t.streams (fun shutdown streams writes ->
+              List.iter (fun write -> write t.writer) writes;
+              continue ~shutdown in_progress { t with streams; writer })
+      | Ok (), Ongoing ->
+          `Shutdown (fun () -> continue ~shutdown:false in_progress t))
 
-let start t =
+let start : ('a, 'b) in_progress_f -> 'a t -> 'b iteration_base =
+ fun fn t ->
   let last_seen = Streams.last_peer_stream t.streams in
-  postprocess last_seen t.writer (Ok t)
+  postprocess fn last_seen t.writer (Ok t)
 
-let handle_preface_error writer error = postprocess 0l writer (Error error)
+let handle_preface_error writer error =
+  postprocess (fun _ _ -> `End) 0l writer (Error error)

@@ -1,5 +1,11 @@
 open Connection
 
+type iteration =
+  [ `End
+  | `Error of Error.connection_error
+  | `Shutdown of unit -> iteration
+  | `InProgress of ?shutdown:bool -> unit -> iteration ]
+
 let handle :
     ?settings:Settings.t ->
     request_handler:Reqd.handler ->
@@ -25,7 +31,11 @@ let handle :
           let conn =
             initial_server ~writer ~reader ~request_handler settings lis
           in
-          start conn)
+          start
+            (fun streams continue ->
+              `InProgress
+                (fun ?(shutdown = false) () -> continue shutdown streams []))
+            conn)
   | Ok _ | Error (StreamError _) ->
       let writer = Writer.create_with_defaults socket in
       handle_preface_error writer
@@ -42,9 +52,10 @@ let connection_handler :
     _ Eio.Net.connection_handler =
  fun ?settings ~error_handler request_handler socket _ ->
   let rec iterate : iteration -> unit = function
-    | End -> ()
-    | Error err -> error_handler err
-    | InProgress next -> iterate (next ())
+    | `End -> ()
+    | `Error err -> error_handler err
+    | `InProgress next -> iterate (next ())
+    | `Shutdown next -> iterate (next ())
   in
 
   iterate (handle ?settings ~request_handler socket)

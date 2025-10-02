@@ -1,5 +1,17 @@
 open Connection
 
+type iteration =
+  [ `End
+  | `Error of Error.connection_error
+  | `Shutdown of unit -> iteration
+  | `InProgress of ?shutdown:bool -> Request.t list -> iteration ]
+
+let rec write_requests streams writes = function
+  | [] -> (streams, writes)
+  | request :: rest ->
+      let streams, new_writes = Streams.write_request ~request streams in
+      write_requests streams (writes @ new_writes) rest
+
 let connect :
     ?settings:Settings.t -> [> Eio.Flow.two_way_ty ] Eio.Resource.t -> iteration
     =
@@ -10,7 +22,7 @@ let connect :
   Writer.settings settings writer;
 
   match Writer.flush writer with
-  | Error exn -> Error (Exn exn)
+  | Error exn -> handle_preface_error writer (Exn exn)
   | Ok () -> (
       let reader = Reader.create socket Settings.default.max_frame_size in
 
@@ -24,7 +36,15 @@ let connect :
           Writer.settings_ack writer;
 
           let conn = initial_client ~writer ~reader settings lis in
-          start conn
+          start
+            (fun streams continue ->
+              `InProgress
+                (fun ?(shutdown = false) requests ->
+                  let new_streams, writes =
+                    write_requests streams [] requests
+                  in
+                  continue shutdown new_streams writes))
+            conn
       | Ok _ | Error (StreamError _) ->
           handle_preface_error writer
             (Error.ProtocolViolation
