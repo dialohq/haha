@@ -206,18 +206,40 @@ let handle_stream_error :
 
 type 'a transition = 'a t -> ('a t, Error.connection_error) result
 
-let make_read_event : Reader.t -> unit -> 'a transition =
+let make_read_event : Reader.t -> unit -> [> `Received ] * 'a transition =
  fun reader () ->
   let res = Reader.read_frame reader in
-  fun conn ->
+  let tran =
+   fun conn ->
     match res with
     | Error (StreamError err) -> handle_stream_error conn err
     | Error (ConnectionError err) -> Error err
     | Ok frame -> handle_frame conn frame
+  in
+  (`Received, tran)
 
-let combine : 'a transition -> 'a transition -> 'a transition =
- fun tran1 tran2 t ->
-  match tran1 t with Error _ as err -> err | Ok new_t -> tran2 new_t
+let make_user_events : 'a t -> (unit -> [> `Written ] * 'a transition) list =
+ fun t ->
+  List.map
+    (fun event ->
+      let transition = event () in
+      let tran t =
+        let streams, writes = transition t.streams in
+        List.iter (fun write -> write t.writer) writes;
+        Ok { t with streams }
+      in
+      fun () -> (`Written, tran))
+    (Streams.get_events t.streams)
+
+let combine ev1 ev2 =
+  ( `Received,
+    fun t ->
+      match (ev1, ev2) with
+      | (`Received, tran1), (`Received, tran2)
+      | (`Written, tran1), (`Received, tran2)
+      | (`Written, tran1), (`Written, tran2) ->
+          Result.bind (tran1 t) tran2
+      | (`Received, tran1), (`Written, tran2) -> Result.bind (tran2 t) tran1 )
 
 type ('p, 'a) in_progress_f =
   'p Streams.t ->
@@ -228,11 +250,11 @@ let rec continue :
     shutdown:bool -> ('a, 'b) in_progress_f -> 'a t -> 'b iteration_base =
  fun ~shutdown in_progress t ->
   let t = if shutdown then { t with shutdown = Ongoing } else t in
+
   let read_event = make_read_event t.reader in
+  let user_events = make_user_events t in
 
-  let events = [ read_event ] in
-
-  let transition = Eio.Fiber.any ~combine events in
+  let _, transition = Eio.Fiber.any ~combine (read_event :: user_events) in
 
   let last_seen = Streams.last_peer_stream t.streams in
   postprocess in_progress last_seen t.writer

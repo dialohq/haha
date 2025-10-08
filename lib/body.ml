@@ -1,13 +1,9 @@
 type reader_payload = [ `Data of Cstruct.t | `End of Headers.t ]
 
-type 'context writer_payload =
+type writer_payload =
   [ `Data of Cstruct.t list | `End of Cstruct.t list option * Headers.t ]
 
-type 'context writer_result = {
-  payload : 'context writer_payload;
-  context : 'context;
-}
-
+type 'context writer_result = { payload : writer_payload; context : 'context }
 type 'context reader = 'context -> reader_payload -> 'context
 type 'context writer = 'context -> 'context writer_result
 

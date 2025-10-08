@@ -40,6 +40,10 @@ let create_idle ~id = Inactive { id; state = Idle }
 let create_terminated ~id = Inactive { id; state = Closed Terminated }
 let is_active = function Active _ -> true | Inactive _ -> false
 
+let is_eraseable = function
+  | Inactive { state = Idle | Closed Terminated; _ } -> true
+  | _ -> false
+
 let init :
     request:Request.t ->
     Stream_identifier.t ->
@@ -518,3 +522,129 @@ let receive_rst : Error_code.t -> 'a transition =
 
       (* NOTE: notice we're not writing here *)
       Ok (Inactive { state = Closed Terminating; id }, [])
+
+let writer_payload_writes :
+    id:Stream_identifier.t -> Body.writer_payload -> Writer.write list =
+ fun ~id ->
+  let max_frame_size = 16000 in
+  function
+  | `Data cs_list ->
+      let distributed = Util.split_cstructs cs_list max_frame_size in
+      let writes =
+        List.map (fun cs_list -> Writer.data id cs_list) distributed
+      in
+
+      writes
+  | `End (Some cs_list, trailers) ->
+      let send_trailers = Headers.length trailers > 0 in
+      let distributed = Util.split_cstructs cs_list max_frame_size in
+      let data_writes =
+        List.mapi
+          (fun i cs_list ->
+            Writer.data
+              ~end_stream:
+                ((not send_trailers) && i = List.length distributed - 1)
+              id cs_list)
+          distributed
+      in
+
+      let writes =
+        if send_trailers then data_writes @ [ Writer.trailers id trailers ]
+        else data_writes
+      in
+
+      writes
+  | `End (None, trailers) ->
+      let send_trailers = Headers.length trailers > 0 in
+      let write =
+        if send_trailers then Writer.trailers id trailers
+        else Writer.data ~end_stream:true id [ Cstruct.empty ]
+      in
+
+      [ write ]
+
+let get_event (type p) : p t -> (unit -> p t * Writer.write list) option =
+  function
+  | Active
+      ({
+         state = Open { writers = BodyWriter body_writer; readers };
+         context;
+         id;
+         _;
+       } as stream) ->
+      Some
+        (fun () ->
+          let { Body.payload; context } = body_writer context in
+          let writes = writer_payload_writes ~id payload in
+          match payload with
+          | `End _ ->
+              ( Active { stream with context; state = HalfClosedLocal readers },
+                writes )
+          | `Data _ -> (Active { stream with context }, writes))
+  | Active
+      ({
+         state = HalfClosedRemote (BodyWriter body_writer);
+         context;
+         id;
+         on_close;
+         _;
+       } as stream) ->
+      Some
+        (fun () ->
+          let { Body.payload; context } = body_writer context in
+          let writes = writer_payload_writes ~id payload in
+          match payload with
+          | `End _ ->
+              on_close context;
+              (Inactive { state = Closed Terminating; id }, writes)
+          | `Data _ -> (Active { stream with context }, writes))
+  | Active
+      ({
+         state = Open { writers = WritingResponse response_writer; readers };
+         id;
+         _;
+       } as stream) ->
+      Some
+        (fun () ->
+          let response = response_writer () in
+          let write = Writer.response_headers id response in
+          match response with
+          | `Final { body_writer = Some body_writer; _ } ->
+              (* window_update id ~increment:Flow_control.initial_increment writer; *)
+              ( Active
+                  {
+                    stream with
+                    state = Open { writers = BodyWriter body_writer; readers };
+                  },
+                [ write ] )
+          | `Final { body_writer = None; _ } ->
+              (* window_update id ~increment:Flow_control.initial_increment writer; *)
+              (Active { stream with state = HalfClosedLocal readers }, [ write ])
+          | `Interim _ -> (Active stream, [ write ]))
+  | Active
+      ({
+         state = HalfClosedRemote (WritingResponse response_writer);
+         id;
+         on_close;
+         context;
+         _;
+       } as stream) ->
+      Some
+        (fun () ->
+          let response = response_writer () in
+          let write = Writer.response_headers id response in
+          match response with
+          | `Final { body_writer = Some body_writer; _ } ->
+              (* window_update id ~increment:Flow_control.initial_increment writer; *)
+              ( Active
+                  {
+                    stream with
+                    state = HalfClosedRemote (BodyWriter body_writer);
+                  },
+                [ write ] )
+          | `Final { body_writer = None; _ } ->
+              (* window_update id ~increment:Flow_control.initial_increment writer; *)
+              on_close context;
+              (Inactive { state = Closed Terminating; id }, [ write ])
+          | `Interim _ -> (Active stream, [ write ]))
+  | _ -> None

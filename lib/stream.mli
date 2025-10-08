@@ -6,6 +6,7 @@ type 'p transition =
 val create_idle : id:Stream_identifier.t -> 'a t
 val create_terminated : id:Stream_identifier.t -> 'a t
 val is_active : 'a t -> bool
+val is_eraseable : 'a t -> bool
 
 val init :
   request:Request.t -> Stream_identifier.t -> Peer.client t * Writer.write list
@@ -22,3 +23,4 @@ val receive_headers_server :
   Peer.server transition
 
 val receive_rst : Error_code.t -> 'a transition
+val get_event : 'p t -> (unit -> 'p t * Writer.write list) option

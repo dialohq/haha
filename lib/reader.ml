@@ -45,6 +45,7 @@ let read_preface : t -> (unit, Error.t) result =
       Error
         (Error.conn_prot_err ProtocolError
            "invalid connection preface, frame buffer exceeded")
+  | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
   | exception exn -> Error (ConnectionError (Exn exn))
   | () -> Ok ()
 
@@ -57,5 +58,6 @@ let read_frame : t -> (Frame.t, Error.t) result =
            (Exn (Failure (Format.asprintf "parsing error: %s" msg))))
   | exception Buf_read.Buffer_limit_exceeded ->
       Error (Error.conn_prot_err ProtocolError "frame buffer exceeded")
+  | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
   | exception exn -> Error (ConnectionError (Exn exn))
   | res -> res
