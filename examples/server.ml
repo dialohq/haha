@@ -3,14 +3,19 @@ open Haha
 let body_writer : unit Body.writer =
  fun () -> { payload = `End (None, Headers.empty); context = () }
 
-let body_reader : unit Body.reader = fun () _data -> ()
-
 let response_writer : unit Response.response_writer =
- fun () -> `Final (Response.create_with_streaming ~body_writer `OK)
+ fun () -> `Final (Response.create ~body_writer `OK)
 
 let () =
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
+  let body_reader : unit Body.reader =
+   fun () -> function
+     | `Data cs ->
+         Printf.printf "Received data: %s\n%!" (Cstruct.to_string cs);
+         Eio.Time.sleep env#clock 1.
+     | `End _ -> ()
+  in
   let socket =
     Eio.Net.listen ~reuse_port:true ~backlog:10 ~sw env#net
       (`Tcp (Eio.Net.Ipaddr.V4.any, 8080))

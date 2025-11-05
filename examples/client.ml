@@ -1,19 +1,24 @@
 open Haha
 
-let body_writer : unit Body.writer =
- fun () -> { payload = `End (None, Headers.empty); context = () }
+type context = bool
 
-let body_reader : unit Body.reader = fun () _data -> ()
+let body_writer : context Body.writer = function
+  | true -> { payload = `End (None, Headers.empty); context = true }
+  | false -> { payload = `Data [ Cstruct.of_string "dupa" ]; context = true }
 
-let response_handler : unit Respd.handler =
- fun () _respd -> (Some body_reader, ())
+let body_reader : context Body.reader = fun c _data -> c
+
+let response_handler : context Respd.handler =
+ fun c _respd -> (Some body_reader, c)
 
 let rec iterate : Request.t list -> Client.iteration -> unit =
- fun reqs -> function
-  | `End -> ()
-  | `Error _err -> print_endline "conn erra"
-  | `InProgress next -> iterate [] (next reqs)
-  | `Shutdown next -> iterate [] (next ())
+ fun reqs iter ->
+  match (iter, reqs) with
+  | `End, _ -> ()
+  | `Error _err, _ -> print_endline "conn erra"
+  | `InProgress next, [] -> iterate [] (next ~shutdown:true [])
+  | `InProgress next, reqs -> iterate [] (next reqs)
+  | `Shutdown next, _ -> iterate [] (next ())
 
 let () =
   Eio_main.run @@ fun env ->
@@ -23,9 +28,11 @@ let () =
   in
 
   let request =
-    Request.create_with_streaming ~context:() ~body_writer ~response_handler
-      ~error_handler:(fun _ _ -> print_endline "stream erra")
+    Request.create_with_streaming ~context:false ~body_writer ~response_handler
+      ~error_handler:(fun c _ ->
+        print_endline "stream erra";
+        c)
       POST "/"
   in
 
-  iterate [ request ] (Client.connect socket)
+  iterate [ request; request ] (Client.connect socket)
