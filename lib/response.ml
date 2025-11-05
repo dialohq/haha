@@ -13,21 +13,10 @@ type 'context t =
 
 type 'context response_writer = unit -> 'context t
 
-let status (t : _ t) =
-  match t with `Interim r -> (r.status :> Status.t) | `Final r -> r.status
-
-let headers (t : _ t) =
-  match t with `Interim r -> r.headers | `Final r -> r.headers
-
-let create ?(headers = Headers.empty) (status : Status.t) :
+let create ?(headers = Headers.empty) ?body_writer (status : Status.t) :
     'context final_response =
-  { status; headers; body_writer = None }
+  { status; headers; body_writer }
 
 let create_interim ?(headers = Headers.empty) (status : Status.informational) :
     interim_response =
   { status; headers }
-
-let create_with_streaming ?(headers = Headers.empty)
-    ~(body_writer : 'context writer) (status : Status.t) :
-    'context final_response =
-  { status; headers; body_writer = Some body_writer }

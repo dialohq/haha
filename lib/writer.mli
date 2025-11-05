@@ -6,6 +6,7 @@ val create :
 
 val create_with_defaults : [> Eio.Flow.sink_ty ] Eio.Resource.t -> t
 val set_encoder_capacity : t -> int -> unit
+val set_capacity : int -> t -> t
 val flush : t -> (unit, exn) result
 val connection_preface : t -> unit
 

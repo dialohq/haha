@@ -13,14 +13,6 @@ type t =
     }
       -> t
 
-type request_writer = unit -> t option
-
-let path (Request t) = t.path
-let meth (Request t) = t.meth
-let scheme (Request t) = t.scheme
-let authority (Request t) = t.authority
-let headers (Request t) = t.headers
-
 let create ?authority ?(scheme = "http") ?(on_close = ignore)
     ?(headers = Headers.empty) ~context ~response_handler ~error_handler meth
     path =

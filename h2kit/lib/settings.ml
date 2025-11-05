@@ -7,9 +7,6 @@ type t = {
   max_header_list_size : int option;
 }
 
-type _ Effect.t += SettingsLookup : unit -> t Effect.t
-
-let lookup_settings () = Effect.perform (SettingsLookup ())
 let octets_per_setting = 6
 let minimal_frame_size_allowed = 0x4000
 

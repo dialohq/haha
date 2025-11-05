@@ -12,7 +12,6 @@ module Parsers = Parsers.Make (struct
     let cs = peek t in
     assert (Cstruct.length cs >= n);
     consume t n;
-    (* WARN: not a good idea probably, those bytes will be different on the next read from the socket *)
     Cstruct.(sub cs 0 n |> to_bigarray)
 end)
 
@@ -29,10 +28,9 @@ let create : [> Flow.source_ty ] Resource.t -> int -> t =
  fun flow size -> Buf_read.of_flow ~initial_size:size ~max_size:size flow
 
 let update_size : int -> t -> t =
- fun _size t ->
-  (* TODO: copy all bytes from previous and create a new reader *)
-  print_endline "WARN: Reader.update_size not implemented";
-  t
+ fun size t ->
+  (* TODO: could there be significant bytes in the buffer? copy them to the new reader? *)
+  create (Buf_read.as_flow t) size
 
 let read_preface : t -> (unit, Error.t) result =
  fun t ->

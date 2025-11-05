@@ -105,11 +105,11 @@ let receive_settings :
         aux { conn with streams } rest
     | InitialWindowSize _initial_window :: _rest ->
         failwith "implement INITIAL_WINDOW_SIZE setting"
-    | MaxFrameSize _ :: rest ->
-        (* TODO: update the WRITER capacity *)
-        aux conn rest
+    | MaxFrameSize cap :: rest ->
+        let writer = Writer.set_capacity cap conn.writer in
+        aux { conn with writer } rest
     | MaxHeaderListSize _ :: rest ->
-        (* TODO: this is advisory, might implement later *)
+        (* TODO: this is advisory, might implement later with HPACK impl *)
         aux conn rest
   in
 
