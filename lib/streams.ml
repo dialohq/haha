@@ -1,9 +1,8 @@
 module StreamMap = Map.Make (Int32)
 
 type 'peer t = {
+  peer : 'peer Peer.t;
   map : 'peer Stream.t StreamMap.t;
-  last_peer_stream : Stream_identifier.t;
-  last_local_stream : Stream_identifier.t;
   max_local_streams : int32; [@warning "-69"]
   max_peer_streams : int32; [@warning "-69"]
   handle_headers : end_stream:bool -> Headers.t -> 'peer Stream.transition;
@@ -12,9 +11,8 @@ type 'peer t = {
 let init_client : int32 -> int32 -> Peer.client t =
  fun max_local_streams max_peer_streams ->
   {
+    peer = Client;
     map = StreamMap.empty;
-    last_peer_stream = 0l;
-    last_local_stream = -1l;
     max_local_streams;
     max_peer_streams;
     handle_headers = Stream.receive_headers_client;
@@ -24,15 +22,17 @@ let init_server :
     request_handler:Reqd.handler -> int32 -> int32 -> Peer.server t =
  fun ~request_handler max_local_streams max_peer_streams ->
   {
+    peer = Server;
     map = StreamMap.empty;
-    last_peer_stream = -1l;
-    last_local_stream = 0l;
     max_local_streams;
     max_peer_streams;
     handle_headers = Stream.receive_headers_server ~request_handler;
   }
 
-let last_peer_stream { last_peer_stream; _ } = last_peer_stream
+let last_peer_stream t =
+  StreamMap.fold
+    (fun id _ acc -> if Peer.is_local_id t.peer id then acc else max id acc)
+    t.map 0l
 
 let update_local_max : int32 -> 'a t -> 'a t =
  fun max_local_streams t -> { t with max_local_streams }
@@ -46,28 +46,19 @@ let active_streams : 'a t -> int =
     (fun _ stream acc -> if Stream.is_active stream then acc + 1 else acc)
     t.map 0
 
-let update_ids : Stream_identifier.t -> 'a t -> 'a t =
- fun id ({ last_peer_stream; last_local_stream; _ } as t) ->
-  let open Stream_identifier in
-  match
-    (is_client id, is_client last_peer_stream, is_client last_local_stream)
-  with
-  | true, true, false | false, false, true ->
-      { t with last_peer_stream = Int32.max last_peer_stream id }
-  | true, false, true | false, true, false ->
-      { t with last_local_stream = Int32.max last_local_stream id }
-  | _, true, true | _, false, false ->
-      (* initially we set odd and even values for those so this is unreachable *)
-      assert false
-
 let write_request :
     request:Request.t -> Peer.client t -> Peer.client t * Writer.write list =
  fun ~request t ->
-  let id = Int32.add t.last_local_stream 2l in
+  let last_id =
+    StreamMap.fold
+      (fun id _ acc -> if Peer.is_local_id t.peer id then max id acc else acc)
+      t.map 0l
+  in
+  let id = Peer.next_id t.peer last_id in
   let new_stream, writes = Stream.init ~request id in
   let map = StreamMap.add id new_stream t.map in
 
-  ({ t with map; last_local_stream = id }, writes)
+  ({ t with map }, writes)
 
 let transition_stream :
     id:Stream_identifier.t ->
@@ -75,10 +66,16 @@ let transition_stream :
     'a t ->
     ('a t * Writer.write list, Error_code.t * string) result =
  fun ~id transition t ->
+  let last_active =
+    StreamMap.fold
+      (fun id stream acc -> if Stream.is_active stream then max id acc else acc)
+      t.map 0l
+  in
+
   let stream =
     match StreamMap.find_opt id t.map with
     | Some stream -> stream
-    | None when id > t.last_local_stream -> Stream.create_idle ~id
+    | None when id > last_active -> Stream.create_idle ~id
     | None -> Stream.create_terminated ~id
   in
 
@@ -87,7 +84,7 @@ let transition_stream :
       StreamMap.add id new_stream t.map
       |> StreamMap.filter (fun _ s -> not (Stream.is_eraseable s))
     in
-    (update_ids id { t with map }, writes)
+    ({ t with map }, writes)
   in
 
   Result.map update_map (transition stream)
