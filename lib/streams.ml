@@ -231,7 +231,6 @@ let log ~__POS__ ~id ~stream event =
         ("src", `String "haha");
         ("file", `String file);
         ("line", `Int line);
-        ("line", `Int line);
         ("id", `String (id |> Int32.to_string));
         ("state", `String (Format.asprintf "%a" Stream.to_string stream));
         ("event", event_json event);
@@ -480,7 +479,10 @@ let read_data :
           in
 
           Ok (State new_state)
-      | _ -> Error (stream_prot_err id ProtocolError)
+      | _ ->
+          log ~__POS__ ~id ~stream:(State state)
+            (StreamError (ProtocolError, false));
+          Error (stream_prot_err id ProtocolError)
   in
 
   update_stream_state ~writer id f
@@ -823,7 +825,10 @@ let receive_trailers :
           on_close new_context;
           Ok (State (Closed Terminated))
       | Reserved _ -> Error (stream_prot_err id Error_code.StreamClosed)
-      | Idle -> Error (stream_prot_err id Error_code.ProtocolError)
+      | Idle ->
+          log ~__POS__ ~id ~stream:(State state)
+            (StreamError (ProtocolError, false));
+          Error (stream_prot_err id Error_code.ProtocolError)
       | Closed Terminated | HalfClosed (Remote _) ->
           Error
             (conn_prot_err Error_code.StreamClosed
@@ -912,6 +917,8 @@ let receive_request :
               (conn_prot_err Error_code.ProtocolError
                  "MAX_CONCURRENT_STREAMS setting reached")
       | Open _ | HalfClosed (Local _) ->
+          log ~__POS__ ~id ~stream:(State state)
+            (StreamError (ProtocolError, false));
           Error (stream_prot_err id Error_code.ProtocolError)
       | Reserved _ ->
           Error

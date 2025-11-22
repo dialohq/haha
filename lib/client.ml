@@ -4,6 +4,21 @@ type iter_input = Shutdown | Request of Request.t
 type state = Streams.client_peer State.t
 type iteration = iter_input Types.iteration
 
+let log ~__POS__ ~id code =
+  let file, line, _, _ = __POS__ in
+  let json : Yojson.Safe.t =
+    `Assoc
+      [
+        ("src", `String "haha");
+        ("file", `String file);
+        ("line", `Int line);
+        ("id", `String (id |> Int32.to_string));
+        ("error_code", `String (Error_code.to_string code));
+      ]
+  in
+
+  print_endline @@ Yojson.Safe.to_string json
+
 let process_complete_headers :
     state -> Frame.frame_header -> Headers.t -> state step =
  fun state { Frame.flags; stream_id; _ } headers ->
@@ -12,6 +27,7 @@ let process_complete_headers :
 
   match (Flags.test_end_stream flags, pseudo_validation) with
   | _, Invalid _ | false, NotPresent | _, Valid (Request _) ->
+      log ~__POS__ ~id:stream_id ProtocolError;
       stream_error stream_id Error_code.ProtocolError
   | true, NotPresent -> (
       match
