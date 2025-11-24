@@ -355,11 +355,20 @@ let read_loop ~socket ~receive_buffer ~frame_handler off () =
             step InProgress { next_state with read_off = unconsumed }
         | other -> other)
 
-let combine_steps x y =
- fun step ->
-  match x step with
-  | { iter_result = InProgress; state = new_state } -> y new_state
-  | other -> other
+let combine_steps (x, xvar) (y, yvar) =
+  let first, second =
+    match (xvar, yvar) with
+    | `Write, `Other -> (x, y)
+    | `Other, `Write -> (y, x)
+    | _ -> (x, y)
+  in
+  let fn =
+   fun state ->
+    match first state with
+    | { iter_result = InProgress; state = new_state } -> second new_state
+    | other -> other
+  in
+  (fn, `Other)
 
 let finalize_iteration :
     _ Eio.Resource.t ->
@@ -395,6 +404,15 @@ let get_body_writers : 'peer t -> (unit -> 'peer t -> 'peer t step) list =
     ~max_frame_size:peer_settings.max_frame_size streams
   |> map_streams_transitions
 
+let add_variant_to_events :
+    [ `Write | `Other ] ->
+    (unit -> 'p t -> 'p t step) list ->
+    (unit -> ('p t -> 'p t step) * [ `Write | `Other ]) list =
+ fun var ->
+  List.map @@ fun fn () ->
+  let f = fn () in
+  ((fun state -> f state), var)
+
 let start :
     'peer.
     ?extra_events_handlers:('peer t -> (unit -> 'peer t -> 'peer t step) list) ->
@@ -414,15 +432,22 @@ let start :
   let rec process_events : 'peer t -> 'i list -> 'i Types.iteration =
    fun state -> function
      | [] ->
-         let events =
+         let write_events =
+           get_body_writers state |> add_variant_to_events `Write
+         in
+         let other_events =
            read_loop ~receive_buffer ~socket ~frame_handler state.read_off
            ::
            (match extra_events_handlers with
-           | None -> get_body_writers state
-           | Some extra -> List.concat [ get_body_writers state; extra state ])
+           | None -> []
+           | Some extra -> extra state)
+           |> add_variant_to_events `Other
          in
 
-         let next_step = Eio.Fiber.any ~combine:combine_steps events in
+         let next_step, _ =
+           Eio.Fiber.any ~combine:combine_steps
+             (List.concat [ write_events; other_events ])
+         in
 
          Eio.Cancel.protect @@ fun () ->
          finalize_iteration socket process_events (next_step state)
