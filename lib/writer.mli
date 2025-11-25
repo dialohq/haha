@@ -30,7 +30,7 @@ val response_headers :
   ?padding_length:int ->
   ?end_header:bool ->
   Stream_identifier.t ->
-  _ Response.t ->
+  Response.t ->
   t ->
   unit
 

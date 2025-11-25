@@ -1,48 +1,40 @@
-type t =
-  | Request : {
-      path : string;
-      meth : Method.t;
-      authority : string option;
-      scheme : string;
-      headers : Headers.t;
-      body_writer : 'context Body.writer option;
-      response_handler : 'context Respd.handler;
-      error_handler : 'context -> Error_code.t -> 'context;
-      on_close : 'context -> unit;
-      initial_context : 'context;
-    }
-      -> t
+type t = {
+  path : string;
+  meth : Method.t;
+  authority : string option;
+  scheme : string;
+  headers : Headers.t;
+  body_writer : Body.writer option;
+  response_handler : Respd.handler;
+  error_handler : Error_code.t -> unit;
+  on_close : unit -> unit;
+}
 
 let create ?authority ?(scheme = "http") ?(on_close = ignore)
-    ?(headers = Headers.empty) ~context ~response_handler ~error_handler meth
-    path =
-  Request
-    {
-      path;
-      meth;
-      authority;
-      scheme;
-      headers;
-      body_writer = None;
-      response_handler;
-      error_handler;
-      on_close;
-      initial_context = context;
-    }
+    ?(headers = Headers.empty) ~response_handler ~error_handler meth path =
+  {
+    path;
+    meth;
+    authority;
+    scheme;
+    headers;
+    body_writer = None;
+    response_handler;
+    error_handler;
+    on_close;
+  }
 
 let create_with_streaming ?authority ?(scheme = "http") ?(on_close = ignore)
-    ?(headers = Headers.empty) ~context ~body_writer ~response_handler
-    ~error_handler meth path =
-  Request
-    {
-      path;
-      meth;
-      authority;
-      scheme;
-      headers;
-      body_writer = Some body_writer;
-      response_handler;
-      error_handler;
-      on_close;
-      initial_context = context;
-    }
+    ?(headers = Headers.empty) ~body_writer ~response_handler ~error_handler
+    meth path =
+  {
+    path;
+    meth;
+    authority;
+    scheme;
+    headers;
+    body_writer = Some body_writer;
+    response_handler;
+    error_handler;
+    on_close;
+  }

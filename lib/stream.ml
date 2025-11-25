@@ -1,37 +1,35 @@
 type client_peer = Peer.client
 type server_peer = Peer.server
 
-type (_, 'c) writers =
-  | BodyWriter : 'c Body.writer -> ('peer, 'c) writers
-  | WritingResponse : 'c Response.response_writer -> (server_peer, 'c) writers
+type _ writers =
+  | BodyWriter : Body.writer -> 'peer writers
+  | WritingResponse : Response.response_writer -> server_peer writers
 
-type (_, 'c) readers =
-  | BodyReader : 'c Body.reader -> ('peer, 'c) readers
-  | AwaitingResponse : 'c Respd.handler -> (client_peer, 'c) readers
+type _ readers =
+  | BodyReader : Body.reader -> 'peer readers
+  | AwaitingResponse : Respd.handler -> client_peer readers
 
-type 'context error_handler = 'context -> Error_code.t -> 'context
+type error_handler = Error_code.t -> unit
 
-type ('peer, 'c) active_state =
-  | Open of { readers : ('peer, 'c) readers; writers : ('peer, 'c) writers }
-  | HalfClosedRemote of ('peer, 'c) writers
-  | HalfClosedLocal of ('peer, 'c) readers
+type 'peer active_state =
+  | Open of { readers : 'peer readers; writers : 'peer writers }
+  | HalfClosedRemote of 'peer writers
+  | HalfClosedLocal of 'peer readers
   | Reserved [@warning "-37"]
 
 (* NOTE: instead of relying on a variant itself, we could do something like a "last_seen" field and make a configuratble time range of frames that are ignored on closed streams like in Rust's h2 *)
 type closed = Terminating | Terminated
 type inactive_state = Idle | Closed of closed
 
-type _ t =
-  | Active : {
-      state : ('peer, 'c) active_state;
+type 'peer t =
+  | Active of {
+      state : 'peer active_state;
       id : Stream_identifier.t;
-      context : 'c;
-      error_handler : 'c error_handler;
-      on_close : 'c -> unit;
+      error_handler : error_handler;
+      on_close : unit -> unit;
       flow : Flow_control.t;
     }
-      -> 'peer t
-  | Inactive : { state : inactive_state; id : Stream_identifier.t } -> 'peer t
+  | Inactive of { state : inactive_state; id : Stream_identifier.t }
 
 type 'p transition =
   'p t -> ('p t * Writer.write list, Error_code.t * string) result
@@ -49,15 +47,7 @@ let init :
     Stream_identifier.t ->
     client_peer t * Writer.write list =
  fun ~request id ->
-  let (Request.Request
-         {
-           response_handler;
-           body_writer;
-           error_handler;
-           initial_context;
-           on_close;
-           _;
-         } as request) =
+  let { Request.response_handler; body_writer; error_handler; on_close; _ } =
     request
   in
   let write = Writer.request_headers id request in
@@ -74,7 +64,6 @@ let init :
                 };
             id;
             error_handler;
-            context = initial_context;
             on_close;
             flow = Flow_control.initial;
           },
@@ -85,7 +74,6 @@ let init :
             state = HalfClosedLocal (AwaitingResponse response_handler);
             id;
             error_handler;
-            context = initial_context;
             on_close;
             flow = Flow_control.initial;
           },
@@ -99,20 +87,13 @@ let read_data : end_stream:bool -> Cstruct.t -> 'a transition =
          id;
          error_handler;
          on_close;
-         context;
          flow;
        } as state') ->
       let flow, writes =
         Flow_control.receive_data ~id (Cstruct.length data |> Int32.of_int) flow
       in
 
-      let new_context =
-        match (end_stream, Cstruct.is_empty data) with
-        | false, _ -> reader context (`Data data)
-        | true, false ->
-            reader (reader context (`Data data)) (`End Headers.empty)
-        | true, true -> reader context (`End Headers.empty)
-      in
+      if end_stream then reader (`End Headers.empty) else reader (`Data data);
 
       let stream =
         if end_stream then
@@ -122,39 +103,26 @@ let read_data : end_stream:bool -> Cstruct.t -> 'a transition =
               id;
               error_handler;
               on_close;
-              context = new_context;
               flow;
             }
-        else Active { state' with flow; context = new_context }
+        else Active { state' with flow }
       in
 
       Ok (stream, writes)
   | Active
-      ({
-         state = HalfClosedLocal (BodyReader reader);
-         id;
-         on_close;
-         context;
-         flow;
-         _;
-       } as state') ->
+      ({ state = HalfClosedLocal (BodyReader reader); id; on_close; flow; _ } as
+       state') ->
       let flow, writes =
         Flow_control.receive_data ~id (Cstruct.length data |> Int32.of_int) flow
       in
 
-      let new_context =
-        match (end_stream, Cstruct.is_empty data) with
-        | false, _ -> reader context (`Data data)
-        | true, false ->
-            reader (reader context (`Data data)) (`End Headers.empty)
-        | true, true -> reader context (`End Headers.empty)
-      in
+      if end_stream then reader (`End Headers.empty) else reader (`Data data);
 
       let stream =
         if end_stream then (
-          on_close new_context;
+          on_close ();
           Inactive { state = Closed Terminating; id })
-        else Active { state' with flow; context = new_context }
+        else Active { state' with flow }
       in
 
       Ok (stream, writes)
@@ -163,9 +131,9 @@ let read_data : end_stream:bool -> Cstruct.t -> 'a transition =
         ( ProtocolError,
           Format.asprintf
             "DATA frame received on reserved stream. Stream ID %li" id )
-  | Active { id; error_handler; on_close; context; _ } ->
-      let final_context = error_handler context StreamClosed in
-      on_close final_context;
+  | Active { id; error_handler; on_close; _ } ->
+      error_handler StreamClosed;
+      on_close ();
 
       let write = Writer.rst_stream id StreamClosed in
       Ok (Inactive { state = Closed Terminating; id }, [ write ])
@@ -185,24 +153,13 @@ let receive_trailers : Headers.t -> 'a transition =
  fun headers -> function
   | Inactive { state = Closed Terminating; _ } as stream -> Ok (stream, [])
   | Active
-      ({ state = Open { readers = BodyReader reader; writers }; context; _ } as
-       state) ->
-      let new_context = reader context (`End headers) in
+      ({ state = Open { readers = BodyReader reader; writers }; _ } as state) ->
+      reader (`End headers);
 
-      Ok
-        ( Active
-            {
-              state with
-              context = new_context;
-              state = HalfClosedRemote writers;
-            },
-          [] )
-  | Active
-      { state = HalfClosedLocal (BodyReader reader); id; on_close; context; _ }
-    ->
-      let new_context = reader context (`End headers) in
-
-      on_close new_context;
+      Ok (Active { state with state = HalfClosedRemote writers }, [])
+  | Active { state = HalfClosedLocal (BodyReader reader); id; on_close; _ } ->
+      reader (`End headers);
+      on_close ();
       Ok (Inactive { state = Closed Terminated; id }, [])
   | Inactive { state = Idle; id } ->
       Error
@@ -212,30 +169,17 @@ let receive_trailers : Headers.t -> 'a transition =
   | Inactive { state = Closed Terminated; _ } ->
       Error (StreamClosed, "HEADERS received on a closed stream")
   | Active
-      {
-        state = Reserved | HalfClosedRemote _;
-        id;
-        error_handler;
-        context;
-        on_close;
-        _;
-      } ->
-      let final_context = error_handler context StreamClosed in
-      on_close final_context;
+      { state = Reserved | HalfClosedRemote _; id; error_handler; on_close; _ }
+    ->
+      error_handler StreamClosed;
+      on_close ();
 
       let write = Writer.rst_stream id StreamClosed in
       Ok (Inactive { state = Closed Terminating; id }, [ write ])
   | Active
-      {
-        state = Open _ | HalfClosedLocal _;
-        id;
-        error_handler;
-        context;
-        on_close;
-        _;
-      } ->
-      let final_context = error_handler context ProtocolError in
-      on_close final_context;
+      { state = Open _ | HalfClosedLocal _; id; error_handler; on_close; _ } ->
+      error_handler ProtocolError;
+      on_close ();
 
       let write = Writer.rst_stream id ProtocolError in
       Ok (Inactive { state = Closed Terminating; id }, [ write ])
@@ -250,14 +194,12 @@ let receive_request :
   | Inactive { state = Closed Terminating; _ } as stream -> Ok (stream, [])
   | Inactive { state = Idle; id } ->
       if can_open () then
-        let (Reqd.ReqdHandle
-               {
-                 body_reader = reader;
-                 response_writer;
-                 error_handler;
-                 on_close;
-                 context;
-               }) =
+        let {
+          Reqd.body_reader = reader;
+          response_writer;
+          error_handler;
+          on_close;
+        } =
           request_handler reqd
         in
 
@@ -269,7 +211,6 @@ let receive_request :
                 id;
                 error_handler;
                 on_close;
-                context;
                 flow = Flow_control.initial;
               }
           else
@@ -284,7 +225,6 @@ let receive_request :
                 id;
                 error_handler;
                 on_close;
-                context;
                 flow = Flow_control.initial;
               }
         in
@@ -292,16 +232,9 @@ let receive_request :
         Ok (new_stream_state, [])
       else Error (ProtocolError, "MAX_CONCURRENT_STREAMS setting reached")
   | Active
-      {
-        state = Open _ | HalfClosedLocal _;
-        id;
-        context;
-        on_close;
-        error_handler;
-        _;
-      } ->
-      let final_context = error_handler context ProtocolError in
-      on_close final_context;
+      { state = Open _ | HalfClosedLocal _; id; on_close; error_handler; _ } ->
+      error_handler ProtocolError;
+      on_close ();
 
       let write = Writer.rst_stream id ProtocolError in
       Ok (Inactive { state = Closed Terminating; id }, [ write ])
@@ -316,25 +249,18 @@ let receive_response :
  fun ~respd ~end_stream -> function
   | Inactive { state = Closed Terminating; _ } as stream -> Ok (stream, [])
   | Active
-      ({
-         state = Open { readers = AwaitingResponse response_handler; _ };
-         context;
-         _;
-       } as s)
+      ({ state = Open { readers = AwaitingResponse response_handler; _ }; _ } as
+       s)
     when not (Respd.is_final respd) ->
-      let _body_reader, context = response_handler context respd in
+      let _body_reader = response_handler respd in
 
-      Ok (Active { s with context }, [])
+      Ok (Active s, [])
   | Active
-      ({
-         state = HalfClosedLocal (AwaitingResponse response_handler);
-         context;
-         _;
-       } as s)
+      ({ state = HalfClosedLocal (AwaitingResponse response_handler); _ } as s)
     when not (Respd.is_final respd) ->
-      let _body_reader, context = response_handler context respd in
+      let _body_reader = response_handler respd in
 
-      Ok (Active { s with context }, [])
+      Ok (Active s, [])
   | Active
       {
         state =
@@ -346,16 +272,15 @@ let receive_response :
         id;
         error_handler;
         on_close;
-        context;
         flow;
       } ->
-      let body_reader, context = response_handler context respd in
+      let body_reader = response_handler respd in
 
       let result' : client_peer t * Writer.write list =
         match (body_reader, end_stream) with
         | None, _ ->
             (* NOTE: notice this is different than normal stream error, we don't use error_handler here *)
-            on_close context;
+            on_close ();
 
             let write = Writer.rst_stream id NoError in
             (Inactive { state = Closed Terminating; id }, [ write ])
@@ -366,7 +291,6 @@ let receive_response :
                   id;
                   error_handler;
                   on_close;
-                  context;
                   flow;
                 },
               [] )
@@ -382,7 +306,6 @@ let receive_response :
                   id;
                   error_handler;
                   on_close;
-                  context;
                   flow;
                 },
               [] )
@@ -394,17 +317,16 @@ let receive_response :
         state = HalfClosedLocal (AwaitingResponse response_handler);
         id;
         error_handler;
-        context;
         on_close;
         flow;
       } ->
-      let body_reader, context = response_handler context respd in
+      let body_reader = response_handler respd in
 
       let result' : client_peer t * Writer.write list =
         match (end_stream, body_reader) with
         | false, None ->
             (* NOTE: notice this is different than normal stream error, we don't use error_handler here *)
-            on_close context;
+            on_close ();
 
             let write = Writer.rst_stream id NoError in
             (Inactive { state = Closed Terminating; id }, [ write ])
@@ -415,12 +337,11 @@ let receive_response :
                   id;
                   error_handler;
                   on_close;
-                  context;
                   flow;
                 },
               [] )
         | true, _ ->
-            on_close context;
+            on_close ();
             (Inactive { state = Closed Terminated; id }, [])
       in
 
@@ -431,12 +352,11 @@ let receive_response :
           Open { readers = BodyReader _; _ } | HalfClosedLocal (BodyReader _);
         error_handler;
         on_close;
-        context;
         id;
         _;
       } ->
-      let final_context = error_handler context ProtocolError in
-      on_close final_context;
+      error_handler ProtocolError;
+      on_close ();
 
       let write = Writer.rst_stream id ProtocolError in
       Ok (Inactive { state = Closed Terminating; id }, [ write ])
@@ -462,8 +382,8 @@ let receive_headers_server :
       | Inactive stream ->
           Ok (Inactive { stream with state = Closed Terminated }, [])
       | Active s ->
-          let final_context = s.error_handler s.context ProtocolError in
-          s.on_close final_context;
+          s.error_handler ProtocolError;
+          s.on_close ();
 
           let write = Writer.rst_stream s.id ProtocolError in
           Ok (Inactive { state = Closed Terminating; id = s.id }, [ write ]))
@@ -495,8 +415,8 @@ let receive_headers_client :
       | Inactive stream ->
           Ok (Inactive { stream with state = Closed Terminated }, [])
       | Active s ->
-          let final_context = s.error_handler s.context ProtocolError in
-          s.on_close final_context;
+          s.error_handler ProtocolError;
+          s.on_close ();
 
           let write = Writer.rst_stream s.id ProtocolError in
           Ok (Inactive { state = Closed Terminating; id = s.id }, [ write ]))
@@ -516,9 +436,9 @@ let receive_rst : Error_code.t -> 'a transition =
       Error (ProtocolError, "RST_STREAM received on a idle stream")
   | Inactive { state = Closed Terminated; _ } ->
       Error (StreamClosed, "RST_STREAM received on a closed stream!")
-  | Active { error_handler; on_close; context; id; _ } ->
-      let final_context = error_handler context code in
-      on_close final_context;
+  | Active { error_handler; on_close; id; _ } ->
+      error_handler code;
+      on_close ();
 
       (* NOTE: notice we're not writing here *)
       Ok (Inactive { state = Closed Terminating; id }, [])
@@ -566,38 +486,28 @@ let writer_payload_writes :
 let get_event (type p) : p t -> (unit -> p t * Writer.write list) option =
   function
   | Active
-      ({
-         state = Open { writers = BodyWriter body_writer; readers };
-         context;
-         id;
-         _;
-       } as stream) ->
+      ({ state = Open { writers = BodyWriter body_writer; readers }; id; _ } as
+       stream) ->
       Some
         (fun () ->
-          let { Body.payload; context } = body_writer context in
+          let payload = body_writer () in
           let writes = writer_payload_writes ~id payload in
           match payload with
           | `End _ ->
-              ( Active { stream with context; state = HalfClosedLocal readers },
-                writes )
-          | `Data _ -> (Active { stream with context }, writes))
+              (Active { stream with state = HalfClosedLocal readers }, writes)
+          | `Data _ -> (Active stream, writes))
   | Active
-      ({
-         state = HalfClosedRemote (BodyWriter body_writer);
-         context;
-         id;
-         on_close;
-         _;
-       } as stream) ->
+      ({ state = HalfClosedRemote (BodyWriter body_writer); id; on_close; _ } as
+       stream) ->
       Some
         (fun () ->
-          let { Body.payload; context } = body_writer context in
+          let payload = body_writer () in
           let writes = writer_payload_writes ~id payload in
           match payload with
           | `End _ ->
-              on_close context;
+              on_close ();
               (Inactive { state = Closed Terminating; id }, writes)
-          | `Data _ -> (Active { stream with context }, writes))
+          | `Data _ -> (Active stream, writes))
   | Active
       ({
          state = Open { writers = WritingResponse response_writer; readers };
@@ -626,7 +536,6 @@ let get_event (type p) : p t -> (unit -> p t * Writer.write list) option =
          state = HalfClosedRemote (WritingResponse response_writer);
          id;
          on_close;
-         context;
          _;
        } as stream) ->
       Some
@@ -644,7 +553,7 @@ let get_event (type p) : p t -> (unit -> p t * Writer.write list) option =
                 [ write ] )
           | `Final { body_writer = None; _ } ->
               (* window_update id ~increment:Flow_control.initial_increment writer; *)
-              on_close context;
+              on_close ();
               (Inactive { state = Closed Terminating; id }, [ write ])
           | `Interim _ -> (Active stream, [ write ]))
   | _ -> None

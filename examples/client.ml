@@ -1,15 +1,18 @@
 open Haha
 
-type context = bool
+let body_writer : unit -> Body.writer =
+ fun () ->
+  let c = ref false in
+  fun () ->
+    let res =
+      if !c then `End (None, Headers.empty)
+      else `Data [ Cstruct.of_string "dupa" ]
+    in
+    c := true;
+    res
 
-let body_writer : context Body.writer = function
-  | true -> { payload = `End (None, Headers.empty); context = true }
-  | false -> { payload = `Data [ Cstruct.of_string "dupa" ]; context = true }
-
-let body_reader : context Body.reader = fun c _data -> c
-
-let response_handler : context Respd.handler =
- fun c _respd -> (Some body_reader, c)
+let body_reader : Body.reader = fun _data -> ()
+let response_handler : Respd.handler = fun _respd -> Some body_reader
 
 let rec iterate : Request.t list -> Client.iteration -> unit =
  fun reqs iter ->
@@ -27,12 +30,11 @@ let () =
     Eio.Net.connect ~sw env#net (`Tcp (Eio.Net.Ipaddr.V4.loopback, 8080))
   in
 
-  let request =
-    Request.create_with_streaming ~context:false ~body_writer ~response_handler
-      ~error_handler:(fun c _ ->
-        print_endline "stream erra";
-        c)
+  let request () =
+    Request.create_with_streaming ~body_writer:(body_writer ())
+      ~response_handler
+      ~error_handler:(fun _ -> print_endline "stream erra")
       POST "/"
   in
 
-  iterate [ request; request ] (Client.connect socket)
+  iterate [ request (); request () ] (Client.connect socket)

@@ -1,7 +1,7 @@
 open Body
 
 type t = { status : Status.t; headers : Headers.t }
-type 'context handler = 'context -> t -> 'context reader option * 'context
+type handler = t -> reader option
 
 let create status headers = { status; headers }
 let status t = t.status

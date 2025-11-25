@@ -105,7 +105,7 @@ let data ?(padding_length = 0) ?(end_stream = false) stream_id cs_list (T t) =
   write_data_frame cs_list frame_info t.bw
 
 let response_headers ?padding_length ?(end_header = true) stream_id
-    (response : _ Response.t) (T t) =
+    (response : Response.t) (T t) =
   let status, headers, flags =
     match response with
     | `Interim { status; headers; _ } ->
@@ -131,7 +131,7 @@ let haha_header = ("user-agent", "haha/0.0.1")
 
 let request_headers ?padding_length ?(end_header = true) stream_id
     (request : Request.t) (T t) =
-  let (Request { meth; path; scheme; authority; headers; body_writer; _ }) =
+  let { Request.meth; path; scheme; authority; headers; body_writer; _ } =
     request
   in
 

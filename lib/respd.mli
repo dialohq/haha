@@ -1,5 +1,5 @@
 type t
-type 'context handler = 'context -> t -> 'context Body.reader option * 'context
+type handler = t -> Body.reader option
 
 val create : Status.t -> Headers.t -> t
 val status : t -> Status.t

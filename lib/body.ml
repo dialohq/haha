@@ -3,8 +3,7 @@ type reader_payload = [ `Data of Cstruct.t | `End of Headers.t ]
 type writer_payload =
   [ `Data of Cstruct.t list | `End of Cstruct.t list option * Headers.t ]
 
-type 'context writer_result = { payload : writer_payload; context : 'context }
-type 'context reader = 'context -> reader_payload -> 'context
-type 'context writer = 'context -> 'context writer_result
+type reader = reader_payload -> unit
+type writer = unit -> writer_payload
 
-let ignore_reader : _ reader = fun context _ -> context
+let ignore_reader : reader = fun _ -> ()
