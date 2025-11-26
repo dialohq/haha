@@ -206,40 +206,27 @@ let handle_stream_error :
 
 type 'a transition = 'a t -> ('a t, Error.connection_error) result
 
-let make_read_event : Reader.t -> unit -> [> `Received ] * 'a transition =
+let make_read_event : Reader.t -> unit -> 'a transition =
  fun reader () ->
   let res = Reader.read_frame reader in
-  let tran =
-   fun conn ->
+  fun conn ->
     match res with
     | Error (StreamError err) -> handle_stream_error conn err
     | Error (ConnectionError err) -> Error err
     | Ok frame -> handle_frame conn frame
-  in
-  (`Received, tran)
 
-let make_user_events : 'a t -> (unit -> [> `Written ] * 'a transition) list =
+let make_user_events : 'a t -> (unit -> 'a transition) list =
  fun t ->
   List.map
-    (fun event ->
+    (fun event () ->
       let transition = event () in
-      let tran t =
+      fun t ->
         let streams, writes = transition t.streams in
         List.iter (fun write -> write t.writer) writes;
-        Ok { t with streams }
-      in
-      fun () -> (`Written, tran))
+        Ok { t with streams })
     (Streams.get_events t.streams)
 
-let combine ev1 ev2 =
-  ( `Received,
-    fun t ->
-      match (ev1, ev2) with
-      | (`Received, tran1), (`Received, tran2)
-      | (`Written, tran1), (`Received, tran2)
-      | (`Written, tran1), (`Written, tran2) ->
-          Result.bind (tran1 t) tran2
-      | (`Received, tran1), (`Written, tran2) -> Result.bind (tran2 t) tran1 )
+let combine tran1 tran2 = fun t -> Result.bind (tran2 t) tran1
 
 type ('p, 'a) in_progress_f =
   'p Streams.t ->
@@ -254,7 +241,7 @@ let rec continue :
   let read_event = make_read_event t.reader in
   let user_events = make_user_events t in
 
-  let _, transition = Eio.Fiber.any ~combine (read_event :: user_events) in
+  let transition = Eio.Fiber.any ~combine (read_event :: user_events) in
 
   let last_seen = Streams.last_peer_stream t.streams in
   postprocess in_progress last_seen t.writer

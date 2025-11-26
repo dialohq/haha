@@ -483,77 +483,67 @@ let writer_payload_writes :
 
       [ write ]
 
-let get_event (type p) : p t -> (unit -> p t * Writer.write list) option =
-  function
-  | Active
-      ({ state = Open { writers = BodyWriter body_writer; readers }; id; _ } as
-       stream) ->
-      Some
-        (fun () ->
-          let payload = body_writer () in
-          let writes = writer_payload_writes ~id payload in
-          match payload with
-          | `End _ ->
-              (Active { stream with state = HalfClosedLocal readers }, writes)
-          | `Data _ -> (Active stream, writes))
-  | Active
-      ({ state = HalfClosedRemote (BodyWriter body_writer); id; on_close; _ } as
-       stream) ->
-      Some
-        (fun () ->
-          let payload = body_writer () in
-          let writes = writer_payload_writes ~id payload in
-          match payload with
-          | `End _ ->
-              on_close ();
-              (Inactive { state = Closed Terminating; id }, writes)
-          | `Data _ -> (Active stream, writes))
-  | Active
-      ({
-         state = Open { writers = WritingResponse response_writer; readers };
-         id;
-         _;
-       } as stream) ->
-      Some
-        (fun () ->
-          let response = response_writer () in
-          let write = Writer.response_headers id response in
-          match response with
-          | `Final { body_writer = Some body_writer; _ } ->
-              (* window_update id ~increment:Flow_control.initial_increment writer; *)
-              ( Active
-                  {
-                    stream with
-                    state = Open { writers = BodyWriter body_writer; readers };
-                  },
-                [ write ] )
-          | `Final { body_writer = None; _ } ->
-              (* window_update id ~increment:Flow_control.initial_increment writer; *)
-              (Active { stream with state = HalfClosedLocal readers }, [ write ])
-          | `Interim _ -> (Active stream, [ write ]))
-  | Active
-      ({
-         state = HalfClosedRemote (WritingResponse response_writer);
-         id;
-         on_close;
-         _;
-       } as stream) ->
-      Some
-        (fun () ->
-          let response = response_writer () in
-          let write = Writer.response_headers id response in
-          match response with
-          | `Final { body_writer = Some body_writer; _ } ->
-              (* window_update id ~increment:Flow_control.initial_increment writer; *)
-              ( Active
-                  {
-                    stream with
-                    state = HalfClosedRemote (BodyWriter body_writer);
-                  },
-                [ write ] )
-          | `Final { body_writer = None; _ } ->
-              (* window_update id ~increment:Flow_control.initial_increment writer; *)
-              on_close ();
-              (Inactive { state = Closed Terminating; id }, [ write ])
-          | `Interim _ -> (Active stream, [ write ]))
+let write_or_abort : Body.writer_payload -> 'p t -> 'p t * Writer.write list =
+ fun payload stream ->
+  match (stream, payload) with
+  | (Active { id; state = Open _ | HalfClosedRemote _; _ } as stream), `Data _
+    ->
+      (stream, writer_payload_writes ~id payload)
+  | Active ({ id; state = Open { readers; _ }; _ } as stream), `End _ ->
+      ( Active { stream with state = HalfClosedLocal readers },
+        writer_payload_writes ~id payload )
+  | Active { id; state = HalfClosedRemote _; _ }, `End _ ->
+      ( Inactive { id; state = Closed Terminating },
+        writer_payload_writes ~id payload )
+  | _ ->
+      (* abort *)
+      (stream, [])
+
+let respond_or_abort :
+    Response.t -> server_peer t -> server_peer t * Writer.write list =
+ fun response stream ->
+  match (stream, response) with
+  | ( (Active { id; state = Open _ | HalfClosedRemote (WritingResponse _); _ }
+       as stream),
+      `Interim _ ) ->
+      let write = Writer.response_headers id response in
+      (stream, [ write ])
+  | ( Active ({ id; state = Open { readers; _ }; _ } as stream),
+      `Final { body_writer = Some body_writer; _ } ) ->
+      let write = Writer.response_headers id response in
+      (* window_update id ~increment:Flow_control.initial_increment writer; *)
+      ( Active
+          {
+            stream with
+            state = Open { writers = BodyWriter body_writer; readers };
+          },
+        [ write ] )
+  | ( Active ({ id; state = HalfClosedRemote (WritingResponse _); _ } as stream),
+      `Final { body_writer = Some body_writer; _ } ) ->
+      let write = Writer.response_headers id response in
+      (* window_update id ~increment:Flow_control.initial_increment writer; *)
+      ( Active { stream with state = HalfClosedRemote (BodyWriter body_writer) },
+        [ write ] )
+  | ( Active ({ id; state = Open { readers; _ }; _ } as stream),
+      `Final { body_writer = None; _ } ) ->
+      let write = Writer.response_headers id response in
+      (Active { stream with state = HalfClosedLocal readers }, [ write ])
+  | ( Active { id; state = HalfClosedRemote (WritingResponse _); _ },
+      `Final { body_writer = None; _ } ) ->
+      let write = Writer.response_headers id response in
+      (Inactive { id; state = Closed Terminating }, [ write ])
+  | _ ->
+      (* abort *)
+      (stream, [])
+
+let get_event (type p) : p t -> (unit -> p t -> p t * Writer.write list) option
+    = function
+  | Active { state = Open { writers = BodyWriter body_writer; _ }; _ }
+  | Active { state = HalfClosedRemote (BodyWriter body_writer); _ } ->
+      Some (fun () -> write_or_abort @@ body_writer ())
+  | Active { state = Open { writers = WritingResponse response_writer; _ }; _ }
+    ->
+      Some (fun () -> respond_or_abort @@ response_writer ())
+  | Active { state = HalfClosedRemote (WritingResponse response_writer); _ } ->
+      Some (fun () -> respond_or_abort @@ response_writer ())
   | _ -> None

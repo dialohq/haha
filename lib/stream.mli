@@ -23,4 +23,4 @@ val receive_headers_server :
   Peer.server transition
 
 val receive_rst : Error_code.t -> 'a transition
-val get_event : 'p t -> (unit -> 'p t * Writer.write list) option
+val get_event : 'p t -> (unit -> 'p t -> 'p t * Writer.write list) option
